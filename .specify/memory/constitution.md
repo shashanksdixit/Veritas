@@ -1,11 +1,16 @@
 <!--
 SYNC IMPACT REPORT (temporary scratch, remove before commit)
-- Version change: 2.0.0 → 2.0.1 (PATCH: non-semantic, numbering-only relabeling)
-- Modified principles (relabeled only; titles and content unchanged):
-  - VIII. Integration Testing → VII. Integration Testing
-  - IX. Observability, Versioning & Simplicity → VIII. Observability, Versioning
-    & Simplicity
-  - Principles I–VI unchanged (sequential order now I–VIII with no gap)
+- Version change: 2.0.1 → 3.0.0 (MAJOR: redefinition of Principle II — the prior
+  MUST-NOT (LLM MUST NOT add security findings) becomes a conditional allowance
+  for verified LLM-identified security findings; backward-incompatible per policy)
+- Modified principles:
+  - II. SAST-Grounded Security → II. SAST-Grounded and Verified Security
+    (redefinition: LLM-identified security findings allowed only when they pass
+    the Principle I grounded citation re-check; every security finding labeled
+    by source; SAST tool licensing constraint retained verbatim)
+  - I. Grounded Verification (Anti-Hallucination): per-finding tool-source
+    exemption replaces the former per-category exemption; LLM-originated
+    findings within a tool-sourced category are NOT exempt from the re-read step
 - Added sections: none
 - Removed sections: none
 - Deferred TODOs: none
@@ -22,19 +27,30 @@ that re-reads each finding's cited file/line to confirm it is real and matches t
 claim. Verification MUST NOT be a second LLM judging the first LLM's prose for
 plausibility — that approach inherits the same hallucination failure mode, since a
 hallucinated finding is usually stated in the same confident tone as a true one.
-Where a real tool (e.g. a SAST scanner) is authoritative for a finding category,
-that tool's output is the ground truth and MAY replace the re-read step for that
-category. Each finding MUST be attributable: model, prompt version, and input
-commit or revision MUST be recorded.
+Where a specific finding is sourced directly from a real tool's output (e.g. a
+SAST scanner), that tool's output is the ground truth for that finding and MAY
+replace the re-read step. This exemption applies per finding by actual source,
+not by category as a whole — an LLM-originated finding within a category that
+also contains tool-sourced findings (for example, security) is NOT exempt and
+MUST go through the re-read step. Each finding MUST be attributable: model,
+prompt version, and input commit or revision MUST be recorded.
 
-### II. SAST-Grounded Security
-Security findings MUST be grounded in a real SAST tool's output, never invented by
-the LLM. For security findings the SAST tool is the source of truth; the LLM
-narrates and prioritizes but MUST NOT add findings the tool did not produce. The
-SAST tool MUST be fully free with unambiguous, long-term-stable licensing — a paid
-tier or a history of ambiguous rule licensing is disqualifying. Chosen tool:
-OpenGrep, a fully free LGPL-2.1 fork of Semgrep with no paid tier and restored
-cross-file taint analysis, rule-syntax-compatible with Semgrep.
+### II. SAST-Grounded and Verified Security
+Security findings MAY come from two sources: the integrated SAST tool (OpenGrep)
+and LLM-identified findings for security issues outside a SAST tool's
+pattern-matching reach (e.g. business-logic issues such as broken access
+control, where understanding intent matters more than syntactic
+pattern-matching). SAST-sourced findings are ground truth as reported by the
+tool. LLM-originated security findings are NOT exempt from verification: they
+MUST pass the same grounded citation re-check required of other findings under
+Principle I before appearing in a report. Every security finding MUST be labeled
+with its source (the SAST tool, or LLM-identified-and-verified) so a reader can
+calibrate trust per finding rather than assuming uniform provenance across the
+security category. The SAST tool itself MUST remain fully free with unambiguous,
+long-term-stable licensing — a paid tier or a history of ambiguous rule licensing
+is disqualifying. Chosen tool: OpenGrep, a fully free LGPL-2.1 fork of Semgrep
+with no paid tier and restored cross-file taint analysis, rule-syntax-compatible
+with Semgrep.
 
 ### III. Requirement Traceability
 Every review MUST check the reviewed code against the project's actual
@@ -149,4 +165,4 @@ MAJOR for backward-incompatible principle changes or removals, MINOR for added o
 materially expanded principles, PATCH for clarifications and wording fixes. Every
 PR and completed review MUST verify compliance with this constitution.
 
-**Version**: 2.0.1 | **Ratified**: 2026-09-15 | **Last Amended**: 2026-09-15
+**Version**: 3.0.0 | **Ratified**: 2026-09-15 | **Last Amended**: 2026-09-16
