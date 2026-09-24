@@ -1,0 +1,168 @@
+# Feature Specification: Code Review Tool (Veritas)
+
+**Feature Branch**: `001-code-review`
+
+**Created**: 2026-09-16
+
+**Status**: Draft
+
+**Input**: User description: "Build Veritas: a CLI-based, multi-agent code review tool. PRIMARY USER SCENARIO: A developer opens a pull request. A lead (or the developer themselves) runs Veritas against that PR before merge. Veritas fetches the PR remotely via the hosting provider's API (not a local git diff), reviews it, and produces a report the lead can act on or post back as a PR comment. Secondary scenarios: a user points Veritas at a whole project, a specific module/package, or a single file for an ad hoc review outside the PR workflow."
+
+## Clarifications
+
+### Session 2026-09-16
+
+- Q: When verification cannot confirm a finding's cited file or line, how should that finding be treated in the report? (FR-013) → A: Exclude from the report; record failed verification as a verification-failure note in the report summary (visible and attributable, not dropped silently).
+- Q: What should Veritas do when the SAST scanner is not installed or cannot run? (FR-003, FR-012) → A: See FR-012 for the full answer (remaining review types proceed; specific degradation reason stated, never a generic label).
+- Q: How should a finding be addressed for suppression from the CLI? (FR-017, FR-018) → A: By a stable finding ID printed in the report, and alternatively by filename with line numbers (resolved to the finding(s) covering those lines).
+- Q: If the LLM provider rate-limits or fails transiently mid-run, how should Veritas respond? (FR-019, FR-020) → A: Write the report with the review types that completed, include a clear error, and mark the report incomplete so it is not mistaken for a complete review.
+- Q: Following the constitution's v3.0.0 amendment, how should security findings be sourced and labeled? (FR-012, FR-013, SC-003) → A: Two allowed sources — SAST scanner (ground truth) and LLM-identified findings (MUST pass FR-013 citation re-verification); every security finding labeled by source ("sast" or "llm-verified"). When the scanner is unavailable, LLM-identified security findings still run under re-verification and the specific degradation reason is stated — an environmental condition, not a per-run user toggle.
+
+## User Scenarios & Testing *(mandatory)*
+
+### User Story 1 - Review a pull request before merge (Priority: P1)
+
+A developer opens a pull request on the code hosting platform. A lead (or the developer) runs Veritas against that PR. Veritas fetches the PR's contents remotely through the hosting provider's API, performs a full review, and produces a report containing code-quality, security, requirement-fulfillment, test-coverage, and performance findings plus suggested changes. The lead reviews the findings and either acts on them or posts the report back as a PR comment. No local copy of the branch or diff is required — Veritas works from the remote.
+
+**Why this priority**: This is the primary scenario the tool exists for — a merge-gate review driven by a real pull request. It delivers the core value (requirement-traceable, grounded, SAST-backed review) in the highest-frequency workflow.
+
+**Independent Test**: Run Veritas against a live remote PR on a hosted repository, on a branch that is known to contain a bug, a security issue, and a requirement gap. Veritas returns a report containing all mandatory review types without any local git state, and the report can be posted back as a PR comment as-is.
+
+**Acceptance Scenarios**:
+
+1. **Given** a hosted repository with an open pull request and valid hosting credentials configured, **When** the user runs Veritas targeting that PR, **Then** Veritas fetches the PR via the hosting provider's API and produces a full report without reading a local branch or diff.
+2. **Given** a PR whose changes only touch files of unsupported languages, **When** Veritas reviews it, **Then** the report is produced for the supported portions and explicitly notes any files skipped due to language support limits.
+3. **Given** a PR that is not found, is access-denied, or the hosting API is unreachable, **When** the user runs Veritas, **Then** the command fails with a clear diagnostic message on stderr, reports no successful exit, and does not emit a partial report that could be mistaken for a complete one.
+
+---
+
+### User Story 2 - Ad hoc review of a project, module, or file (Priority: P2)
+
+A user points Veritas at a whole project, a specific module/package, or a single file for a review outside the PR workflow. The scope is chosen per run and is always user-directed; Veritas does not remember previous runs or infer "what changed since last time." The review covers the same mandatory review types as a PR review.
+
+**Why this priority**: Ad hoc scoped reviews expand the tool from a PR gate to a development-time assistant while reusing the same review pipeline, so it is independently valuable though secondary to the PR flow.
+
+**Independent Test**: Run Veritas successively against (a) a whole project tree, (b) a single module directory, and (c) a single file. Each run returns a complete report scoped exactly to the target and does not include content from anywhere else.
+
+**Acceptance Scenarios**:
+
+1. **Given** a project directory and a user-selected scope of Project, Module/Package, or File, **When** the user runs Veritas with that scope, **Then** the review covers exactly the selected target and nothing outside it.
+2. **Given** two consecutive runs on the same project with different relative scopes, **When** the user runs Veritas, **Then** each run treats its scope independently and neither run is influenced by state from the previous one.
+3. **Given** a target module or file that does not exist or is not readable, **When** the user runs Veritas, **Then** the command fails with a clear diagnostic and no report is produced.
+
+---
+
+### User Story 3 - Suppress and un-suppress individual findings (Priority: P2)
+
+When a finding is a known, accepted issue (for example a lint-style warning the team has decided to ignore), the user marks it as suppressed so it no longer appears in future reports. Suppressions live in a git-tracked allowlist file that sits in the reviewed project, keyed by the flagged code itself — not by line numbers — so related edits elsewhere do not accidentally re-flag or un-flag it. If the flagged code genuinely changes, the suppression lapses and the finding is reported again. The user can also remove (un-suppress) an entry.
+
+**Why this priority**: Without a lasting suppression mechanism, reports would drown repeat users in already-accepted findings and Veritas's opinions would spill into the source via inline comments. This keeps long-term use viable, so it is P2.
+
+**Independent Test**: Suppress a finding, then (a) edit an unrelated region of the same file and confirm the finding stays suppressed, and (b) edit the flagged snippet itself and confirm the finding reappears. Then un-suppress and confirm the finding is reported even without further edits.
+
+**Acceptance Scenarios**:
+
+1. **Given** a report containing a finding and a git-tracked allowlist file in the project, **When** the user marks that finding as suppressed, **Then** the allowlist gains a stable entry keyed to the flagged code and the finding no longer appears in subsequent reports.
+2. **Given** a suppressed finding whose file is reformatted or edited elsewhere, **When** a new report is generated, **Then** the suppression still applies because the flagged code is unchanged.
+3. **Given** a suppressed finding whose flagged code snippet itself is changed, **When** a new report is generated, **Then** the finding is reported again because the suppression no longer matches.
+4. **Given** a suppression entry the user decides to remove, **When** the user un-suppresses it, **Then** the entry is removed from the allowlist and the finding is reported on the next run.
+
+---
+
+### User Story 4 - Review is adapted to the project's own context (Priority: P3)
+
+Veritas grounds a review in the project's actual context: it detects the language and framework versions from the project's real manifest files and adapts guidance accordingly (for example, not flagging Java 8-appropriate code against Java 21 idioms), honors the project's own conventions and style guide, and applies project-specific review rules written by the team in natural language. These rules require no separate deterministic rule-authoring setup.
+
+**Why this priority**: Context-awareness distinguishes this review from generic output and increases trust, but it refines findings rather than enabling the core flow, so it is P3.
+
+**Independent Test**: Point Veritas at a project with a detectable framework version, a conventions file, and one custom natural-language rule; confirm the report reflects the detected version, honors the conventions, and surfaces the custom rule's concern.
+
+**Acceptance Scenarios**:
+
+1. **Given** a project with recognizable manifest files, **When** Veritas reviews it, **Then** the report reflects the detected language/framework versions in its review guidance.
+2. **Given** a project with a conventions/style file such as an AGENTS.md equivalent, **When** Veritas reviews it, **Then** findings take those conventions into account rather than applying a generic standard.
+3. **Given** a project with custom project-specific review rules written in natural language, **When** Veritas reviews it, **Then** the rules influence the review output without any separate rule-file based authoring setup.
+4. **Given** a project with no detectable manifests, conventions, or custom rules, **When** Veritas reviews it, **Then** the review proceeds with generic guidance and notes that project context was unavailable.
+
+---
+
+### Edge Cases
+
+- What happens when the hosting provider's API is unreachable, returns an error, or the PR does not exist or the credentials lack access? (Clear failure, no partial report misrepresentation.)
+- How does the system handle a finding whose cited file, line range, or claim cannot be confirmed against the actual source? (See FR-013 and the verification-failure Clarification above.)
+- How are security findings handled when the SAST scanner produces no output at all? (No invented security findings; report notes the scanner yielded nothing.)
+- What happens when the SAST scanner is not installed or cannot run? (See FR-012 and the SAST-unavailable Clarification above.)
+- What happens when no requirements documentation of any kind is found in the project? (Freeform fallback unavailable — requirement findings report an "unclear" status with an explanation rather than inventing requirements.)
+- What happens when a suppressed finding's flagged code changes? (Suppression lapses; finding is reported again.)
+- What happens when a user supplies a filename plus line reference that matches no finding, or matches several? (No match: clear diagnostic that nothing was suppressed, exit code 1. Several matches: exit code 1 with a diagnostic listing the ambiguous matches on stderr — suppression is never applied silently or via an interactive prompt, per contracts/cli.md.)
+- What happens when the ZDR toggle is on but no zero-data-retention endpoint can be reached? (The route is refused rather than silently falling back to a non-ZDR route.)
+- What happens when the full report contains too many findings for the compact stdout summary? (Stdout shows counts and headline findings only; the full report is always in the report file.)
+- What happens when the LLM provider fails or rate-limits after some review types have completed? (See FR-027 and the LLM-failure Clarification above.)
+- What happens when a project uses a language outside the supported set? (Files are skipped and explicitly noted; the rest of the scope is reviewed.)
+
+## Requirements *(mandatory)*
+
+### Functional Requirements
+
+- **FR-001**: The system MUST support exactly four review scopes selectable per run: Project, Module/Package, File, and PR; scope is always user-directed.
+- **FR-002**: The system MUST fetch a PR's contents remotely via the hosting provider's API — never by reading local git state or a generated local diff.
+- **FR-003**: Every run MUST execute all of the following review types with no per-run toggles to skip any: code quality, security/OWASP, requirement fulfillment, test-coverage judgment, and performance reasoning. Suggested changes are not a separate review type — every finding from any review type carries its own recommendation text (FR-005). Exception: if the SAST scanner cannot run, the run proceeds with the remaining review types rather than failing entirely — see FR-012 for the full SAST-unavailable handling and reporting requirement.
+- **FR-004**: Test-coverage judgment MUST assess whether existing tests exercise the business logic of the reviewed code and MUST suggest improvements where they do not; it MUST NOT execute the test suite.
+- **FR-005**: Suggested changes MUST be delivered as recommendation text in the report, not as a generated diff or patch.
+- **FR-006**: The system MUST check reviewed code against the project's actual requirements and report gaps rather than only diff-level comments.
+- **FR-007**: Requirement findings MUST each carry a status of satisfied / partial / gap / unclear and MUST cite evidence (file/line references) wherever applicable.
+- **FR-008**: Requirements sources MUST be read from spec-kit-style structured documentation when present, with a freeform PRD/markdown fallback otherwise.
+- **FR-009**: The system MUST detect language and framework versions by parsing the project's real manifest files and MUST adapt review guidance accordingly.
+- **FR-010**: The system MUST honor project-specific conventions and style guidance (e.g., an AGENTS.md-equivalent) in its reviews.
+- **FR-011**: The system MUST support custom project-specific review rules expressed in natural language only.
+- **FR-012**: Security/OWASP findings MAY come from two sources: the integrated SAST scanner (OpenGrep) and LLM-identified findings for security issues outside a SAST tool's pattern-matching reach (e.g. business-logic issues such as broken access control). SAST-sourced findings are ground truth as reported by the tool. LLM-identified security findings MUST pass the same citation re-verification required under FR-013 before appearing in a report — they are not exempt. Every security finding MUST be labeled with its source ("sast" or "llm-verified"), matching the labels used in Key Entities and CLI output. When the SAST scanner is not installed or cannot run, the system MUST proceed with the remaining review types — including LLM-identified security findings, still subject to re-verification — and MUST state the specific reason security coverage is degraded (e.g. "OpenGrep not found on PATH") rather than a generic label; this is an environmental failure condition, not a per-run toggle available to the user.
+- **FR-013**: Before a finding is emitted, the system MUST re-read the finding's cited file/line to confirm the citation is real and matches the claim; SAST-sourced findings are exempt because they are grounded in the scanner's output directly; LLM-identified security findings are NOT exempt and MUST pass this citation re-check like any other code finding. Findings whose citation cannot be confirmed MUST NOT appear in the report as findings; each such failure MUST be recorded as a verification-failure note in the report summary (visible and attributable, not dropped silently).
+- **FR-014**: Findings MUST be produced in two shapes: location-based code findings (file, line range, severity, category, OWASP/CWE id where applicable, title, description, recommendation, confidence) and requirement-based findings (requirement reference, status, evidence, explanation). Severity MUST be one of `error`, `warning`, or `info`. Confidence MUST be a float in the range 0.0–1.0.
+- **FR-015**: Every report MUST include a summary with counts by severity and category, requirement-status counts, and an overall verdict. The verdict MUST be one of: `RequiresModification` (any error-severity finding, or any requirement with status gap), `RequiresReview` (no errors or gaps, but any warning-severity finding, or any requirement with status partial or unclear), or `Clean` (none of the above).
+- **FR-016**: The system MUST deliver a compact summary to stdout AND write the full report to a file; the file report MUST be Markdown so it can be posted directly as a PR comment without conversion. The report schema MUST carry a semver `schema_version`, and breaking changes to the schema MUST be recorded in `CHANGELOG.md` with a migration note. The report file path MUST be configurable via `--output` (contracts/cli.md), defaulting to `./veritas-report-<timestamp>.md` when not specified. The process exit code MUST be 0 for a complete review, 1 for a fatal error before any report could be produced, and 2 for a partial/incomplete review (FR-027). The compact stdout summary's "headline findings" (Principle VI) are every `error`-severity `CodeFinding`, capped at 10; when more than 10 exist, stdout notes the count of additional findings not shown (e.g. "+12 more, see full report") rather than omitting the cap silently.
+- **FR-017**: The system MUST support suppressing a finding via a local, git-tracked allowlist file keyed by a fingerprint of (file, category, flagged-code snippet), not by raw line numbers, so a suppression survives unrelated edits but lapses when the flagged code changes. To select the finding(s) to suppress, the system MUST accept a stable finding ID printed in the report, or alternatively a filename plus line reference resolved to the finding(s) covering those lines.
+- **FR-018**: The system MUST support un-suppressing (removing) existing suppression entries.
+- **FR-019**: The LLM backend MUST be fully configurable; the default MUST be free models obtained by querying OpenRouter at runtime for its `:free`-suffixed models.
+- **FR-020**: When the user configures their own API key (a hosted assistant provider such as Claude or ChatGPT, or a self-hosted endpoint), that provider MUST be used instead of the default.
+- **FR-021**: The system MUST support a zero-data-retention (ZDR) toggle that gates OpenRouter routing: off by default, and when enabled MUST restrict routing to zero-data-retention endpoints only. Whenever ZDR is off, the system MUST print a warning to stderr on every run stating that some free-tier models reserve the right to train on inputs/outputs, and recommending `VERITAS_ZDR=true` for reviews of proprietary or sensitive code.
+- **FR-022**: The system MUST review the supported languages: primary Python and Java; also supported JavaScript, C#/.NET, Go, and Rust; files outside the supported set are skipped and explicitly noted.
+- **FR-023**: The system MUST provide all capability through a command-line interface only; no IDE plugin in this phase.
+- **FR-024**: The report MUST make each finding attributable — recorded model, prompt version, and input revision — per the ratified constitution.
+- **FR-025**: Deterministic components of a review (SAST output, manifest-based version detection, requirement-status evidence citations) MUST be reproducible: the same input and configuration MUST yield the same deterministic findings and citations; LLM-narrated content MAY vary between runs and that variability is not a defect.
+- **FR-026**: Review nodes that perform read-only analysis MUST NOT be able to reach any write or execute capability; this boundary MUST be architectural (nothing reachable can write), not enforced only by a permission flag.
+- **FR-027**: If the LLM provider fails or rate-limits after some review types have completed, the system MUST write the report containing the completed types, MUST include a clear error describing the failure, and MUST mark the report as incomplete so it cannot be mistaken for a complete review.
+- **FR-028**: The system MUST support an opt-in `--post` flag on `veritas review --scope pr`. When set, after the report file is written, the system MUST post the full rendered Markdown report as a comment (GitHub) or note (GitLab) on the reviewed PR/MR via the hosting provider's API — posting is never automatic. `--post` MUST be rejected with a clear stderr diagnostic and exit code 1 when used with any scope other than `pr`. If the report file write succeeds but the post-to-hosting-provider call fails (network error, permission error, rate limit, etc.), this is non-fatal: the system MUST print a warning to stderr naming the failure reason and the report file's path, and MUST exit 0 — the written report file remains the authoritative deliverable regardless of posting outcome.
+
+### Key Entities *(include if feature involves data)*
+
+- **Review Run**: A single invocation of Veritas; captures scope (Project/Module/Package/File/PR), input revision, configuration, timing, and provenance (model and prompt version used).
+- **Code Finding**: A location-based finding with a stable finding ID, file, line range, severity, category, source ("sast" or "llm-verified"; set only for security-category findings, None for all other categories since no non-SAST tool exists today for them), optional OWASP/CWE id, title, description, recommendation, and confidence; grounded in verified citations or the SAST scanner's output.
+- **Requirement Finding**: A requirement-based finding with a requirement reference, a status of satisfied / partial / gap / unclear, evidence (file/line references where applicable), and explanation.
+- **Suppression Entry**: A git-tracked allowlist record keyed by a fingerprint of (file, category, flagged-code snippet); governs whether a matching finding is shown.
+- **Report**: The full review deliverable — the two finding collections plus summary; written in Markdown for direct posting as a PR comment.
+- **Requirements Source**: The project's requirements documentation, either spec-kit-style structured docs or a freeform PRD/markdown fallback, against which fulfillment is judged.
+
+## Success Criteria *(mandatory)*
+
+### Measurable Outcomes
+
+- **SC-001**: A lead can fetch and review a remote pull request via the hosting provider's API and receive a full report, with no local git or branch state required at any point.
+- **SC-002**: 100% of `CodeFinding`s (location-based findings) in every report — across all categories, including security — cite a real source location that exists in the reviewed code at review time. `RequirementFinding`s are covered separately by SC-005, since an `unclear` status may legitimately have no location.
+- **SC-003**: Every security/OWASP finding in every report is either directly attributable to the SAST scanner's output, or is an LLM-identified finding that has passed citation re-verification and is labeled accordingly; no security finding of either source bypasses its required grounding.
+- **SC-004**: The same project/scope/revision reviewed twice with unchanged configuration yields identical deterministic findings and evidence citations (LLM-narrated wording may differ).
+- **SC-005**: Every requirement-findable requirement documented for a reviewed scope receives a satisfied / partial / gap / unclear status, and every non-unclear status cites evidence where the code provides a location.
+- **SC-006**: A suppressed finding stays suppressed across unrelated edits to its file and reappears when the flagged code itself changes; suppressing and un-suppressing are each a single, one-step command (`veritas suppress`, `veritas unsuppress`) — no multi-step or interactive flow required for either.
+- **SC-007**: The full Markdown report, unmodified, can be posted as a PR comment on the hosting platform and renders correctly the first time: it is valid GitHub-Flavored Markdown (tables and code blocks render, no raw/unescaped schema fields visible), and every section required by FR-015/FR-016 is present.
+- **SC-008**: Users can select any of the four scopes per run and receive a report scoped exactly to the target, with no influence from any prior run.
+
+## Assumptions
+
+- The hosted code platforms in use expose a pull-request API; GitHub and GitLab are assumed for initial support, and the user configures hosting credentials (never committed) for the provider in use.
+- Users running in the primary flow have network access to the hosting provider and to the configured LLM backend; offline operation is out of scope for this phase.
+- The exact set of languages in scope is Python, Java (primary) and JavaScript, C#/.NET, Go, Rust (supported); other languages are skipped with an explicit note.
+- Requirements documentation (spec-kit-style structured docs or a freeform PRD/markdown fallback) is checked for and used when present; when none exists, per-requirement status becomes "unclear" with an explanation rather than an invented requirement list.
+- The LLM backend is standalone and configurable; the default free OpenRouter route is acceptable for development/testing, and the ZDR toggle (off by default) restricts routing when enabled. Ollama support is explicitly deferred.
+- Recommended changes are guidance text, not generated patches; applying changes remains the developer's task.
+- Management of suppressions and configuration happens through the CLI; no editor/IDE integration is provided in this phase.
+- The ratified constitution (`.specify/memory/constitution.md`) is authoritative for verification philosophy, SAST grounding and licensing, the read-only safety boundary, privacy/ZDR, suppression fingerprinting, determinism, and the explicit non-goals list; this spec inherits those constraints without re-deriving them.
+- This spec's scope MUST remain aligned with the locked product scope and out-of-scope list defined in `docs/veritas-requirements.md` (constitution's Orientation to the Requirements Reference); where the two conflict, the constitution's requirements-reference orientation governs until this spec is formally amended.

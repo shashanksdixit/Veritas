@@ -1,0 +1,112 @@
+"""LLM client (T007) — single entry point via LangChain's ``init_chat_model``.
+
+The resolved model string is ``<provider>:<model>`` (research.md §2):
+  * ``openai:...``   → OpenAI-compatible route (OpenRouter by default)
+  * ``anthropic:...``→ native Anthropic route (requires the optional
+    ``langchain-anthropic`` package — see FR-020 / T007).
+Never the openai SDK directly. Calls are wrapped with structured logging
+(latency, model, token usage — constitution Principle VIII).
+"""
+
+from __future__ import annotations
+
+import time
+
+from langchain.chat_models import init_chat_model  # type: ignore[import-untyped]
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from veritas.config.settings import Settings
+from veritas.llm.zdr import zdr_model_kwargs
+from veritas.utils.logging import Log
+
+
+def split_model_string(model_string: str) -> tuple[str, str]:
+    """Split ``<provider>:<model>``. A bare model id defaults to the openai prefix."""
+    if ":" in model_string:
+        provider, model_id = model_string.split(":", 1)
+    else:
+        provider, model_id = "openai", model_string
+    return provider, model_id
+
+
+def build_kwargs(settings: Settings, log: Log) -> dict:
+    """LangChain init_chat_model kwargs for the configured provider routing."""
+    provider, model_id = split_model_string(settings.model_runtime)
+    kwargs: dict = {"temperature": 0.0}
+
+    if provider == "openai":
+        # OpenAI-compatible route: OpenRouter by default, or any base_url the
+        # user configures (e.g. a self-hosted OpenAI-compatible endpoint).
+        kwargs["base_url"] = settings.base_url
+        if settings.api_key:
+            kwargs["api_key"] = settings.api_key
+        zdr_extra = zdr_model_kwargs(settings, log)
+        if zdr_extra:
+            kwargs["model_kwargs"] = zdr_extra
+    elif provider == "anthropic":
+        try:
+            import langchain_anthropic  # noqa: F401
+        except ImportError as exc:
+            raise RuntimeError(
+                "Native Anthropic support requires the optional extra. "
+                "Install it with: `pip install veritas[anthropic]` (langchain-anthropic)."
+            ) from exc
+        if settings.api_key:
+            kwargs["api_key"] = settings.api_key
+    else:
+        # Unknown provider prefix: treat like an OpenAI-compatible endpoint.
+        kwargs["base_url"] = settings.base_url
+        if settings.api_key:
+            kwargs["api_key"] = settings.api_key
+
+    # model_id here is the backend's own model identifier (e.g. OpenRouter
+    # catalog id "openai/gpt-4o-mini" or Anthropic's "claude-sonnet-4-6").
+    return provider, model_id, kwargs
+
+
+def build_chat_model(settings: Settings, log: Log | None = None):
+    log = log or Log()
+    provider, model_id, kwargs = build_kwargs(settings, log)
+    return init_chat_model(model=model_id, model_provider=provider, **kwargs)
+
+
+def runtime_model_id(settings: Settings) -> str:
+    """The backend model identifier recorded as ReviewRun.model_name."""
+    _provider, model_id, _kwargs = build_kwargs(settings, Log(stream=None))
+    return model_id
+
+
+class LLMClient:
+    """Thin wrapper around a LangChain chat model with structured logging."""
+
+    def __init__(self, settings: Settings, log: Log | None = None) -> None:
+        self.settings = settings
+        self.log = log or Log()
+        self._model = build_chat_model(settings, self.log)
+        self.model_name = runtime_model_id(settings)
+
+    def complete(self, system: str, user: str, *, max_tokens: int | None = None) -> str:
+        """Run one chat completion; returns the assistant text (never None)."""
+        messages = [SystemMessage(content=system), HumanMessage(content=user)]
+        started = time.monotonic()
+        error: str | None = None
+        try:
+            response = self._model.invoke(messages, **( {"max_tokens": max_tokens} if max_tokens else {}))
+            text = response.content or ""
+        except Exception as exc:  # noqa: BLE001 - record then re-raise for FR-027 handling
+            error = str(exc)
+            latency_ms = (time.monotonic() - started) * 1000
+            usage = {}
+            self.log.llm_call(self.model_name, latency_ms, error=error)
+            raise
+        latency_ms = (time.monotonic() - started) * 1000
+        metadata = response.response_metadata or {}
+        usage = metadata.get("token_usage") or metadata.get("usage") or {}
+        self.log.llm_call(
+            self.model_name,
+            latency_ms,
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            total_tokens=usage.get("total_tokens"),
+        )
+        return text if isinstance(text, str) else str(text)

@@ -1,21 +1,3 @@
-<!--
-SYNC IMPACT REPORT (temporary scratch, remove before commit)
-- Version change: 2.0.1 → 3.0.0 (MAJOR: redefinition of Principle II — the prior
-  MUST-NOT (LLM MUST NOT add security findings) becomes a conditional allowance
-  for verified LLM-identified security findings; backward-incompatible per policy)
-- Modified principles:
-  - II. SAST-Grounded Security → II. SAST-Grounded and Verified Security
-    (redefinition: LLM-identified security findings allowed only when they pass
-    the Principle I grounded citation re-check; every security finding labeled
-    by source; SAST tool licensing constraint retained verbatim)
-  - I. Grounded Verification (Anti-Hallucination): per-finding tool-source
-    exemption replaces the former per-category exemption; LLM-originated
-    findings within a tool-sourced category are NOT exempt from the re-read step
-- Added sections: none
-- Removed sections: none
-- Deferred TODOs: none
--->
-
 # Veritas Constitution
 
 ## Core Principles
@@ -65,8 +47,11 @@ infer "what changed since last time" (no diff-aware auto-scoping). Supported
 scopes: Project, Module/Package, File, and PR (remote, fetched via the hosting
 provider's API — not a local git diff). Every run MUST perform all mandatory
 review types — code quality, security/OWASP, requirement fulfillment, test-coverage
-judgment (without executing the test suite), performance reasoning, and
-suggested-change recommendations — with no per-run toggles that skip review types.
+judgment (without executing the test suite), and performance reasoning — with no
+per-run toggles that skip review types. Suggested changes are not a separate review
+type: every finding produced by any of the five types MUST carry its own
+recommendation text (FR-005), so a recommendation is never optional or skippable
+even though there is no dedicated 'suggested changes' node or category.
 
 ### V. Project-Aware Review
 Reviews MUST be grounded in real project context, not inferred or generic.
@@ -120,14 +105,18 @@ MUST be used instead. Ollama support/testing is deferred until the rest of the
 tool is complete.
 
 ### Privacy & Data Handling
-A zero-data-retention (ZDR) toggle MUST gate OpenRouter routing: off during early
-development/testing, and MUST be on for production-level use, restricting routing
-to zero-data-retention endpoints only — some free-tier models explicitly reserve
-the right to train on inputs/outputs. Source code and diffs MAY be sent to LLM
+A zero-data-retention (ZDR) toggle MUST gate OpenRouter routing, restricting it
+to zero-data-retention endpoints only when enabled. ZDR is off by default. Veritas
+has no way to detect whether a given run is significant/proprietary versus
+disposable, so this constitution does not mandate an environment-based default.
+Instead, whenever ZDR is off, the system MUST print a warning on every run stating
+that some free-tier models explicitly reserve the right to train on inputs/outputs,
+and recommending ZDR be enabled for any review of proprietary or sensitive code.
+Enabling ZDR is the user's informed choice; Veritas's constitutional obligation is
+to make that choice informed, not to guess at or enforce an environment. Source code and diffs MAY be sent to LLM
 providers only in accordance with the configured policy and never without explicit
 intent. Provider API keys MUST NOT be committed or logged; they MUST be read from
-environment variables or secure configuration. Secrets MUST NEVER appear in review
-output, logs, or error messages. Review artifacts are stored only as configured and
+environment variables or secure configuration. Secrets MUST NEVER appear in review output, logs, or error messages — including secrets discovered within reviewed code itself. Every review node MUST call a shared redaction utility on any user-facing finding text (title, description, cited snippet, requirement explanation) before adding it to state, so a hardcoded secret the review is reporting on is never echoed back verbatim in the report. Review artifacts are stored only as configured and
 MUST be purgeable on request.
 
 ### Read-Only Safety Boundary
@@ -165,4 +154,4 @@ MAJOR for backward-incompatible principle changes or removals, MINOR for added o
 materially expanded principles, PATCH for clarifications and wording fixes. Every
 PR and completed review MUST verify compliance with this constitution.
 
-**Version**: 3.0.0 | **Ratified**: 2026-09-15 | **Last Amended**: 2026-09-16
+**Version**: 5.0.0 | **Ratified**: 2026-09-15 | **Last Amended**: 2026-09-22
