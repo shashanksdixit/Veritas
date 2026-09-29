@@ -2,7 +2,31 @@
 
 from pathlib import Path
 
+import pytest
+
 from veritas.config.settings import Settings, load_settings
+
+# Every VERITAS_* env var `load_settings` reads, in `Settings.model_fields`
+# order (see veritas/config/settings.py: `_env_overrides` and the
+# `env_prefix="VERITAS_"` model config). Cleared before every test so a
+# developer's shell cannot leak into these precedence assertions; tests that
+# set a var deliberately do so after this fixture runs, via monkeypatch.
+_VERITAS_ENV_VARS = (
+    "VERITAS_API_KEY",
+    "VERITAS_BASE_URL",
+    "VERITAS_MODEL",
+    "VERITAS_ZDR",
+    "VERITAS_GITHUB_TOKEN",
+    "VERITAS_GITLAB_TOKEN",
+    "VERITAS_GITLAB_URL",
+    "VERITAS_PROVIDER",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_veritas_env(monkeypatch):
+    for name in _VERITAS_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
 
 
 def _write_config(tmp_path: Path) -> Path:
