@@ -48,7 +48,10 @@ _MAX_FILE_BYTES = 1_000_000
 
 
 def _normalize_rel(path: str) -> str:
-    return path.replace("\\", "/").lstrip("./")
+    normalized = path.replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
 
 
 def _collect_requirement_docs(root: str) -> dict[str, str]:

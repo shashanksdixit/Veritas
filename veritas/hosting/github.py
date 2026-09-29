@@ -18,10 +18,14 @@ from veritas.utils.logging import Log
 class GitHubAPIError(RuntimeError):
     """Fatal hosting API error (contracts/hosting-api.md)."""
 
-    def __init__(self, status: int, detail: str) -> None:
-        super().__init__(f"github API error: {status} — {detail}")
+    def __init__(self, status: int, detail: str, path: str | None = None) -> None:
+        message = f"github API error: {status} — {detail}"
+        if path is not None:
+            message += f" (path: {path})"
+        super().__init__(message)
         self.status = status
         self.detail = detail
+        self.path = path
 
 
 class GitHubClient:
@@ -44,21 +48,21 @@ class GitHubClient:
 
     # -- request plumbing -------------------------------------------------
 
-    def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+    def _request(self, method: str, url: str, *, path: str | None = None, **kwargs) -> httpx.Response:
         for attempt in range(self.MAX_RETRIES + 1):
             try:
                 response = self.client.request(method, url, **kwargs)
             except httpx.HTTPError as exc:
-                raise GitHubAPIError(0, f"network error: {exc}") from exc
+                raise GitHubAPIError(0, f"network error: {exc}", path=path) from exc
             if response.status_code == 429 and attempt < self.MAX_RETRIES:
                 self.log.warn(f"github API 429; retrying in {self.BACKOFF[attempt]}s")
                 time.sleep(self.BACKOFF[attempt])
                 continue
             if response.status_code >= 400:
                 detail = (response.text or "").strip()[:300] or f"HTTP {response.status_code}"
-                raise GitHubAPIError(response.status_code, detail)
+                raise GitHubAPIError(response.status_code, detail, path=path)
             return response
-        raise GitHubAPIError(429, "rate limited after retries")
+        raise GitHubAPIError(429, "rate limited after retries", path=path)
 
     def _paginate(self, url: str, params: dict | None = None) -> list[dict]:
         items: list[dict] = []
@@ -100,6 +104,7 @@ class GitHubClient:
             "GET",
             f"/repos/{owner}/{repo}/contents/{path.lstrip('/')}",
             params={"ref": ref},
+            path=path,
         )
         data = response.json()
         if data.get("encoding") == "base64":

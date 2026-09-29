@@ -16,10 +16,14 @@ from veritas.utils.logging import Log
 
 
 class GitLabAPIError(RuntimeError):
-    def __init__(self, status: int, detail: str) -> None:
-        super().__init__(f"gitlab API error: {status} — {detail}")
+    def __init__(self, status: int, detail: str, path: str | None = None) -> None:
+        message = f"gitlab API error: {status} — {detail}"
+        if path is not None:
+            message += f" (path: {path})"
+        super().__init__(message)
         self.status = status
         self.detail = detail
+        self.path = path
 
 
 class GitLabClient:
@@ -39,21 +43,21 @@ class GitLabClient:
     def project_id(owner: str, repo: str) -> str:
         return quote(f"{owner}/{repo}", safe="")
 
-    def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+    def _request(self, method: str, url: str, *, path: str | None = None, **kwargs) -> httpx.Response:
         for attempt in range(self.MAX_RETRIES + 1):
             try:
                 response = self.client.request(method, url, **kwargs)
             except httpx.HTTPError as exc:
-                raise GitLabAPIError(0, f"network error: {exc}") from exc
+                raise GitLabAPIError(0, f"network error: {exc}", path=path) from exc
             if response.status_code == 429 and attempt < self.MAX_RETRIES:
                 self.log.warn(f"gitlab API 429; retrying in {self.BACKOFF[attempt]}s")
                 time.sleep(self.BACKOFF[attempt])
                 continue
             if response.status_code >= 400:
                 detail = (response.text or "").strip()[:300] or f"HTTP {response.status_code}"
-                raise GitLabAPIError(response.status_code, detail)
+                raise GitLabAPIError(response.status_code, detail, path=path)
             return response
-        raise GitLabAPIError(429, "rate limited after retries")
+        raise GitLabAPIError(429, "rate limited after retries", path=path)
 
     def mr_details(self, owner: str, repo: str, iid: int) -> dict:
         pid = self.project_id(owner, repo)
@@ -75,6 +79,7 @@ class GitLabClient:
             "GET",
             f"/projects/{pid}/repository/files/{encoded}",
             params={"ref": ref},
+            path=path,
         )
         data = response.json()
         if data.get("encoding") == "base64":
