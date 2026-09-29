@@ -57,6 +57,15 @@ class Verdict(str, Enum):
     REQUIRES_MODIFICATION = "RequiresModification"  # any error-severity CodeFinding, or any RequirementFinding with status=gap
     REQUIRES_REVIEW = "RequiresReview"                # (none of the above) and any warning-severity CodeFinding, or any RequirementFinding with status in {partial, unclear}
     CLEAN = "Clean"                                    # none of the above
+
+class VerificationReasonCode(str, Enum):
+    """Why a VerificationFailure was raised (FR-013). The reason text names the
+    specific cause; this is the stable machine-readable key for it."""
+    FILE_NOT_IN_SCOPE = "file_not_in_scope"              # cited file not in the reviewed file set
+    LINE_OUT_OF_RANGE = "line_out_of_range"              # cited start line exceeds the file length
+    SNIPPET_FOUND_ELSEWHERE = "snippet_found_elsewhere"  # whitespace-normalized cited snippet occurs in the file, but not within the cited line window
+    SNIPPET_NOT_FOUND = "snippet_not_found"              # snippet occurs nowhere in the file
+    EVIDENCE_NOT_CONFIRMED = "evidence_not_confirmed"    # a RequirementFinding evidence citation could not be confirmed
 ```
 
 ---
@@ -174,7 +183,22 @@ class VerificationFailure(BaseModel):
     finding_id: str
     file: str
     line_range: LineRange
-    reason: str                      # e.g. "file not found", "line mismatch"
+    reason: str                      # e.g. "file not found", "line mismatch"; MUST
+                                      # name the specific cause, not a generic
+                                      # mismatch sentence (FR-013)
+    # FR-013 structured detail. Backward-compatible additions introduced in
+    # Report.schema_version 1.1.0: all four default to None, so a 1.0.0-shaped
+    # failure deserializes unchanged and still renders.
+    reason_code: "VerificationReasonCode | None" = None  # see VerificationReasonCode enum
+    claimed_snippet: str | None = None  # the snippet the reviewer cited; redact_secrets()
+                                         # then truncated to 200 chars before it
+                                         # enters state or the report
+    actual_snippet: str | None = None   # the text actually at the cited lines, when
+                                         # those lines exist; same redaction +
+                                         # 200-char truncation as claimed_snippet
+    found_at_lines: list[int] | None = None  # 1-based start lines where the snippet
+                                             # occurs, at most 5, ascending;
+                                             # snippet_found_elsewhere only
 
 class Summary(BaseModel):
     """Report summary counts (FR-015)."""
