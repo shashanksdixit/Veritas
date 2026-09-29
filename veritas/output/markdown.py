@@ -12,6 +12,7 @@ from veritas.models.entities import (
     Report,
     RequirementStatus,
     Severity,
+    Summary,
 )
 
 
@@ -45,6 +46,53 @@ def _code_block(text: str | None) -> str:
     return f"```text\n{text}\n```\n"
 
 
+_VERDICT_LEGEND: tuple[tuple[str, str], ...] = (
+    (
+        "`RequiresModification`",
+        "At least one error-severity finding or one requirement gap. Changes are needed before this is ready.",
+    ),
+    (
+        "`RequiresReview`",
+        "No errors or gaps, but at least one warning-severity finding or a requirement that is partial or "
+        "unclear. A person should look at these before approving.",
+    ),
+    (
+        "`Clean`",
+        "No errors, warnings, gaps, or partial/unclear requirements. Info-level notes may still be listed; "
+        "they do not affect the verdict.",
+    ),
+)
+
+_VERIFICATION_FAILURE_NOTE = (
+    "> Each proposed finding must cite a file, line range, and the exact code snippet it refers to. "
+    "Before a finding is allowed into this report, Veritas re-reads the file and checks that those lines "
+    "really contain that snippet. When they don't, the finding is dropped and listed here so nothing "
+    "disappears silently. A dropped finding does not mean your code has a problem; it means the reviewer's "
+    "claim could not be confirmed."
+)
+
+
+def _triggered_by_line(summary: Summary) -> str:
+    """Say which counts produced the verdict (FR-015)."""
+    errors = summary.severity_counts.get(Severity.ERROR, 0)
+    warnings = summary.severity_counts.get(Severity.WARNING, 0)
+    gaps = summary.requirement_status_counts.get(RequirementStatus.GAP, 0)
+    partial_unclear = summary.requirement_status_counts.get(
+        RequirementStatus.PARTIAL, 0
+    ) + summary.requirement_status_counts.get(RequirementStatus.UNCLEAR, 0)
+    return (
+        f"**Triggered by**: {errors} error(s), {gaps} requirement gap(s), "
+        f"{warnings} warning(s), {partial_unclear} partial/unclear requirement(s)"
+    )
+
+
+def _render_verdict_legend(out: list[str]) -> None:
+    """Static definition of all three verdict values (FR-015)."""
+    out.append("**What the verdicts mean**")
+    out.append("")
+    _render_table(out, ("Verdict", "Meaning"), list(_VERDICT_LEGEND))
+
+
 def render_markdown(report: Report) -> str:
     """Render the full report as GFM Markdown (SC-007)."""
     run = report.run
@@ -67,6 +115,9 @@ def render_markdown(report: Report) -> str:
     out.append("")
     summary = report.summary
     out.append(f"**Verdict**: `{summary.verdict.value}`")
+    out.append(_triggered_by_line(summary))
+    out.append("")
+    _render_verdict_legend(out)
     out.append("")
     rows = [
         ("Code findings", str(summary.total_code_findings)),
@@ -93,6 +144,8 @@ def render_markdown(report: Report) -> str:
 
     if summary.verification_failures:
         out.append("### Verification failures (FR-013)")
+        out.append("")
+        out.append(_VERIFICATION_FAILURE_NOTE)
         out.append("")
         _render_table(
             out,
