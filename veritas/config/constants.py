@@ -7,7 +7,7 @@ VERSION = "0.1.0"
 
 # Report output schema version (FR-016). Bump (and update CHANGELOG.md) on any
 # breaking change to Report/CodeFinding/RequirementFinding shape.
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 
 # Prompt set version, recorded in ReviewRun.prompt_version (FR-024). Prompt
 # files in review/prompts/ carry a `prompt_version:` header; this constant is

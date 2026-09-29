@@ -213,7 +213,7 @@ class Summary(BaseModel):
 
 class Report(BaseModel):
     """The full review deliverable (FR-016)."""
-    schema_version: str = "1.0.0"    # semver; bump on any breaking change to
+    schema_version: str = "1.1.0"    # semver; bump on any breaking change to
                                       # Report/CodeFinding/RequirementFinding shape,
                                       # per CHANGELOG.md (constitution Principle VIII)
     run: ReviewRun

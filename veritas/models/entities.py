@@ -10,6 +10,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from veritas.config.constants import SCHEMA_VERSION
+
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -46,6 +48,16 @@ class FindingSource(str, Enum):
 
     SAST = "sast"
     LLM_IDENTIFIED = "llm-verified"
+
+
+class VerificationReasonCode(str, Enum):
+    """Machine-readable cause of a VerificationFailure (FR-013)."""
+
+    FILE_NOT_IN_SCOPE = "file_not_in_scope"
+    LINE_OUT_OF_RANGE = "line_out_of_range"
+    SNIPPET_FOUND_ELSEWHERE = "snippet_found_elsewhere"
+    SNIPPET_NOT_FOUND = "snippet_not_found"
+    EVIDENCE_NOT_CONFIRMED = "evidence_not_confirmed"
 
 
 class RequirementStatus(str, Enum):
@@ -144,6 +156,14 @@ class VerificationFailure(BaseModel):
     file: str
     line_range: LineRange
     reason: str
+    # FR-013 structured detail — backward-compatible additions in schema 1.1.0.
+    # All default to None, so a 1.0.0-shaped failure still validates and renders.
+    # Truncation and the 5-line cap are enforced by the verification node (T066),
+    # not by validators here.
+    reason_code: VerificationReasonCode | None = None
+    claimed_snippet: str | None = None
+    actual_snippet: str | None = None
+    found_at_lines: list[int] | None = None
 
 
 class Summary(BaseModel):
@@ -162,7 +182,7 @@ class Summary(BaseModel):
 class Report(BaseModel):
     """The full review deliverable (FR-016)."""
 
-    schema_version: str = "1.0.0"
+    schema_version: str = SCHEMA_VERSION
     run: ReviewRun
     code_findings: list[CodeFinding] = Field(default_factory=list)
     requirement_findings: list[RequirementFinding] = Field(default_factory=list)
