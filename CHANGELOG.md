@@ -9,6 +9,8 @@ constitution Principle VIII / FR-016.
 ## [Unreleased]
 
 ### Added
+- Prompt version **1.1.0**: review prompts present line-numbered code and
+  instruct the model to cite shown line numbers; no report schema change.
 - Initial Veritas implementation for the `001-code-review` feature: CLI review
   (`project` / `module` / `file` / `pr` scopes), five review types (code
   quality, security/OWASP, requirements, test coverage, performance), grounded

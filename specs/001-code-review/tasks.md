@@ -193,6 +193,7 @@ description: "Task list for Veritas code review tool implementation"
 - [X] T065 Add `VerificationReasonCode` enum and the four optional `VerificationFailure` fields (`reason_code`, `claimed_snippet`, `actual_snippet`, `found_at_lines`) in `veritas/models/entities.py`, bump `Report.schema_version` to `1.1.0`, add a `CHANGELOG.md` entry recording the additive change and its migration note, and keep the existing schema tripwire test passing (FR-013)
 - [X] T066 [P] In `veritas/review/nodes/verification.py`, return a structured verification result carrying `reason_code`, a specific human-readable `reason` naming the actual cause, redacted-then-200-char-truncated `claimed_snippet`/`actual_snippet`, and `found_at_lines` (1-based, at most 5, ascending); unit tests covering all five reason codes, redaction applied before truncation, the 200-char truncation bound, and the 5-line cap (FR-013)
 - [X] T067 [P] Render `reason_code`, `claimed_snippet`, `actual_snippet` and `found_at_lines` in the Verification failures section of `veritas/output/markdown.py`; extend the renderer tests in `tests/unit/test_markdown_renderer.py` with a case where all four new fields are None, to prove old-shape failures still render (FR-013)
+- [X] T068 [P] Line-numbered, line-boundary-truncated code_package in veritas/review/nodes/common.py; prompt instruction to cite shown line numbers; PROMPT_VERSION 1.1.0; tests in tests/unit/ (FR-014)
 
 ---
 

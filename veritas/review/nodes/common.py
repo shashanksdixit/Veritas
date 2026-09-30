@@ -173,22 +173,57 @@ def snippet_for(finding: CodeFinding, files: dict[str, str]) -> str:
     return "\n".join(lines[start - 1 : end])
 
 
+_BLOCK_SEPARATOR = "\n\n"
+_TRUNCATION_MARKER = "…(truncated)"
+
+
+def _numbered_file_block(path: str, content: str, budget: int) -> str | None:
+    """Render one file as a header plus numbered lines, fitting ``budget``.
+
+    Each line is rendered as ``{n:>5}| {line}`` with 1-based ``n`` so the
+    reviewer copies citation line numbers rather than estimating them
+    (FR-014). Truncation only ever drops whole trailing lines, so no line is
+    ever split. Returns ``None`` when ``budget`` cannot hold the header, at
+    least one numbered line and the truncation marker: a file that cannot be
+    shown usefully is omitted rather than shown misleadingly.
+    """
+    header = f"### FILE: {path}"
+    lines = [f"{n:>5}| {line}" for n, line in enumerate(content.splitlines(), start=1)]
+    if not lines:
+        return header if len(header) <= budget else None
+    whole = "\n".join([header, *lines])
+    if len(whole) <= budget:
+        return whole
+    used = len(header) + 1
+    kept: list[str] = []
+    for line in lines:
+        if used + len(line) + 1 + len(_TRUNCATION_MARKER) > budget:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    if not kept:
+        return None
+    return "\n".join([header, *kept, _TRUNCATION_MARKER])
+
+
 def code_package(files: dict[str, str], *, max_files: int = 12, max_chars: int = 24_000) -> str:
-    """Build a bounded concatenation of scoped file contents for prompts."""
+    """Build a bounded, line-numbered concatenation of scoped file contents.
+
+    The returned string — headers, separators and truncation markers included —
+    never exceeds ``max_chars`` (FR-014).
+    """
     parts: list[str] = []
-    budget = max_chars
+    used = 0
     for path in sorted(files):
         if len(parts) >= max_files:
             break
-        content = files[path]
-        if budget <= 0:
+        separator = len(_BLOCK_SEPARATOR) if parts else 0
+        block = _numbered_file_block(path, files[path], max_chars - used - separator)
+        if block is None:
             break
-        block = f"### FILE: {path}\n{content}"
-        if len(block) > budget:
-            block = block[: budget - 12] + "\n…(truncated)"
         parts.append(block)
-        budget -= len(block)
-    return "\n\n".join(parts)
+        used += separator + len(block)
+    return _BLOCK_SEPARATOR.join(parts)
 
 
 def llm_findings(
