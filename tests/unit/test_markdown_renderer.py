@@ -15,6 +15,7 @@ from veritas.models.entities import (
     Summary,
     Verdict,
     VerificationFailure,
+    VerificationReasonCode,
 )
 from veritas.output.markdown import render_markdown
 
@@ -125,7 +126,7 @@ def test_triggered_by_line_counts_from_summary():
 
 def test_triggered_by_line_placed_immediately_after_verdict():
     md = render_markdown(_report())
-    verdict_line = "**Verdict**: `RequiresReview`\n**Triggered by**:"
+    verdict_line = "**Verdict**: `RequiresReview`\n\n**Triggered by**:"
     assert verdict_line in md
 
 
@@ -172,7 +173,7 @@ def test_verification_note_present_when_failures_exist():
     note_start = "> Each proposed finding must cite a file, line range, and the exact code snippet it refers to."
     assert heading + note_start in md
     assert "it means the reviewer's claim could not be confirmed." in md
-    assert md.index(note_start) < md.index("| Finding ID | File | Lines | Reason |")
+    assert md.index(note_start) < md.index("| Finding ID | File | Lines | Code | Reason |")
 
 
 def test_verification_note_absent_when_no_failures():
@@ -201,3 +202,154 @@ def test_pipe_escaped_in_cells():
     report.summary.verification_failures[0].reason = "multi | pipe"
     md = render_markdown(report)
     assert "| multi \\| pipe |" in md
+
+
+def _failure(**overrides) -> VerificationFailure:
+    base = {
+        "finding_id": "f-9",
+        "file": "src/app.py",
+        "line_range": LineRange(start_line=10, start_col=1, end_line=12, end_col=1),
+        "reason": "cited lines hold different code",
+    }
+    base.update(overrides)
+    return VerificationFailure(**base)
+
+
+def _report_with(*failures: VerificationFailure) -> Report:
+    report = _report()
+    report.summary.verification_failures = list(failures)
+    report.summary.verification_failure_count = len(failures)
+    return report
+
+
+def _verification_section(md: str) -> str:
+    start = md.index("### Verification failures (FR-013)")
+    end = md.index("## Code Findings")
+    return md[start:end]
+
+
+def _reason_code_legend_rows(section: str) -> list[str]:
+    """Data rows of the "Reason codes" legend table, in render order."""
+    assert "**Reason codes**" in section
+    table = section[section.index("**Reason codes**"):].split("## ")[0]
+    lines = [line for line in table.splitlines() if line.startswith("|")]
+    return lines[2:]
+
+
+def test_old_shape_failure_renders_with_empty_code_cell_and_no_legend_or_details():
+    md = render_markdown(_report_with(_failure()))
+    section = _verification_section(md)
+    assert "| f-9 | src/app.py | 10:12 |  | cited lines hold different code |" in section
+    assert "**Reason codes**" not in section
+    assert "<details>" not in section
+    assert "<summary>" not in section
+
+
+def test_snippet_found_elsewhere_renders_code_cell_legend_row_and_details():
+    failure = _failure(
+        reason_code=VerificationReasonCode.SNIPPET_FOUND_ELSEWHERE,
+        reason="the snippet is at lines 88-90, not 10-12",
+        claimed_snippet="import os",
+        actual_snippet="result = compute()",
+        found_at_lines=[88, 89, 90],
+    )
+    section = _verification_section(render_markdown(_report_with(failure)))
+    assert "| `snippet_found_elsewhere` |" in section
+    assert _reason_code_legend_rows(section) == [
+        "| `snippet_found_elsewhere` | The quoted code exists in the file, but not at the cited lines "
+        "(often a wrong line number). |"
+    ]
+    assert "<summary>f-9 — src/app.py:10-12 — snippet_found_elsewhere</summary>" in section
+    assert "**Reason**: the snippet is at lines 88-90, not 10-12" in section
+    assert "**Found at line(s)**: 88, 89, 90" in section
+    assert "**Claimed** (what the reviewer quoted):\n\n```\nimport os\n```" in section
+    assert "**Actual** (what is at the cited lines):\n\n```\nresult = compute()\n```" in section
+    assert section.index("**Found at line(s)**") < section.index("**Claimed**")
+
+
+def test_reason_and_found_at_lines_are_separate_paragraphs():
+    failure = _failure(
+        reason_code=VerificationReasonCode.SNIPPET_FOUND_ELSEWHERE,
+        reason="the snippet is at lines 88-90, not 10-12",
+        claimed_snippet="import os",
+        actual_snippet="result = compute()",
+        found_at_lines=[88, 89, 90],
+    )
+    section = _verification_section(render_markdown(_report_with(failure)))
+    assert (
+        "**Reason**: the snippet is at lines 88-90, not 10-12\n\n"
+        "**Found at line(s)**: 88, 89, 90\n\n"
+        "**Claimed** (what the reviewer quoted):\n\n```\nimport os\n```"
+    ) in section
+
+
+def test_snippet_not_found_renders_both_snippets_without_found_at_lines():
+    failure = _failure(
+        reason_code=VerificationReasonCode.SNIPPET_NOT_FOUND,
+        reason="the quoted snippet appears nowhere in the file",
+        claimed_snippet="eval(payload)",
+        actual_snippet="return None",
+    )
+    section = _verification_section(render_markdown(_report_with(failure)))
+    assert "**Reason**: the quoted snippet appears nowhere in the file" in section
+    assert "**Found at line(s)**" not in section
+    assert "**Claimed** (what the reviewer quoted):\n\n```\neval(payload)\n```" in section
+    assert "**Actual** (what is at the cited lines):\n\n```\nreturn None\n```" in section
+
+
+def test_evidence_not_confirmed_gets_legend_row_but_no_details():
+    failure = _failure(
+        finding_id="REQ-1",
+        reason="the cited evidence line does not exist",
+        reason_code=VerificationReasonCode.EVIDENCE_NOT_CONFIRMED,
+    )
+    section = _verification_section(render_markdown(_report_with(failure)))
+    assert "| `evidence_not_confirmed` | A requirement's cited evidence could not be confirmed. |" in section
+    assert "<details>" not in section
+
+
+def test_snippet_containing_backtick_run_is_fenced_one_longer():
+    failure = _failure(
+        reason_code=VerificationReasonCode.SNIPPET_NOT_FOUND,
+        reason="the quoted snippet appears nowhere in the file",
+        claimed_snippet='before\n```\nmid\nafter',
+    )
+    md = render_markdown(_report_with(failure))
+    section = _verification_section(md)
+    assert "````\nbefore\n```\nmid\nafter\n````" in section
+    assert "\n````\n\n</details>" in section
+    assert md.count("````") == 2
+    assert md.index("</details>") < md.index("## Code Findings")
+    after = md[md.index("</details>") + len("</details>"):]
+    assert after.startswith("\n\n## Code Findings\n")
+    assert "**Cited snippet**:\n\n```text\nimport os\n```" in after
+
+
+def test_pipe_in_reason_adds_no_extra_table_column():
+    failure = _failure(
+        reason_code=VerificationReasonCode.SNIPPET_NOT_FOUND,
+        reason="expected `a | b` but found `c | d`",
+        claimed_snippet="a | b",
+    )
+    section = _verification_section(render_markdown(_report_with(failure)))
+    header = next(line for line in section.splitlines() if "Finding ID" in line)
+    assert header == "| Finding ID | File | Lines | Code | Reason |"
+    assert "| expected `a \\| b` but found `c \\| d` |" in section
+    assert "````" not in section
+
+
+def test_html_special_chars_in_finding_id_escaped_in_summary():
+    failure = _failure(
+        finding_id='<script>alert("x&y")</script>',
+        reason_code=VerificationReasonCode.SNIPPET_NOT_FOUND,
+        reason="the quoted snippet appears nowhere in the file",
+        claimed_snippet="boom()",
+    )
+    section = _verification_section(render_markdown(_report_with(failure)))
+    assert (
+        "<summary>&lt;script&gt;alert(\"x&amp;y\")&lt;/script&gt; — "
+        "src/app.py:10-12 — snippet_not_found</summary>"
+    ) in section
+    assert "<script>" not in section[section.index("<details>"):]
+    assert '| <script>alert("x&y")</script> | src/app.py | 10:12 |' in section
+

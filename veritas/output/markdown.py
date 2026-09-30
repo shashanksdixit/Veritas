@@ -6,6 +6,8 @@ so the version is inspectable without parsing the report body."""
 
 from __future__ import annotations
 
+import html
+
 from veritas.models.entities import (
     Category,
     CodeFinding,
@@ -13,6 +15,8 @@ from veritas.models.entities import (
     RequirementStatus,
     Severity,
     Summary,
+    VerificationFailure,
+    VerificationReasonCode,
 )
 
 
@@ -46,6 +50,25 @@ def _code_block(text: str | None) -> str:
     return f"```text\n{text}\n```\n"
 
 
+def _fence(text: str) -> str:
+    """Fence ``text`` so a backtick run inside it cannot close the block early.
+
+    The fence is one backtick longer than the longest run of consecutive
+    backticks in ``text``, with a floor of three. No language tag: these
+    snippets are prose from a review, not a specific language.
+    """
+    longest = 0
+    run = 0
+    for char in text:
+        if char == "`":
+            run += 1
+            longest = max(longest, run)
+        else:
+            run = 0
+    ticks = "`" * max(3, longest + 1)
+    return f"{ticks}\n{text}\n{ticks}"
+
+
 _VERDICT_LEGEND: tuple[tuple[str, str], ...] = (
     (
         "`RequiresModification`",
@@ -62,6 +85,19 @@ _VERDICT_LEGEND: tuple[tuple[str, str], ...] = (
         "they do not affect the verdict.",
     ),
 )
+
+_REASON_CODE_MEANINGS: dict[VerificationReasonCode, str] = {
+    VerificationReasonCode.FILE_NOT_IN_SCOPE: "The cited file was not among the files reviewed.",
+    VerificationReasonCode.LINE_OUT_OF_RANGE: "The cited line is past the end of the file.",
+    VerificationReasonCode.SNIPPET_FOUND_ELSEWHERE: (
+        "The quoted code exists in the file, but not at the cited lines (often a wrong line number)."
+    ),
+    VerificationReasonCode.SNIPPET_NOT_FOUND: (
+        "The quoted code does not appear anywhere in the file (the reviewer likely invented it)."
+    ),
+    VerificationReasonCode.EVIDENCE_NOT_CONFIRMED: "A requirement's cited evidence could not be confirmed.",
+}
+
 
 _VERIFICATION_FAILURE_NOTE = (
     "> Each proposed finding must cite a file, line range, and the exact code snippet it refers to. "
@@ -93,6 +129,54 @@ def _render_verdict_legend(out: list[str]) -> None:
     _render_table(out, ("Verdict", "Meaning"), list(_VERDICT_LEGEND))
 
 
+def _render_reason_code_legend(out: list[str], failures: list[VerificationFailure]) -> None:
+    """Explain only the reason codes this report actually uses (FR-013)."""
+    present = {vf.reason_code for vf in failures}
+    rows = [
+        (f"`{code.value}`", _REASON_CODE_MEANINGS[code])
+        for code in VerificationReasonCode
+        if code in present
+    ]
+    if not rows:
+        return
+    out.append("**Reason codes**")
+    out.append("")
+    _render_table(out, ("Code", "Meaning"), rows)
+    out.append("")
+
+
+def _render_failure_detail(out: list[str], vf: VerificationFailure) -> None:
+    """Collapsed per-failure block with the snippets, when there are any."""
+    if vf.claimed_snippet is None and vf.actual_snippet is None:
+        return
+    summary_parts = [
+        vf.finding_id,
+        f"{vf.file}:{vf.line_range.start_line}-{vf.line_range.end_line}",
+    ]
+    if vf.reason_code is not None:
+        summary_parts.append(vf.reason_code.value)
+    out.append("<details>")
+    out.append(f"<summary>{html.escape(' — '.join(summary_parts), quote=False)}</summary>")
+    out.append("")
+    out.append(f"**Reason**: {vf.reason}")
+    out.append("")
+    if vf.found_at_lines is not None:
+        out.append(f"**Found at line(s)**: {', '.join(str(line) for line in vf.found_at_lines)}")
+        out.append("")
+    for label, snippet in (
+        ("**Claimed** (what the reviewer quoted):", vf.claimed_snippet),
+        ("**Actual** (what is at the cited lines):", vf.actual_snippet),
+    ):
+        if snippet is None:
+            continue
+        out.append(label)
+        out.append("")
+        out.append(_fence(snippet))
+        out.append("")
+    out.append("</details>")
+    out.append("")
+
+
 def render_markdown(report: Report) -> str:
     """Render the full report as GFM Markdown (SC-007)."""
     run = report.run
@@ -115,6 +199,7 @@ def render_markdown(report: Report) -> str:
     out.append("")
     summary = report.summary
     out.append(f"**Verdict**: `{summary.verdict.value}`")
+    out.append("")
     out.append(_triggered_by_line(summary))
     out.append("")
     _render_verdict_legend(out)
@@ -149,13 +234,22 @@ def render_markdown(report: Report) -> str:
         out.append("")
         _render_table(
             out,
-            ("Finding ID", "File", "Lines", "Reason"),
+            ("Finding ID", "File", "Lines", "Code", "Reason"),
             [
-                (vf.finding_id, vf.file, f"{vf.line_range.start_line}:{vf.line_range.end_line}", vf.reason)
+                (
+                    vf.finding_id,
+                    vf.file,
+                    f"{vf.line_range.start_line}:{vf.line_range.end_line}",
+                    f"`{vf.reason_code.value}`" if vf.reason_code is not None else "",
+                    vf.reason,
+                )
                 for vf in summary.verification_failures
             ],
         )
         out.append("")
+        _render_reason_code_legend(out, summary.verification_failures)
+        for vf in summary.verification_failures:
+            _render_failure_detail(out, vf)
 
     out.append("## Code Findings")
     out.append("")
