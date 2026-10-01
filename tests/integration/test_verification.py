@@ -288,3 +288,252 @@ def test_whitespace_drift_across_multiple_lines_verifies():
         verify_code_finding(_finding(snippet='print(  "hello"  )\n  secret=42', start=2, end=3), FILES)
         is None
     )
+
+
+# ---------------------------------------------------------------------------
+# T070 — citation correction (FR-013)
+# ---------------------------------------------------------------------------
+
+from veritas.models.entities import compute_fingerprint  # noqa: E402
+from veritas.review.nodes import verification as verification_module  # noqa: E402
+from veritas.review.nodes.verification import (  # noqa: E402
+    _find_snippet_spans,
+    correct_citation,
+)
+
+
+def _at(line: int) -> str:
+    """A file where line `line` holds NEEDLE and every other line is filler."""
+    return "\n".join("NEEDLE" if number == line else "filler" for number in range(1, 301))
+
+
+# A snippet occupying lines 19-23, so a citation to line 19 alone misses it.
+BLOCK_FILES = {"src/app.py": "\n".join(
+    ["filler"] * 18 + ["def handler():", "    x = 1", "    y = 2", "    z = 3", "    return x"] + ["filler"] * 5
+)}
+
+BLOCK_SNIPPET = "def handler():\n    x = 1\n    y = 2\n    z = 3\n    return x"
+
+
+def _correcting_finding(snippet: str, start: int, end: int, id: str = "f-corr") -> CodeFinding:
+    finding = _finding(snippet=snippet, start=start, end=end, id=id)
+    finding.file = "src/app.py"
+    return finding
+
+
+def test_find_snippet_spans_returns_first_and_last_line():
+    # The needle is whitespace-normalized by the caller, matching the existing
+    # _find_snippet_start_lines contract.
+    lines = BLOCK_FILES["src/app.py"].splitlines()
+    assert _find_snippet_spans("x=1y=2z=3", lines) == [(20, 22)]
+    # Uncapped, unlike found_at_lines: every occurrence is reported.
+    repeated = "dup\n" * 4
+    assert _find_snippet_spans("dup", repeated.splitlines()) == [(1, 1), (2, 2), (3, 3), (4, 4)]
+    assert _find_snippet_spans("", lines) == []
+    assert _find_snippet_spans("absent", lines) == []
+
+
+def test_citation_corrected_when_snippet_overlaps_cited_range():
+    # Snippet spans 19-23; the reviewer cited only line 19.
+    finding = _correcting_finding(BLOCK_SNIPPET, 19, 19)
+    corrected = correct_citation(finding, BLOCK_FILES)
+    assert corrected is not None
+    assert (corrected.line_range.start_line, corrected.line_range.end_line) == (19, 23)
+    assert corrected.citation_adjusted_from is not None
+    assert (
+        corrected.citation_adjusted_from.start_line,
+        corrected.citation_adjusted_from.end_line,
+    ) == (19, 19)
+
+
+def test_citation_corrected_when_cited_range_one_line_short():
+    # Cited 60-66 but the snippet really runs to line 67.
+    files = {"src/app.py": "\n".join(
+        ["filler"] * 59 + [f"line_{n} = {n}" for n in range(60, 68)] + ["filler"] * 3
+    )}
+    snippet = "\n".join(f"line_{n} = {n}" for n in range(60, 68))
+    finding = _correcting_finding(snippet, 60, 66, id="f-short")
+    corrected = correct_citation(finding, files)
+    assert corrected is not None
+    assert (corrected.line_range.start_line, corrected.line_range.end_line) == (60, 67)
+    assert (corrected.citation_adjusted_from.start_line, corrected.citation_adjusted_from.end_line) == (60, 66)
+
+
+def test_citation_corrected_within_two_lines_above_cited_line():
+    # Snippet at 239, cited 240 — one line past the cited start.
+    finding = _correcting_finding("NEEDLE", 240, 240, id="f-above")
+    files = {"src/app.py": _at(239)}
+    corrected = correct_citation(finding, files)
+    assert corrected is not None
+    assert (corrected.line_range.start_line, corrected.line_range.end_line) == (239, 239)
+
+
+def test_citation_corrected_exactly_two_lines_away():
+    # Snippet at 10, cited 12 — the boundary case, inclusive per FR-013.
+    files = {"src/app.py": _at(10)}
+    finding = _correcting_finding("NEEDLE", 12, 12, id="f-2away")
+    corrected = correct_citation(finding, files)
+    assert corrected is not None
+    assert (corrected.line_range.start_line, corrected.line_range.end_line) == (10, 10)
+
+
+def test_citation_not_corrected_three_lines_away():
+    # Snippet at 10, cited 13 — one line beyond tolerance, so the finding fails
+    # verification as before.
+    files = {"src/app.py": _at(10)}
+    finding = _correcting_finding("NEEDLE", 13, 13, id="f-3away")
+    assert correct_citation(finding, files) is None
+    failure = verify_code_finding(finding, files)
+    assert failure is not None
+    assert failure.reason_code == VerificationReasonCode.SNIPPET_FOUND_ELSEWHERE
+
+
+def test_citation_not_corrected_when_snippet_occurs_twice():
+    # Two NEEDLEs, one of them adjacent to the cited line. Ambiguity wins over
+    # proximity: the reviewer may have meant either occurrence.
+    content = "\n".join(
+        "NEEDLE" if number in (11, 12) else "filler" for number in range(1, 21)
+    )
+    files = {"src/app.py": content}
+    finding = _correcting_finding("NEEDLE", 10, 10, id="f-dup")
+    assert correct_citation(finding, files) is None
+    failure = verify_code_finding(finding, files)
+    assert failure is not None
+    assert failure.reason_code == VerificationReasonCode.SNIPPET_FOUND_ELSEWHERE
+
+
+def test_citation_not_corrected_without_snippet_or_in_scope_file():
+    assert correct_citation(_finding(snippet=None), FILES) is None
+    assert correct_citation(_finding(snippet=""), FILES) is None
+    orphan = _finding(snippet="NEEDLE", start=1, end=1, id="f-orphan")
+    orphan.file = "src/missing.py"
+    assert correct_citation(orphan, FILES) is None
+
+
+def test_correct_citation_does_not_mutate_input_finding():
+    finding = _correcting_finding(BLOCK_SNIPPET, 19, 19, id="f-pure")
+    before = finding.model_copy(deep=True)
+    corrected = correct_citation(finding, BLOCK_FILES)
+    assert corrected is not None
+    assert finding == before
+    assert finding.line_range.start_line == 19
+    assert finding.line_range.end_line == 19
+    assert finding.citation_adjusted_from is None
+
+
+def test_corrected_finding_keeps_id_and_suppression_fingerprint():
+    finding = _correcting_finding(BLOCK_SNIPPET, 19, 19, id="f-fp")
+    before = compute_fingerprint(finding.file, finding.category.value, finding.cited_snippet)
+    corrected = correct_citation(finding, BLOCK_FILES)
+    assert corrected is not None
+    assert corrected.id == "f-fp"
+    assert compute_fingerprint(
+        corrected.file, corrected.category.value, corrected.cited_snippet
+    ) == before
+
+
+def test_corrected_finding_uses_whole_line_columns():
+    # Matches build_code_finding's convention (common.py): start_col=1/end_col=1.
+    corrected = correct_citation(_correcting_finding(BLOCK_SNIPPET, 19, 19), BLOCK_FILES)
+    assert corrected is not None
+    assert (corrected.line_range.start_col, corrected.line_range.end_col) == (1, 1)
+
+
+class _RecordingLog:
+    """Captures log calls so tests can assert on the literal emitted text."""
+
+    def __init__(self) -> None:
+        self.info_lines: list[str] = []
+        self.warn_lines: list[str] = []
+
+    def info(self, message: str, **structured) -> None:
+        self.info_lines.append(message)
+
+    def warn(self, message: str, **structured) -> None:
+        self.warn_lines.append(message)
+
+    def error(self, message: str, **structured) -> None:
+        pass
+
+
+@dataclass
+class _NodeRuntime:
+    log: _RecordingLog | None = None
+
+
+def test_verify_node_corrects_citation_and_reports_it():
+    # One file holding three distinct situations at known line numbers:
+    # NEEDLE at 10 (verifies as cited), the block snippet at 19-23 (cited 19
+    # only — correctable), and FARCODE at 30 cited at 33 (three lines away —
+    # uncorrectable).
+    body = ["filler"] * 9 + ["NEEDLE"] + ["filler"] * 8 + BLOCK_SNIPPET.splitlines()
+    mixed = body + ["filler"] * 6 + ["FARCODE"] + ["filler"] * 6
+    assert mixed[9] == "NEEDLE" and mixed[29] == "FARCODE"
+    files = {"src/app.py": "\n".join(mixed)}
+
+    log = _RecordingLog()
+    verified = _correcting_finding("NEEDLE", 10, 10, id="f-verified")
+    correctable = _correcting_finding(BLOCK_SNIPPET, 19, 19, id="f-correctable")
+    uncorrectable = _correcting_finding("FARCODE", 33, 33, id="f-uncorrectable")
+    out = make_verify_node(_NodeRuntime(log))(
+        {"files": files, "code_findings": [verified, correctable, uncorrectable], "requirement_findings": []}
+    )
+    assert len(out["verified_code_findings"]) == 2
+    assert len(out["verification_failures"]) == 1
+    assert out["verification_failures"][0].finding_id == "f-uncorrectable"
+
+    by_id = {f.id: f for f in out["verified_code_findings"]}
+    assert by_id["f-verified"].line_range.start_line == 10
+    assert (by_id["f-correctable"].line_range.start_line, by_id["f-correctable"].line_range.end_line) == (19, 23)
+    assert by_id["f-correctable"].citation_adjusted_from is not None
+
+    assert log.info_lines == [
+        "citation corrected: f-correctable src/app.py 19-19 -> 19-23",
+        "verification: 2/3 code findings kept (1 citations corrected), 0/0 requirement findings kept",
+    ]
+
+
+def test_verify_node_keeps_sast_without_correcting(monkeypatch):
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("correct_citation must not run for SAST findings")
+
+    monkeypatch.setattr(verification_module, "correct_citation", _fail_if_called)
+    sast = _finding(snippet="NEEDLE", start=13, end=13, id="f-sast", source=FindingSource.SAST)
+    sast.file = "src/app.py"
+    before = sast.model_copy(deep=True)
+    out = make_verify_node(_NodeRuntime(_RecordingLog()))(
+        {
+            "files": {"src/app.py": _at(10)},
+            "code_findings": [sast],
+            "requirement_findings": [],
+        }
+    )
+    assert len(out["verified_code_findings"]) == 1
+    assert out["verification_failures"] == []
+    assert out["verified_code_findings"][0] == before
+
+
+def test_verify_node_correction_only_applies_to_found_elsewhere(monkeypatch):
+    # A snippet that occurs nowhere is a fabricated claim, not a near miss: the
+    # correction path must not be consulted at all.
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("correction must not run for snippet_not_found")
+
+    monkeypatch.setattr(verification_module, "correct_citation", _fail_if_called)
+    fabricated = _correcting_finding("def nowhere(): pass", 1, 1, id="f-fake")
+    out = make_verify_node(_NodeRuntime(_RecordingLog()))(
+        {"files": BLOCK_FILES, "code_findings": [fabricated], "requirement_findings": []}
+    )
+    assert out["verified_code_findings"] == []
+    assert out["verification_failures"][0].reason_code == VerificationReasonCode.SNIPPET_NOT_FOUND
+
+
+def test_verification_summary_reports_zero_corrections_when_none_needed():
+    log = _RecordingLog()
+    out = make_verify_node(_NodeRuntime(log))(
+        {"files": FILES, "code_findings": [_finding(snippet='print("hello")', id="f-ok")], "requirement_findings": []}
+    )
+    assert len(out["verified_code_findings"]) == 1
+    assert log.info_lines == [
+        "verification: 1/1 code findings kept (0 citations corrected), 0/0 requirement findings kept"
+    ]

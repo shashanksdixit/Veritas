@@ -9,6 +9,12 @@ are ground truth and exempt per-finding by actual source.
 Each recorded failure carries a structured cause (`reason_code`) plus the
 redacted, truncated snippets and off-window line numbers that explain it (T066),
 so a reader can tell *why* a claim was dropped without re-running the tool.
+
+A near-miss citation is not dropped: when the snippet occurs exactly once and
+sits within two lines of the cited range, the citation is corrected to the real
+location and the reviewer's original range is preserved in
+``citation_adjusted_from`` (T070, FR-013). Corrections are logged and surfaced in
+the report — never silent.
 """
 
 from __future__ import annotations
@@ -65,6 +71,22 @@ def _prepare_snippet(text: str | None) -> str | None:
     return redacted[: SNIPPET_MAX_CHARS - 1] + "…"
 
 
+def _strip_with_line_map(lines: list[str]) -> tuple[str, list[int]]:
+    """Whitespace-stripped file text plus a per-character 1-based line map.
+
+    Shared by every matcher below so "does this snippet match" and "where does it
+    live" can never drift apart: both read the same text through the same map.
+    """
+    stripped_chars: list[str] = []
+    origin_lines: list[int] = []
+    for number, line in enumerate(lines, start=1):
+        for char in line:
+            if not char.isspace():
+                stripped_chars.append(char)
+                origin_lines.append(number)
+    return "".join(stripped_chars), origin_lines
+
+
 def _find_snippet_start_lines(expected_normalized: str, lines: list[str]) -> tuple[list[int], int]:
     """Locate a normalized snippet in the file, ignoring whitespace.
 
@@ -77,14 +99,7 @@ def _find_snippet_start_lines(expected_normalized: str, lines: list[str]) -> tup
     """
     if not expected_normalized:
         return ([], 0)
-    stripped_chars: list[str] = []
-    origin_lines: list[int] = []
-    for number, line in enumerate(lines, start=1):
-        for char in line:
-            if not char.isspace():
-                stripped_chars.append(char)
-                origin_lines.append(number)
-    stripped = "".join(stripped_chars)
+    stripped, origin_lines = _strip_with_line_map(lines)
 
     start_lines: list[int] = []
     total = 0
@@ -179,6 +194,79 @@ def verify_code_finding(finding: CodeFinding, files: dict[str, str]) -> Verifica
     return None
 
 
+def _find_snippet_spans(expected_normalized: str, lines: list[str]) -> list[tuple[int, int]]:
+    """Every occurrence of a normalized snippet as an inclusive 1-based span.
+
+    Unlike :func:`_find_snippet_start_lines` this returns the full ``(s, e)`` span
+    of each hit — ``s`` the line of the occurrence's first character, ``e`` the
+    line of its last — and is deliberately uncapped, because citation correction
+    needs to know that a snippet occurs *exactly* once before it will move a
+    finding. Advances one character per hit so overlapping occurrences all count.
+    """
+    if not expected_normalized:
+        return []
+    stripped, origin_lines = _strip_with_line_map(lines)
+    spans: list[tuple[int, int]] = []
+    position = stripped.find(expected_normalized)
+    while position != -1:
+        spans.append((origin_lines[position], origin_lines[position + len(expected_normalized) - 1]))
+        position = stripped.find(expected_normalized, position + 1)
+    return spans
+
+
+# How far (in lines) a snippet's real location may sit from the cited range and
+# still count as a near-miss the reviewer meant to point at (FR-013).
+CITATION_TOLERANCE_LINES = 2
+
+
+def correct_citation(finding: CodeFinding, files: dict[str, str]) -> CodeFinding | None:
+    """Return a copy of ``finding`` whose citation is corrected, or None.
+
+    A citation that misses by a line or two is not a fabricated finding: the code
+    the reviewer cited is real, they just pointed at it imprecisely. When the
+    whitespace-normalized snippet occurs *exactly once* in the file and that
+    occurrence is within :data:`CITATION_TOLERANCE_LINES` of the cited range, the
+    citation is corrected to the real span ``(s, e)`` and the range the reviewer
+    originally gave is preserved in ``citation_adjusted_from`` so the adjustment
+    stays visible in the report (FR-013 — corrections are never silent).
+
+    Returns None — leaving the finding to fail verification as before — when the
+    snippet is absent, the file is out of scope, the occurrence is ambiguous
+    (more than one match), or the real location is too far from the cited range to
+    be the same citation. The input finding is never mutated.
+    """
+    if not finding.cited_snippet:
+        return None
+    content = files.get(finding.file)
+    if content is None:
+        return None
+    expected = _normalize(finding.cited_snippet)
+    if not expected:
+        return None
+
+    spans = _find_snippet_spans(expected, content.splitlines())
+    if len(spans) != 1:
+        return None  # ambiguous: cannot attribute the snippet to one location
+    start, end = spans[0]
+
+    cited_start = finding.line_range.start_line
+    cited_end = finding.line_range.end_line
+    if start > cited_end + CITATION_TOLERANCE_LINES or end < cited_start - CITATION_TOLERANCE_LINES:
+        return None  # too far from the cited range to be the same citation
+
+    # Columns follow build_code_finding's convention (common.py): a citation that
+    # spans whole lines records start_col=1 / end_col=1, the LLM default.
+    corrected_range = LineRange(
+        start_line=start,
+        start_col=1,
+        end_line=end,
+        end_col=1,
+    )
+    return finding.model_copy(
+        update={"line_range": corrected_range, "citation_adjusted_from": finding.line_range}
+    )
+
+
 def verify_requirement_finding(rf: RequirementFinding, files: dict[str, str]) -> list[str]:
     """Return evidence refs that fail to verify (FR-013 / SC-005).
 
@@ -214,6 +302,7 @@ def make_verify_node(runtime) -> Callable[[ReviewState], dict]:
         files = state["files"]
         kept: list[CodeFinding] = []
         failures: list[VerificationFailure] = []
+        corrections = 0
         for finding in state["code_findings"]:
             if finding.source == FindingSource.SAST:
                 kept.append(finding)  # ground truth (FR-013 exemption by actual source)
@@ -221,9 +310,26 @@ def make_verify_node(runtime) -> Callable[[ReviewState], dict]:
             failure = verify_code_finding(finding, files)
             if failure is None:
                 kept.append(finding)
-            else:
-                failures.append(failure)
-                _warn(f"verification failed: {finding.id} {finding.file} — {failure.reason}")
+                continue
+            # A near-miss citation is a real finding pointed at imprecisely, so
+            # try to correct it rather than drop it (FR-013). Only the
+            # found-elsewhere case is correctable: the snippet exists somewhere in
+            # the file, which is what makes a corrected citation verifiable.
+            corrected = None
+            if failure.reason_code is VerificationReasonCode.SNIPPET_FOUND_ELSEWHERE:
+                corrected = correct_citation(finding, files)
+            if corrected is not None:
+                kept.append(corrected)
+                corrections += 1
+                if log is not None:
+                    log.info(
+                        f"citation corrected: {corrected.id} {corrected.file} "
+                        f"{finding.line_range.start_line}-{finding.line_range.end_line} -> "
+                        f"{corrected.line_range.start_line}-{corrected.line_range.end_line}"
+                    )
+                continue
+            failures.append(failure)
+            _warn(f"verification failed: {finding.id} {finding.file} — {failure.reason}")
 
         req_kept: list[RequirementFinding] = []
         for rf in state["requirement_findings"]:
@@ -244,7 +350,8 @@ def make_verify_node(runtime) -> Callable[[ReviewState], dict]:
 
         if log is not None:
             log.info(
-                f"verification: {len(kept)}/{len(state['code_findings'])} code findings, "
+                f"verification: {len(kept)}/{len(state['code_findings'])} code findings kept "
+                f"({corrections} citations corrected), "
                 f"{len(req_kept)}/{len(state['requirement_findings'])} requirement findings kept"
             )
         return {
