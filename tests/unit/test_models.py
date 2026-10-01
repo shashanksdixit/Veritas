@@ -98,6 +98,6 @@ def test_report_roundtrip_json():
             verdict=V.CLEAN,
         ),
     )
-    assert report.schema_version == "1.1.0"
+    assert report.schema_version == "1.2.0"
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.run.id == report.run.id

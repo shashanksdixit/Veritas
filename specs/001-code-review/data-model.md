@@ -126,6 +126,14 @@ class CodeFinding(BaseModel):
     confidence: float                # 0.0–1.0, reviewer's confidence
     # Citation (for verification, FR-013)
     cited_snippet: str | None = None  # the code snippet the finding references
+    # FR-013 citation correction. Backward-compatible addition introduced in
+    # Report.schema_version 1.2.0: defaults to None, so a 1.0.0/1.1.0-shaped
+    # finding deserializes unchanged and still renders.
+    citation_adjusted_from: "LineRange | None" = None
+                                      # the original line range cited by the
+                                      # reviewer, kept when verification
+                                      # corrected the citation (FR-013);
+                                      # None when the citation verified as cited
     # Suppression
     is_suppressed: bool = False
     suppression_entry: "SuppressionEntry | None" = None
@@ -213,7 +221,7 @@ class Summary(BaseModel):
 
 class Report(BaseModel):
     """The full review deliverable (FR-016)."""
-    schema_version: str = "1.1.0"    # semver; bump on any breaking change to
+    schema_version: str = "1.2.0"    # semver; bump on any breaking change to
                                       # Report/CodeFinding/RequirementFinding shape,
                                       # per CHANGELOG.md (constitution Principle VIII)
     run: ReviewRun

@@ -134,6 +134,11 @@ class CodeFinding(BaseModel):
     recommendation: str
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     cited_snippet: str | None = None
+    # FR-013 citation correction — backward-compatible addition in schema 1.2.0.
+    # The reviewer's original range when verification corrected the citation;
+    # None when the citation verified as cited. Defaults to None, so a
+    # 1.0.0/1.1.0-shaped finding still validates and renders.
+    citation_adjusted_from: LineRange | None = None
     is_suppressed: bool = False
     suppression_entry: SuppressionEntry | None = None
 

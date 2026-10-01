@@ -16,6 +16,11 @@ constitution Principle VIII / FR-016.
   quality, security/OWASP, requirements, test coverage, performance), grounded
   citation verification, suppression allowlist, project-aware review, Markdown
   report plus compact stdout summary, and optional PR-comment posting.
+- Report schema **1.2.0**: additive change (FR-013). Adds the optional
+  `CodeFinding.citation_adjusted_from` field (a `LineRange`), recording the
+  reviewer's original cited range when verification corrected a near-miss
+  citation. Migration: 1.0.0 and 1.1.0 reports remain valid; the field defaults
+  to null.
 - Report schema **1.1.0**: additive change (FR-013). Adds the
   `VerificationReasonCode` enum (`file_not_in_scope`, `line_out_of_range`,
   `snippet_found_elsewhere`, `snippet_not_found`, `evidence_not_confirmed`) and
