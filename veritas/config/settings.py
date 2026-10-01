@@ -17,6 +17,7 @@ import json
 import os
 import tomllib
 from pathlib import Path
+from typing import get_origin
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -29,6 +30,11 @@ from veritas.config.constants import (
 )
 
 _SECRET_FIELDS = frozenset({"api_key", "github_token", "gitlab_token"})
+
+# Immutable module-level default for [review] exclude (FR-029): a pattern ending
+# in "/" matches every path under that directory prefix. Copied per Settings
+# instance, never shared.
+DEFAULT_EXCLUDE: tuple[str, ...] = (".specify/",)
 
 
 class Settings(BaseSettings):
@@ -53,6 +59,13 @@ class Settings(BaseSettings):
     gitlab_token: str | None = Field(default=None, description="VERITAS_GITLAB_TOKEN")
     gitlab_url: str = Field(default="https://gitlab.com", description="VERITAS_GITLAB_URL")
     provider: str = Field(default="github")  # hosting provider: github | gitlab
+    # [review] section (FR-029)
+    exclude: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_EXCLUDE),
+        description="VERITAS_EXCLUDE (JSON list, e.g. '[\".specify/\"]')",
+    )
+    batch_chars: int = Field(default=48000, ge=1000, description="VERITAS_BATCH_CHARS")
+    max_batches: int = Field(default=8, ge=1, description="VERITAS_MAX_BATCHES")
 
     @property
     def model_runtime(self) -> str:
@@ -97,6 +110,10 @@ def _flatten_toml(data: dict) -> dict:
     flat["gitlab_url"] = hosting.get("gitlab_url")
     flat["github_token"] = hosting.get("github_token")
     flat["gitlab_token"] = hosting.get("gitlab_token")
+    review = data.get("review", {})
+    flat["exclude"] = review.get("exclude")
+    flat["batch_chars"] = review.get("batch_chars")
+    flat["max_batches"] = review.get("max_batches")
     return {k: v for k, v in flat.items() if v is not None}
 
 
@@ -106,13 +123,26 @@ def _env_overrides() -> dict:
     pydantic-settings lets explicit init kwargs win over env vars; by passing
     env values into the final Settings construction last, env remains the
     highest-priority layer per the documented ordering (contracts/cli.md).
+
+    List-valued fields (``exclude``) arrive from the environment in the JSON
+    array form pydantic-settings requires for complex types, and are decoded
+    here so env handling matches that format rather than a bespoke syntax.
     """
     overrides: dict = {}
-    for field_name in Settings.model_fields:
+    for field_name, field in Settings.model_fields.items():
         env_name = f"VERITAS_{field_name.upper()}"
         value = os.environ.get(env_name)
-        if value is not None:
-            overrides[field_name] = value
+        if value is None:
+            continue
+        if get_origin(field.annotation) is list and not isinstance(value, list):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                raise ValueError(
+                    f"{env_name} must be a JSON array of strings, "
+                    f"for example {env_name}='[\".specify/\"]'; got: {value}"
+                ) from None
+        overrides[field_name] = value
     return overrides
 
 
