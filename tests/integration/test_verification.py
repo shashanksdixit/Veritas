@@ -15,10 +15,14 @@ from veritas.models.entities import (
     RequirementStatus,
     Severity,
     VerificationReasonCode,
+    compute_fingerprint,
 )
+from veritas.review.nodes import verification as verification_module
 from veritas.review.nodes.verification import (
     FOUND_AT_MAX,
     SNIPPET_MAX_CHARS,
+    _find_snippet_spans,
+    correct_citation,
     make_verify_node,
     verify_code_finding,
     verify_requirement_finding,
@@ -294,14 +298,6 @@ def test_whitespace_drift_across_multiple_lines_verifies():
 # T070 — citation correction (FR-013)
 # ---------------------------------------------------------------------------
 
-from veritas.models.entities import compute_fingerprint  # noqa: E402
-from veritas.review.nodes import verification as verification_module  # noqa: E402
-from veritas.review.nodes.verification import (  # noqa: E402
-    _find_snippet_spans,
-    correct_citation,
-)
-
-
 def _at(line: int) -> str:
     """A file where line `line` holds NEEDLE and every other line is filler."""
     return "\n".join("NEEDLE" if number == line else "filler" for number in range(1, 301))
@@ -489,7 +485,7 @@ def test_verify_node_corrects_citation_and_reports_it():
 
     assert log.info_lines == [
         "citation corrected: f-correctable src/app.py 19-19 -> 19-23",
-        "verification: 2/3 code findings kept (1 citations corrected), 0/0 requirement findings kept",
+        "verification: 2/3 code findings kept (1 citation(s) corrected), 0/0 requirement findings kept",
     ]
 
 
@@ -535,5 +531,5 @@ def test_verification_summary_reports_zero_corrections_when_none_needed():
     )
     assert len(out["verified_code_findings"]) == 1
     assert log.info_lines == [
-        "verification: 1/1 code findings kept (0 citations corrected), 0/0 requirement findings kept"
+        "verification: 1/1 code findings kept (0 citation(s) corrected), 0/0 requirement findings kept"
     ]

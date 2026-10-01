@@ -353,3 +353,88 @@ def test_html_special_chars_in_finding_id_escaped_in_summary():
     assert "<script>" not in section[section.index("<details>"):]
     assert '| <script>alert("x&y")</script> | src/app.py | 10:12 |' in section
 
+
+# ---------------------------------------------------------------------------
+# T071 — citation correction is visible in the report (FR-013)
+# ---------------------------------------------------------------------------
+
+def _corrected(**overrides) -> CodeFinding:
+    """The standard finding with its citation corrected from 240-240 to 239-239."""
+    finding = CodeFinding(
+        id="f-2",
+        file="src/app.py",
+        line_range=LineRange(start_line=239, start_col=1, end_line=239, end_col=1),
+        severity=Severity.WARNING,
+        category=Category.CODE_QUALITY,
+        source=FindingSource.LLM_IDENTIFIED,
+        title="Unused import",
+        description="os is imported but unused.",
+        recommendation="Remove it.",
+        confidence=0.9,
+        cited_snippet="import os",
+        citation_adjusted_from=LineRange(start_line=240, start_col=1, end_line=240, end_col=1),
+    )
+    if overrides:
+        finding = finding.model_copy(update=overrides)
+    return finding
+
+
+def _field_rows(md: str) -> list[str]:
+    """Data rows of the first code finding's Field/Value table, in render order."""
+    table = md[md.index("| Field | Value |"):].split("**Description**")[0]
+    return [line for line in table.splitlines() if line.startswith("|")][2:]
+
+
+def _metrics_rows(md: str) -> list[str]:
+    """Data rows of the Summary Metric/Count table, in render order."""
+    table = md[md.index("| Metric | Count |"):].split("### Requirement status counts")[0]
+    return [line for line in table.splitlines() if line.startswith("|")][2:]
+
+
+def test_corrected_citation_renders_citation_adjusted_row():
+    md = render_markdown(_report(code_findings=[_corrected()]))
+    # The heading shows the corrected location, and the row shows the correction.
+    assert "### `src/app.py`:239: Unused import *(LLM-verified)*" in md
+    assert "| Citation adjusted | from 240-240 to 239-239 |" in md
+
+
+def test_citation_adjusted_row_is_last_field_row():
+    rows = _field_rows(render_markdown(_report(code_findings=[_corrected()])))
+    assert len(rows) == 8  # the 7 standard field rows plus the correction row
+    assert rows[-1] == "| Citation adjusted | from 240-240 to 239-239 |"
+    assert rows[-2].startswith("| Suppressed |")
+
+
+def test_uncorrected_finding_has_no_citation_adjusted_row():
+    md = render_markdown(_report())
+    assert "Citation adjusted" not in md
+    assert len(_field_rows(md)) == 7
+
+
+def test_metrics_citations_adjusted_counts_corrected_findings():
+    both = render_markdown(_report(code_findings=[_corrected(), _corrected(id="f-3")]))
+    assert "| Citations adjusted | 2 |" in both
+    none = render_markdown(_report())
+    assert "| Citations adjusted | 0 |" in none
+
+
+def test_metrics_citations_adjusted_rendered_even_with_no_findings():
+    md = render_markdown(_report(code_findings=[], requirement_findings=[]))
+    assert "| Citations adjusted | 0 |" in md
+
+
+def test_metrics_citations_adjusted_row_immediately_after_verification_failures():
+    labels = [
+        row.split("|")[1].strip() for row in _metrics_rows(render_markdown(_report(code_findings=[_corrected()])))
+    ]
+    assert labels.index("Citations adjusted") == labels.index("Verification failures") + 1
+
+
+def test_citation_adjusted_value_spans_multiple_lines():
+    finding = _corrected(
+        line_range=LineRange(start_line=19, start_col=1, end_line=23, end_col=1),
+        citation_adjusted_from=LineRange(start_line=19, start_col=1, end_line=19, end_col=1),
+    )
+    md = render_markdown(_report(code_findings=[finding]))
+    assert "| Citation adjusted | from 19-19 to 19-23 |" in md
+

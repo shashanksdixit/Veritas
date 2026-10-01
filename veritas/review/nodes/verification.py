@@ -351,7 +351,7 @@ def make_verify_node(runtime) -> Callable[[ReviewState], dict]:
         if log is not None:
             log.info(
                 f"verification: {len(kept)}/{len(state['code_findings'])} code findings kept "
-                f"({corrections} citations corrected), "
+                f"({corrections} citation(s) corrected), "
                 f"{len(req_kept)}/{len(state['requirement_findings'])} requirement findings kept"
             )
         return {

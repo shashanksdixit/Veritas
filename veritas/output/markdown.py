@@ -108,6 +108,15 @@ _VERIFICATION_FAILURE_NOTE = (
 )
 
 
+def _citations_adjusted(report: Report) -> int:
+    """How many code findings had their citation corrected (FR-013).
+
+    Counted from the findings themselves rather than read off ``Summary``: this is
+    derivable state, so it does not need a schema field of its own.
+    """
+    return sum(1 for finding in report.code_findings if finding.citation_adjusted_from is not None)
+
+
 def _triggered_by_line(summary: Summary) -> str:
     """Say which counts produced the verdict (FR-015)."""
     errors = summary.severity_counts.get(Severity.ERROR, 0)
@@ -208,6 +217,7 @@ def render_markdown(report: Report) -> str:
         ("Code findings", str(summary.total_code_findings)),
         ("Requirement findings", str(summary.total_requirement_findings)),
         ("Verification failures", str(summary.verification_failure_count)),
+        ("Citations adjusted", str(_citations_adjusted(report))),
     ]
     for sev in Severity:
         rows.append((f"Severity: {sev.value}", str(summary.severity_counts.get(sev, 0))))
@@ -259,19 +269,28 @@ def render_markdown(report: Report) -> str:
     for finding in report.code_findings:
         out.append(f"### `{finding.file}`:{finding.line_range.start_line}: {finding.title}{_source_label(finding)}")
         out.append("")
-        _render_table(
-            out,
-            ("Field", "Value"),
-            [
-                ("Severity", _severity_label(finding.severity)),
-                ("Category", _category_label(finding.category)),
-                ("Confidence", f"{finding.confidence:.2f}"),
-                ("OWASP", finding.owasp_id or "—"),
-                ("CWE", finding.cwe_id or "—"),
-                ("Source", finding.source.value if finding.source else "—"),
-                ("Suppressed", "yes" if finding.is_suppressed else "no"),
-            ],
-        )
+        field_rows = [
+            ("Severity", _severity_label(finding.severity)),
+            ("Category", _category_label(finding.category)),
+            ("Confidence", f"{finding.confidence:.2f}"),
+            ("OWASP", finding.owasp_id or "—"),
+            ("CWE", finding.cwe_id or "—"),
+            ("Source", finding.source.value if finding.source else "—"),
+            ("Suppressed", "yes" if finding.is_suppressed else "no"),
+        ]
+        # FR-013: a corrected citation must be visible, never a silent adjustment.
+        # This table has no location rows — the finding's location is its heading —
+        # so the correction row goes last, next to the other provenance fields.
+        if finding.citation_adjusted_from is not None:
+            field_rows.append(
+                (
+                    "Citation adjusted",
+                    f"from {finding.citation_adjusted_from.start_line}"
+                    f"-{finding.citation_adjusted_from.end_line} "
+                    f"to {finding.line_range.start_line}-{finding.line_range.end_line}",
+                )
+            )
+        _render_table(out, ("Field", "Value"), field_rows)
         out.append("")
         out.append("**Description**:")
         out.append("")
