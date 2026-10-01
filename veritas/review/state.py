@@ -9,6 +9,7 @@ from langgraph.graph.message import add_messages
 
 from veritas.models.entities import (
     CodeFinding,
+    ExcludedFile,
     RequirementFinding,
     ReviewRun,
     ReviewScope,
@@ -35,6 +36,10 @@ class ReviewState(TypedDict):
     # Files scoped for review: relative path -> decoded content.
     files: dict[str, str]
     skipped_languages: Annotated[list[str], add]
+    # Files withheld before fetching by an exclusion pattern (FR-029), each with
+    # the pattern that matched. The scope node is the only writer and is the
+    # sole authority on the set, so this is an overwrite channel.
+    excluded_files: list[ExcludedFile]
     project_context: str | None
     degraded_sast: str | None
     sast_findings: list[dict]

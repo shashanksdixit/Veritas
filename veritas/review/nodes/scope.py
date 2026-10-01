@@ -1,4 +1,4 @@
-"""Scope-resolution node (T033/T047).
+"""Scope-resolution node (T033/T047/T075).
 
 * ``pr`` — fetch changed files + contents via the hosting provider API (remote
   only, no local git state per FR-002); ``input_revision`` = PR/MR head sha.
@@ -6,6 +6,10 @@
 * ``file`` — a single file.
 For local scopes ``input_revision`` is always None (revision tracking is
 PR-only, data-model.md / constitution Principle IV).
+
+Exclusion (FR-029): ``[review] exclude`` patterns are applied before file
+contents are fetched in every scope except ``file``, whose explicit target is
+always reviewed. SAST scans exactly the post-exclusion file set.
 """
 
 from __future__ import annotations
@@ -18,11 +22,12 @@ from veritas.config.constants import MAX_SCOPE_FILES
 from veritas.hosting.github import GitHubClient
 from veritas.hosting.gitlab import GitLabClient
 from veritas.hosting.resolver import UnresolvableTarget, parse_pr_target
-from veritas.models.entities import ReviewRun, ReviewScope
+from veritas.models.entities import ExcludedFile, ReviewRun, ReviewScope
 from veritas.review import ReviewFatalError, ReviewNotFoundError
 from veritas.review.state import ReviewState
 from veritas.security.opengrep import collect_sast
 from veritas.utils.languages import is_supported
+from veritas.utils.paths import matching_exclusion
 
 _SKIP_DIRS = {
     ".git",
@@ -54,12 +59,46 @@ def _normalize_rel(path: str) -> str:
     return normalized
 
 
-def _collect_requirement_docs(root: str) -> dict[str, str]:
+def _is_excluded(path: str, patterns: list[str], excluded: dict[str, str]) -> bool:
+    """Record ``path`` in ``excluded`` when a pattern matches it (FR-029).
+
+    ``excluded`` maps relative path -> matching pattern and is keyed by path, so
+    a path already recorded is never fetched or recorded twice (a supported
+    requirements source is reached by both PR fetch loops).
+    """
+    if path in excluded:
+        return True
+    pattern = matching_exclusion(path, patterns)
+    if pattern is None:
+        return False
+    excluded[path] = pattern
+    return True
+
+
+def _excluded_files(excluded: dict[str, str]) -> list[ExcludedFile]:
+    return [ExcludedFile(path=path, pattern=pattern) for path, pattern in excluded.items()]
+
+
+def _log_exclusions(runtime, excluded: dict[str, str]) -> None:
+    """One info line naming each matching pattern and how many files it caught."""
+    if not excluded:
+        return
+    counts: dict[str, int] = {}
+    for pattern in excluded.values():
+        counts[pattern] = counts.get(pattern, 0) + 1
+    detail = ", ".join(f"{pattern} ({count})" for pattern, count in counts.items())
+    runtime.log.info(f"scope: excluded {len(excluded)} file(s): {detail}")
+
+
+def _collect_requirement_docs(
+    root: str, patterns: list[str], excluded: dict[str, str]
+) -> dict[str, str]:
     """Capture requirements documentation files (FR-008) into the scope.
 
     Markdown/manifest requirement sources are excluded from language review but
     MUST still flow to the requirements node via the shared ``files`` channel.
-    Relative keys, same normalization as walked source files.
+    Relative keys, same normalization as walked source files. Exclusion
+    patterns apply here too, before the file is read (FR-029).
     """
     from veritas.config.constants import REQUIREMENTS_SOURCES
 
@@ -70,6 +109,8 @@ def _collect_requirement_docs(root: str) -> dict[str, str]:
     for name in REQUIREMENTS_SOURCES:
         candidate = root_path / name
         if not candidate.is_file():
+            continue
+        if _is_excluded(name, patterns, excluded):
             continue
         try:
             if candidate.stat().st_size > _MAX_FILE_BYTES:
@@ -111,12 +152,15 @@ def _read_local_file(path: str) -> str:
         raise ReviewNotFoundError(f"cannot read target file {path}: {exc}") from exc
 
 
-def _walk_local_scope(root: str, scope: ReviewScope) -> tuple[dict[str, str], list[str]]:
+def _walk_local_scope(
+    root: str, scope: ReviewScope, patterns: list[str]
+) -> tuple[dict[str, str], list[str], list[ExcludedFile]]:
     root_path = Path(root)
     if not root_path.is_dir():
         raise ReviewNotFoundError(f"target directory does not exist or is not readable: {root}")
     files: dict[str, str] = {}
     skipped: list[str] = []
+    excluded: dict[str, str] = {}
     for dirpath, dirnames, filenames in os.walk(root_path):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
         for name in filenames:
@@ -135,6 +179,10 @@ def _walk_local_scope(root: str, scope: ReviewScope) -> tuple[dict[str, str], li
             if not is_supported(rel):
                 skipped.append(rel)
                 continue
+            # FR-029: excluded before the file is read, so it never occupies a
+            # slot against MAX_SCOPE_FILES.
+            if _is_excluded(rel, patterns, excluded):
+                continue
             if len(files) >= MAX_SCOPE_FILES:
                 break
             try:
@@ -143,7 +191,7 @@ def _walk_local_scope(root: str, scope: ReviewScope) -> tuple[dict[str, str], li
                 continue
         if len(files) >= MAX_SCOPE_FILES:
             break
-    return files, skipped
+    return files, skipped, _excluded_files(excluded)
 
 
 def _fetch_pr(runtime) -> dict:
@@ -151,6 +199,7 @@ def _fetch_pr(runtime) -> dict:
     host = build_hosting_client(runtime.settings, parsed.provider, runtime.log)
     runtime.hosting = host
     runtime.log.info(f"Fetching PR {parsed.ref} from {parsed.provider}")
+    patterns = runtime.settings.exclude
 
     if parsed.provider == "github":
         sha = host.head_sha(parsed.owner, parsed.repo, parsed.number)
@@ -165,10 +214,14 @@ def _fetch_pr(runtime) -> dict:
 
     files: dict[str, str] = {}
     skipped: list[str] = []
+    excluded: dict[str, str] = {}
     for item in items:
         path = _normalize_rel(item["filename"])
         if not is_supported(path):
             skipped.append(path)
+            continue
+        # FR-029: excluded before the remote fetch, never requested.
+        if _is_excluded(path, patterns, excluded):
             continue
         if parsed.provider == "github":
             content = host.get_file_contents(parsed.owner, parsed.repo, path, sha)
@@ -182,25 +235,42 @@ def _fetch_pr(runtime) -> dict:
         path = _normalize_rel(item["filename"])
         if path not in REQUIREMENTS_SOURCES or path in files:
             continue
+        if _is_excluded(path, patterns, excluded):
+            continue
         if parsed.provider == "github":
             content = host.get_file_contents(parsed.owner, parsed.repo, path, sha)
         else:
             content = host.get_file_at_ref(parsed.owner, parsed.repo, path, sha)
         files[path] = content
-    return {"files": files, "skipped_languages": skipped, "input_revision": sha}
+    return {
+        "files": files,
+        "skipped_languages": skipped,
+        "excluded_files": _excluded_files(excluded),
+        "input_revision": sha,
+    }
 
 
-def _run_local(scope: ReviewScope, target: str) -> dict:
+def _run_local(scope: ReviewScope, target: str, patterns: list[str]) -> dict:
     if scope == ReviewScope.FILE:
+        # An explicit --scope file target is always reviewed, even when it
+        # matches an exclusion pattern (FR-029).
         content = _read_local_file(target)
         files: dict[str, str] = {_normalize_rel(target): content}
         skipped: list[str] = []
         if not is_supported(_normalize_rel(target)):
             skipped.append(_normalize_rel(target))
+        excluded: list[ExcludedFile] = []
     else:
-        files, skipped = _walk_local_scope(target, scope)
-        files.update(_collect_requirement_docs(target))
-    return {"files": files, "skipped_languages": skipped, "input_revision": None}
+        files, skipped, excluded = _walk_local_scope(target, scope, patterns)
+        excluded_by_path = {entry.path: entry.pattern for entry in excluded}
+        files.update(_collect_requirement_docs(target, patterns, excluded_by_path))
+        excluded = _excluded_files(excluded_by_path)
+    return {
+        "files": files,
+        "skipped_languages": skipped,
+        "excluded_files": excluded,
+        "input_revision": None,
+    }
 
 
 def make_scope_node(runtime) -> Callable[[ReviewState], dict]:
@@ -213,9 +283,14 @@ def make_scope_node(runtime) -> Callable[[ReviewState], dict]:
         if scope == ReviewScope.PR:
             result = _fetch_pr(runtime)
         else:
-            result = _run_local(scope, target)
+            result = _run_local(scope, target, runtime.settings.exclude)
+
+        _log_exclusions(
+            runtime, {entry.path: entry.pattern for entry in result["excluded_files"]}
+        )
 
         files: dict[str, str] = result["files"]
+        # SAST scans exactly the post-exclusion file set (FR-029).
         sast = collect_sast(files, scope_value=scope.value, rules=runtime.opengrep_rules)
         if sast.degraded:
             runtime.log.warn(sast.degraded)
@@ -226,6 +301,7 @@ def make_scope_node(runtime) -> Callable[[ReviewState], dict]:
         return {
             "files": files,
             "skipped_languages": result["skipped_languages"],
+            "excluded_files": result["excluded_files"],
             "degraded_sast": sast.degraded,
             "sast_findings": sast.findings,
             "run": run,

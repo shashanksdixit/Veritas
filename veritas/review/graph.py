@@ -116,6 +116,7 @@ def _initial_state(
         "phase": "scope",
         "files": {},
         "skipped_languages": [],
+        "excluded_files": [],
         "project_context": None,
         "degraded_sast": None,
         "sast_findings": [],

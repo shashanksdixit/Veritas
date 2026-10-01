@@ -61,32 +61,34 @@ def scope_tree(tmp_path):
 
 
 def test_walk_collects_only_supported_sources(scope_tree):
-    files, skipped = _walk_local_scope(str(scope_tree), "project")
+    files, skipped, excluded = _walk_local_scope(str(scope_tree), "project", [])
     assert set(files) == {"src/a.py", "src/b.ts"}
     assert "src/c.cob" in skipped
     assert "vendored.md" in skipped
     assert not any("node_modules" in f for f in files)
+    assert excluded == []
 
 
 def test_walk_missing_dir_raises(tmp_path):
     with pytest.raises(ReviewNotFoundError):
-        _walk_local_scope(str(tmp_path / "nope"), "project")
+        _walk_local_scope(str(tmp_path / "nope"), "project", [])
 
 
 def test_file_scope_reads_single_file(scope_tree):
     target = str(scope_tree / "src" / "a.py")
-    result = _run_local("file", target)
+    result = _run_local("file", target, [])
     assert result["files"][_normalize_rel_target(target)] == "x = 1"
     assert result["input_revision"] is None
+    assert result["excluded_files"] == []
 
 
 def test_file_scope_missing_raises(scope_tree):
     with pytest.raises(ReviewNotFoundError):
-        _run_local("file", str(scope_tree / "src" / "missing.py"))
+        _run_local("file", str(scope_tree / "src" / "missing.py"), [])
 
 
 def test_unsupported_file_scope_skipped_note(scope_tree):
     target = str(scope_tree / "vendored.md")
-    result = _run_local("file", target)
+    result = _run_local("file", target, [])
     assert result["files"] == {_normalize_rel_target(target): "docs"}
     assert _normalize_rel_target(target) in result["skipped_languages"]
