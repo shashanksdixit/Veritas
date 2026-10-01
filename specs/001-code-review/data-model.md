@@ -235,7 +235,7 @@ class Coverage(BaseModel):
 
 class Report(BaseModel):
     """The full review deliverable (FR-016)."""
-    schema_version: str = "1.2.0"    # semver; bump on any breaking change to
+    schema_version: str = "1.3.0"    # semver; bump on any breaking change to
                                       # Report/CodeFinding/RequirementFinding shape,
                                       # per CHANGELOG.md (constitution Principle VIII)
     run: ReviewRun

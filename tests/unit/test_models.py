@@ -98,6 +98,70 @@ def test_report_roundtrip_json():
             verdict=V.CLEAN,
         ),
     )
-    assert report.schema_version == "1.2.0"
+    assert report.schema_version == "1.3.0"
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.run.id == report.run.id
+
+
+def test_report_without_coverage_defaults_to_none():
+    """FR-029: a pre-1.3.0-shaped report still validates; coverage is None."""
+    from veritas.models.entities import Report, Summary, Verdict as V
+
+    report = Report(
+        run=ReviewRun(
+            scope=ReviewScope.PROJECT,
+            target=".",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.2.0",
+        ),
+        summary=Summary(
+            total_code_findings=0,
+            total_requirement_findings=0,
+            verification_failure_count=0,
+            verdict=V.CLEAN,
+        ),
+    )
+    assert report.coverage is None
+    assert Report.model_validate_json(report.model_dump_json()).coverage is None
+
+
+def test_report_coverage_roundtrip_json():
+    """FR-029: a populated Coverage round-trips unchanged, ExcludedFile included."""
+    from veritas.models.entities import (
+        Coverage,
+        ExcludedFile,
+        Report,
+        Summary,
+        Verdict as V,
+    )
+
+    report = Report(
+        run=ReviewRun(
+            scope=ReviewScope.PROJECT,
+            target=".",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.2.0",
+        ),
+        summary=Summary(
+            total_code_findings=0,
+            total_requirement_findings=0,
+            verification_failure_count=0,
+            verdict=V.CLEAN,
+        ),
+        coverage=Coverage(
+            batch_chars=48000,
+            max_batches=8,
+            batches_used=2,
+            reviewed_files=["src/a.py", "src/b.py"],
+            split_files=["src/b.py"],
+            excluded_files=[ExcludedFile(path=".specify/tasks/spec.md", pattern=".specify/")],
+            not_reviewed_files=["src/c.py"],
+        ),
+    )
+    payload = report.model_dump_json()
+    restored = Report.model_validate_json(payload)
+    assert restored.coverage == report.coverage
+    assert restored.model_dump_json() == payload
+    assert restored.coverage.excluded_files[0].pattern == ".specify/"

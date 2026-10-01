@@ -184,6 +184,25 @@ class Summary(BaseModel):
     verdict: Verdict
 
 
+class ExcludedFile(BaseModel):
+    """A path withheld from review by an exclusion pattern (FR-029)."""
+
+    path: str
+    pattern: str
+
+
+class Coverage(BaseModel):
+    """Code-review coverage for a run (FR-029)."""
+
+    batch_chars: int
+    max_batches: int
+    batches_used: int
+    reviewed_files: list[str] = Field(default_factory=list)
+    split_files: list[str] = Field(default_factory=list)
+    excluded_files: list[ExcludedFile] = Field(default_factory=list)
+    not_reviewed_files: list[str] = Field(default_factory=list)
+
+
 class Report(BaseModel):
     """The full review deliverable (FR-016)."""
 
@@ -192,6 +211,9 @@ class Report(BaseModel):
     code_findings: list[CodeFinding] = Field(default_factory=list)
     requirement_findings: list[RequirementFinding] = Field(default_factory=list)
     summary: Summary
+    # FR-029 coverage — backward-compatible addition in schema 1.3.0. Earlier
+    # reports carry no coverage data, so the field defaults to None.
+    coverage: Coverage | None = None
     markdown_content: str | None = None
 
 
