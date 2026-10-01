@@ -25,10 +25,43 @@ _CODE_PROMPTS = (
     "test_coverage",
 )
 
-_INSTRUCTION = (
+# Of those, the ones whose output schema has a start_line/end_line line range.
+# requirements.md is the exception: it returns "file:line" evidence entries.
+_LINE_RANGE_PROMPTS = (
+    "code_quality",
+    "performance",
+    "security",
+    "test_coverage",
+)
+
+# The two sentences every code prompt shares: how to read the prefix, and never to
+# estimate a line number.
+_LINE_NUMBER_RULE = (
     "Each code line is prefixed with its line number followed by '| '. "
-    "Cite line numbers exactly as shown in that prefix; never estimate them. "
+    "Cite line numbers exactly as shown in that prefix; never estimate them."
+)
+# How the cited code gets transcribed then differs by output schema, so the third
+# sentence is asserted per group rather than for all five prompts at once.
+_CITED_SNIPPET_RULE = (
     "In cited_snippet, copy the code text only, without the line-number prefix."
+)
+_EVIDENCE_RULE = (
+    "In evidence entries, write the file path and the line number shown in the "
+    'prefix (for example "path/to/file.py:42"); never copy the prefix text itself.'
+)
+
+# FR-014: the line range must span the quoted snippet, not a guess at it. Both
+# fragments below appear in all five code prompts; the line_range sentence appears
+# only in the four whose output schema actually has start_line/end_line.
+_COUNTING_RULE = "Count the lines you quote"
+_QUOTE_EXACTLY_RULE = (
+    "Quote the exact line or lines your finding is about; do not quote a "
+    "neighbouring line (for example, do not quote an `if` condition while "
+    "citing the line inside it)."
+)
+_LINE_RANGE_SENTENCE = (
+    "start_line MUST be the line number of the first line of cited_snippet, and "
+    "end_line MUST be the line number of its last line."
 )
 
 
@@ -184,19 +217,62 @@ def test_untruncated_package_has_no_marker():
 
 def test_every_code_prompt_carries_the_line_number_instruction():
     for name in _CODE_PROMPTS:
-        assert _INSTRUCTION in _normalized(_prompt(name)), name
+        assert _LINE_NUMBER_RULE in _normalized(_prompt(name)), name
 
 
 def test_instruction_present_in_all_five_prompt_files():
     files = sorted(p.name for p in _PROMPT_DIR.glob("*.md"))
     assert files == [f"{name}.md" for name in _CODE_PROMPTS]
     for filename in files:
-        assert _INSTRUCTION in _normalized(_prompt(filename[:-3])), filename
+        assert _LINE_NUMBER_RULE in _normalized(_prompt(filename[:-3])), filename
 
 
-def test_prompt_version_bumped_to_1_1_0():
-    assert PROMPT_VERSION == "1.1.0"
-    assert current_prompt_version() == "1.1.0"
+def test_cited_snippet_rule_present_in_the_four_line_range_prompts():
+    for name in _LINE_RANGE_PROMPTS:
+        assert _CITED_SNIPPET_RULE in _normalized(_prompt(name)), name
+
+
+def test_requirements_prompt_uses_the_evidence_rule_not_cited_snippet():
+    # It returns "file:line" evidence entries, so telling it about cited_snippet
+    # would name a field it never emits.
+    text = _normalized(_prompt("requirements"))
+    assert _EVIDENCE_RULE in text
+    assert "cited_snippet" not in text
+    assert _CITED_SNIPPET_RULE not in text
+
+
+def test_prompt_version_is_current():
+    assert PROMPT_VERSION == "1.2.0"
+    assert current_prompt_version() == "1.2.0"
+
+
+def test_every_prompt_with_line_numbers_also_states_the_line_range_rule():
+    """Any prompt told to cite shown line numbers must also be told how line_range
+    maps onto the code it quotes (FR-014)."""
+    checked = 0
+    for path in sorted(_PROMPT_DIR.glob("*.md")):
+        text = _normalized(path.read_text(encoding="utf-8"))
+        if _LINE_NUMBER_RULE not in text:
+            continue
+        checked += 1
+        assert _COUNTING_RULE in text, path.name
+        assert _QUOTE_EXACTLY_RULE in text, path.name
+    assert checked == len(_CODE_PROMPTS) == 5
+
+
+def test_line_range_prompts_state_the_start_and_end_rule():
+    # requirements.md returns evidence "file:line" refs rather than a line_range,
+    # so its wording is adapted; the four line_range prompts share this sentence.
+    for name in _LINE_RANGE_PROMPTS:
+        assert _LINE_RANGE_SENTENCE in _normalized(_prompt(name)), name
+
+
+def test_requirements_prompt_adapts_the_rule_to_evidence_refs():
+    # It has no cited_snippet to bound, so it must not claim to have one.
+    text = _normalized(_prompt("requirements"))
+    assert _LINE_RANGE_SENTENCE not in text
+    assert _COUNTING_RULE in text
+    assert "evidence \"path/to/file.py:19\"" in text
 
 
 def test_every_prompt_file_header_matches_prompt_version():

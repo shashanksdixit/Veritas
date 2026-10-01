@@ -185,6 +185,21 @@ def test_verification_note_absent_when_no_failures():
     assert "Each proposed finding must cite a file" not in md
 
 
+def test_verification_note_explains_citation_correction():
+    # The note must not claim a mismatch always drops the finding: near misses are
+    # corrected and kept (FR-013).
+    section = _verification_section(render_markdown(_report_with(_failure())))
+    assert (
+        "When they don't, Veritas looks for the quoted code nearby: if it appears "
+        'exactly once within two lines of the cited range, the citation is corrected '
+        'and the finding is kept (shown as "Citation adjusted" on that finding). '
+        "Otherwise the finding is dropped and listed here so nothing disappears "
+        "silently."
+    ) in section
+    # The old unconditional wording is gone: the drop is now the "Otherwise" case.
+    assert "When they don't, the finding is dropped" not in section
+
+
 def test_evidence_rendered():
     md = render_markdown(_report())
     assert "- `src/app.py:2`" in md
@@ -407,8 +422,12 @@ def test_citation_adjusted_row_is_last_field_row():
 
 def test_uncorrected_finding_has_no_citation_adjusted_row():
     md = render_markdown(_report())
-    assert "Citation adjusted" not in md
-    assert len(_field_rows(md)) == 7
+    # Scoped to the Field/Value table: the verification-failure note mentions the
+    # "Citation adjusted" label by name even with no corrected finding present.
+    rows = _field_rows(md)
+    assert len(rows) == 7
+    assert not [row for row in rows if row.startswith("| Citation adjusted |")]
+    assert "from 240-240 to 239-239" not in md
 
 
 def test_metrics_citations_adjusted_counts_corrected_findings():

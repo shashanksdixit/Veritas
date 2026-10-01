@@ -9,6 +9,10 @@ constitution Principle VIII / FR-016.
 ## [Unreleased]
 
 ### Added
+- Prompt version **1.2.0**: review prompts require a finding's line range to
+  start and end on the first and last lines of its cited snippet, with a worked
+  example, and to quote the exact lines a finding is about; no report schema
+  change.
 - Prompt version **1.1.0**: review prompts present line-numbered code and
   instruct the model to cite shown line numbers; no report schema change.
 - Initial Veritas implementation for the `001-code-review` feature: CLI review
