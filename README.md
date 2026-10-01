@@ -180,6 +180,17 @@ provider = "github"                          # "github" or "gitlab"
 
 [report]
 output_dir = "."                             # default
+
+[review]
+exclude = [".specify/"]                       # default; path exclusion patterns (FR-029)
+                                             #  a pattern ending in "/" matches every
+                                             #  path under that directory prefix; any
+                                             #  other pattern is fnmatch-ed against the
+                                             #  full relative path. A user-supplied
+                                             #  list replaces this default; an empty
+                                             #  list disables exclusion.
+batch_chars = 48000                          # default: max line-numbered chars per batch (FR-029)
+max_batches = 8                              # default: max batches per code review type (FR-029)
 ```
 
 ### Environment variables
