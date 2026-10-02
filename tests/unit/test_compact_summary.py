@@ -3,6 +3,8 @@
 from veritas.models.entities import (
     Category,
     CodeFinding,
+    Coverage,
+    ExcludedFile,
     LineRange,
     Report,
     ReportStatus,
@@ -85,3 +87,63 @@ def test_incomplete_status_reported():
 def test_report_path_included():
     text = render_compact(_report(), "veritas-report-20260101-000000.md")
     assert "Report: veritas-report-20260101-000000.md" in text
+
+
+# --- coverage line (T077, FR-029) ---
+
+
+def _coverage(**overrides) -> Coverage:
+    base = {
+        "batch_chars": 40000,
+        "max_batches": 8,
+        "batches_used": 3,
+        "reviewed_files": ["a.py", "b.py", "c.py"],
+        "split_files": ["big.py"],
+        "excluded_files": [
+            ExcludedFile(path="vendor/lib.py", pattern="vendor/"),
+            ExcludedFile(path="dist/out.js", pattern="dist/"),
+        ],
+        "not_reviewed_files": ["huge.py"],
+    }
+    base.update(overrides)
+    return Coverage(**base)
+
+
+def test_no_coverage_line_when_coverage_is_none():
+    text = render_compact(_report())
+    assert "Coverage:" not in text
+
+
+def test_coverage_line_text_is_exact():
+    report = _report().model_copy(update={"coverage": _coverage()})
+    lines = render_compact(report).splitlines()
+    assert (
+        "Coverage: 3 reviewed (1 split), 2 excluded, 1 not reviewed; 3/8 batches" in lines
+    )
+    # Directly after the category line.
+    assert lines.index("Security: 12") + 1 == lines.index(
+        "Coverage: 3 reviewed (1 split), 2 excluded, 1 not reviewed; 3/8 batches"
+    )
+
+
+def test_coverage_line_is_ascii_only():
+    report = _report().model_copy(update={"coverage": _coverage()})
+    line = next(l for l in render_compact(report).splitlines() if l.startswith("Coverage:"))
+    assert line.isascii()
+
+
+def test_coverage_line_counts_an_empty_run():
+    report = _report().model_copy(
+        update={
+            "coverage": _coverage(
+                reviewed_files=[],
+                split_files=[],
+                excluded_files=[],
+                not_reviewed_files=[],
+                batches_used=0,
+            )
+        }
+    )
+    assert "Coverage: 0 reviewed (0 split), 0 excluded, 0 not reviewed; 0/8 batches" in render_compact(
+        report
+    )

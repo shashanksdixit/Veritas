@@ -9,12 +9,24 @@ from __future__ import annotations
 from veritas.models.entities import (
     Category,
     CodeFinding,
+    Coverage,
     Report,
     RequirementStatus,
     Severity,
 )
 
 _HEADLINE_CAP = 10
+
+
+def _coverage_line(coverage: Coverage) -> str:
+    """One ASCII-only line describing what the run reviewed and withheld (FR-029)."""
+    return (
+        f"Coverage: {len(coverage.reviewed_files)} reviewed "
+        f"({len(coverage.split_files)} split), "
+        f"{len(coverage.excluded_files)} excluded, "
+        f"{len(coverage.not_reviewed_files)} not reviewed; "
+        f"{coverage.batches_used}/{coverage.max_batches} batches"
+    )
 
 
 def render_compact(report: Report, report_path: str | None = None) -> str:
@@ -42,6 +54,9 @@ def render_compact(report: Report, report_path: str | None = None) -> str:
             category_bits.append(f"{_category_label(cat)}: {count}")
     if category_bits:
         lines.append(" | ".join(category_bits))
+
+    if report.coverage is not None:
+        lines.append(_coverage_line(report.coverage))
 
     source_bits: list[str] = []
     for finding in report.code_findings:

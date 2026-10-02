@@ -11,6 +11,7 @@ import html
 from veritas.models.entities import (
     Category,
     CodeFinding,
+    Coverage,
     Report,
     RequirementStatus,
     Severity,
@@ -188,6 +189,75 @@ def _render_failure_detail(out: list[str], vf: VerificationFailure) -> None:
     out.append("")
 
 
+def _coverage_details(out: list[str], label: str, bullets: list[str]) -> None:
+    """One collapsed list of paths, or nothing at all for an empty list.
+
+    A <details> block for an empty list would be a heading a reader can expand to
+    find nothing, so empty lists are skipped entirely.
+    """
+    if not bullets:
+        return
+    out.append("<details>")
+    out.append(f"<summary>{label} ({len(bullets)})</summary>")
+    out.append("")
+    for bullet in bullets:
+        out.append(f"- {bullet}")
+    out.append("")
+    out.append("</details>")
+    out.append("")
+
+
+def _render_coverage(out: list[str], coverage: Coverage) -> None:
+    """What this run actually reviewed, and what it withheld and why (FR-029).
+
+    Only called when the run has coverage data, so a report from a run with no
+    batch plan is unchanged.
+    """
+    out.append("### Coverage (FR-029)")
+    out.append("")
+    out.append(
+        f"Code is reviewed in batches of up to {coverage.batch_chars} characters, "
+        f"at most {coverage.max_batches} batches per review type. "
+        "Files matching an exclusion pattern are not reviewed."
+    )
+    out.append("")
+
+    # A file the batch limit left out is a gap in the review, so the warning sits
+    # in the open, outside every <details>: a collapsed block would hide the one
+    # thing the reader has to act on.
+    if coverage.not_reviewed_files:
+        out.append(
+            f"**{len(coverage.not_reviewed_files)} file(s) were not reviewed** because "
+            "the batch limit was reached. Raise `max_batches` or `batch_chars` in the "
+            "`[review]` config section to include them."
+        )
+        out.append("")
+
+    _render_table(
+        out,
+        ("Metric", "Count"),
+        [
+            ("Files reviewed", str(len(coverage.reviewed_files))),
+            ("Files split across batches", str(len(coverage.split_files))),
+            ("Files excluded", str(len(coverage.excluded_files))),
+            ("Files not reviewed (batch limit)", str(len(coverage.not_reviewed_files))),
+            ("Batches used", f"{coverage.batches_used} of {coverage.max_batches}"),
+        ],
+    )
+    out.append("")
+
+    _coverage_details(out, "Reviewed files", [f"`{path}`" for path in coverage.reviewed_files])
+    _coverage_details(out, "Split files", [f"`{path}`" for path in coverage.split_files])
+    _coverage_details(
+        out,
+        "Excluded files",
+        [f"`{item.path}` (pattern `{item.pattern}`)" for item in coverage.excluded_files],
+    )
+    _coverage_details(
+        out, "Not reviewed files", [f"`{path}`" for path in coverage.not_reviewed_files]
+    )
+
+
 def render_markdown(report: Report) -> str:
     """Render the full report as GFM Markdown (SC-007)."""
     run = report.run
@@ -238,6 +308,9 @@ def render_markdown(report: Report) -> str:
         ],
     )
     out.append("")
+
+    if report.coverage is not None:
+        _render_coverage(out, report.coverage)
 
     if summary.verification_failures:
         out.append("### Verification failures (FR-013)")

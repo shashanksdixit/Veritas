@@ -3,6 +3,8 @@
 from veritas.models.entities import (
     Category,
     CodeFinding,
+    Coverage,
+    ExcludedFile,
     FindingSource,
     LineRange,
     Report,
@@ -456,4 +458,198 @@ def test_citation_adjusted_value_spans_multiple_lines():
     )
     md = render_markdown(_report(code_findings=[finding]))
     assert "| Citation adjusted | from 19-19 to 19-23 |" in md
+
+
+# --- Coverage subsection (T077, FR-029) ---
+
+
+def _coverage(**overrides) -> Coverage:
+    base = {
+        "batch_chars": 40000,
+        "max_batches": 8,
+        "batches_used": 3,
+        "reviewed_files": ["src/app.py", "src/util.py", "tests/test_app.py"],
+        "split_files": ["src/big.py"],
+        "excluded_files": [ExcludedFile(path="vendor/lib.py", pattern="vendor/")],
+        "not_reviewed_files": ["src/huge.py"],
+    }
+    base.update(overrides)
+    return Coverage(**base)
+
+
+def _section(md: str, heading: str) -> str:
+    """The body of one ``### `` section, up to the next heading of any level."""
+    body = md.split(f"{heading}\n", 1)[1]
+    for next_heading in ("\n### ", "\n## "):
+        body = body.split(next_heading, 1)[0]
+    return body
+
+
+def test_no_coverage_section_when_coverage_is_none():
+    md = render_markdown(_report())
+    assert "### Coverage" not in md
+    assert "Files reviewed" not in md
+    assert "reviewed files (" not in md.lower()
+
+
+def test_coverage_renders_plain_language_sentence():
+    md = render_markdown(_report(coverage=_coverage(batch_chars=40000, max_batches=8)))
+    assert (
+        "Code is reviewed in batches of up to 40000 characters, at most 8 batches "
+        "per review type. Files matching an exclusion pattern are not reviewed." in md
+    )
+
+
+def test_coverage_renders_counts_table():
+    coverage = _coverage(
+        reviewed_files=["a.py", "b.py", "c.py"],
+        split_files=["big.py"],
+        excluded_files=[
+            ExcludedFile(path="vendor/lib.py", pattern="vendor/"),
+            ExcludedFile(path="dist/out.js", pattern="dist/"),
+        ],
+        not_reviewed_files=["huge.py"],
+        batches_used=5,
+        max_batches=8,
+    )
+    section = _section(render_markdown(_report(coverage=coverage)), "### Coverage (FR-029)")
+    assert "| Files reviewed | 3 |" in section
+    assert "| Files split across batches | 1 |" in section
+    assert "| Files excluded | 2 |" in section
+    assert "| Files not reviewed (batch limit) | 1 |" in section
+    assert "| Batches used | 5 of 8 |" in section
+
+
+def test_coverage_details_block_for_each_non_empty_list():
+    coverage = _coverage(
+        reviewed_files=["a.py", "b.py", "c.py"],
+        split_files=["big.py"],
+        excluded_files=[ExcludedFile(path="vendor/lib.py", pattern="vendor/")],
+        not_reviewed_files=["huge.py"],
+    )
+    section = _section(render_markdown(_report(coverage=coverage)), "### Coverage (FR-029)")
+    assert section.count("<details>") == 4
+    # One block per list, in the documented order.
+    for label, count in (
+        ("Reviewed files", 3),
+        ("Split files", 1),
+        ("Excluded files", 1),
+        ("Not reviewed files", 1),
+    ):
+        assert f"<summary>{label} ({count})</summary>" in section
+    labels = [line for line in section.splitlines() if line.startswith("<summary>")]
+    assert [line.split(" (")[0] for line in labels] == [
+        "<summary>Reviewed files",
+        "<summary>Split files",
+        "<summary>Excluded files",
+        "<summary>Not reviewed files",
+    ]
+    # Every path appears, in backticks.
+    for path in ("a.py", "b.py", "c.py", "big.py", "vendor/lib.py", "huge.py"):
+        assert f"- `{path}`" in section
+
+
+def test_coverage_details_blocks_have_blank_lines_inside_and_before_close():
+    section = _section(
+        render_markdown(_report(coverage=_coverage(reviewed_files=["a.py"]))),
+        "### Coverage (FR-029)",
+    )
+    assert (
+        "<details>\n<summary>Reviewed files (1)</summary>\n\n- `a.py`\n\n</details>" in section
+    )
+
+
+def test_coverage_omits_details_block_for_an_empty_list():
+    section = _section(
+        render_markdown(
+            _report(
+                coverage=_coverage(
+                    split_files=[],
+                    not_reviewed_files=[],
+                )
+            )
+        ),
+        "### Coverage (FR-029)",
+    )
+    assert section.count("<details>") == 2
+    assert "<summary>Reviewed files (3)</summary>" in section
+    assert "<summary>Excluded files (1)</summary>" in section
+    assert "Split files" not in section
+    assert "Not reviewed files" not in section
+    # The counts table still accounts for them.
+    assert "| Files split across batches | 0 |" in section
+    assert "| Files not reviewed (batch limit) | 0 |" in section
+
+
+def test_coverage_not_reviewed_warning_is_visible_outside_details():
+    section = _section(
+        render_markdown(_report(coverage=_coverage(not_reviewed_files=["huge.py", "more.py"]))),
+        "### Coverage (FR-029)",
+    )
+    warning = (
+        "**2 file(s) were not reviewed** because the batch limit was reached. "
+        "Raise `max_batches` or `batch_chars` in the `[review]` config section "
+        "to include them."
+    )
+    assert warning in section
+    # Visible, not hidden: the warning precedes the first collapsed block.
+    assert section.index(warning) < section.index("<details>")
+
+
+def test_coverage_not_reviewed_warning_absent_when_nothing_was_withheld():
+    section = _section(
+        render_markdown(_report(coverage=_coverage(not_reviewed_files=[]))),
+        "### Coverage (FR-029)",
+    )
+    assert "were not reviewed**" not in section
+    assert "batch limit was reached" not in section
+
+
+def test_coverage_excluded_bullet_shows_path_and_pattern():
+    section = _section(
+        render_markdown(
+            _report(
+                coverage=_coverage(
+                    excluded_files=[
+                        ExcludedFile(path="vendor/lib.py", pattern="vendor/"),
+                        ExcludedFile(path="web/app.min.js", pattern="*.min.js"),
+                    ]
+                )
+            )
+        ),
+        "### Coverage (FR-029)",
+    )
+    assert "- `vendor/lib.py` (pattern `vendor/`)" in section
+    assert "- `web/app.min.js` (pattern `*.min.js`)" in section
+    assert "<summary>Excluded files (2)</summary>" in section
+
+
+def test_coverage_path_with_markdown_metacharacters_stays_literal():
+    section = _section(
+        render_markdown(
+            _report(
+                coverage=_coverage(
+                    reviewed_files=["src/my_module.py", "src/*_generated.py", "a_b*c.py"]
+                )
+            )
+        ),
+        "### Coverage (FR-029)",
+    )
+    # Inside backticks, so neither the underscore nor the asterisk starts emphasis.
+    assert "- `src/my_module.py`" in section
+    assert "- `src/*_generated.py`" in section
+    assert "- `a_b*c.py`" in section
+    assert "<em>" not in section
+    assert "<strong>" not in section
+
+
+def test_coverage_section_sits_between_requirement_counts_and_verification_failures():
+    md = render_markdown(_report(coverage=_coverage()))
+    assert (
+        md.index("### Requirement status counts")
+        < md.index("### Coverage (FR-029)")
+        < md.index("### Verification failures (FR-013)")
+    )
+    # Still inside the Summary area, before the next top-level section.
+    assert md.index("## Summary") < md.index("### Coverage (FR-029)") < md.index("## Code Findings")
 

@@ -202,7 +202,7 @@ description: "Task list for Veritas code review tool implementation"
 - [X] T074 Config: add `exclude`, `batch_chars`, `max_batches` settings read from the `[review]` config section with the FR-029 defaults; update the hermetic env-var list in `tests/integration/test_config.py` if new `VERITAS_*` env vars result; tests for defaults, file override, and empty exclude list (FR-029)
 - [X] T075 Exclusion: apply exclusion patterns before fetching in all scopes in `veritas/review/nodes/scope.py`, recording each excluded path with its matching pattern; explicit file target exempt; SAST uses the post-exclusion set; tests for directory-prefix patterns, fnmatch patterns, empty list, and the explicit-file exemption (FR-029)
 - [X] T076 Batching: deterministic batch partitioning (sorted paths, line-numbered size <= `batch_chars`, large files split at line boundaries with original line numbers, cap at `max_batches`) computed once and used by all four code review types; per-batch failure isolation; `Coverage` populated on the report; tests for packing, splitting, cap, determinism, and failure isolation (FR-029)
-- [ ] T077 Rendering: `Coverage` section in `veritas/output/markdown.py` (counts table, plus collapsible `<details>` path lists for excluded, split and not-reviewed files) and one coverage line in the compact stdout summary; tests including a report with `coverage` None rendering without the section (FR-029)
+- [X] T077 Rendering: `Coverage` section in `veritas/output/markdown.py` (counts table, plus collapsible `<details>` path lists for excluded, split and not-reviewed files) and one coverage line in the compact stdout summary; tests including a report with `coverage` None rendering without the section (FR-029)
 
 ---
 
