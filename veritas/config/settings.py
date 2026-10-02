@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     base_url: str = Field(default=DEFAULT_BASE_URL, description="VERITAS_BASE_URL")
     model: str | None = Field(default=None, description="VERITAS_MODEL")
     zdr: bool = Field(default=False, description="VERITAS_ZDR")
+    # [llm] request bounds (FR-019): every request carries a timeout and a retry
+    # limit so a stalled endpoint cannot hold the run indefinitely. max_retries=0
+    # is a valid, meaningful configuration (one attempt, no retry).
+    timeout_seconds: float = Field(default=120, ge=1, description="VERITAS_TIMEOUT_SECONDS")
+    max_retries: int = Field(default=2, ge=0, le=10, description="VERITAS_MAX_RETRIES")
     github_token: str | None = Field(default=None, description="VERITAS_GITHUB_TOKEN")
     gitlab_token: str | None = Field(default=None, description="VERITAS_GITLAB_TOKEN")
     gitlab_url: str = Field(default="https://gitlab.com", description="VERITAS_GITLAB_URL")
@@ -105,6 +110,8 @@ def _flatten_toml(data: dict) -> dict:
     flat["base_url"] = llm.get("base_url")
     flat["model"] = llm.get("model")
     flat["zdr"] = llm.get("zdr")
+    flat["timeout_seconds"] = llm.get("timeout_seconds")
+    flat["max_retries"] = llm.get("max_retries")
     hosting = data.get("hosting", {})
     flat["provider"] = hosting.get("provider")
     flat["gitlab_url"] = hosting.get("gitlab_url")

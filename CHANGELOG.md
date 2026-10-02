@@ -42,3 +42,8 @@ constitution Principle VIII / FR-016.
 - Report schema **1.0.0**: initial schema. `Report` carries
   `schema_version = "1.0.0"`, `run`, `code_findings`, `requirement_findings`,
   `summary`, and `markdown_content`.
+
+### Changed
+- LLM requests are bounded by `[llm] timeout_seconds` (default 120) and
+  `[llm] max_retries` (default 2); previously the client defaults allowed a
+  stalled request to wait up to 30 minutes.

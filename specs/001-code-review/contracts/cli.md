@@ -36,6 +36,8 @@ Options:
 | `VERITAS_BASE_URL` | LLM endpoint base URL | --config value |
 | `VERITAS_MODEL` | Model override | --config value |
 | `VERITAS_ZDR` | Enable ZDR routing ("true"/"false") | --config value |
+| `VERITAS_TIMEOUT_SECONDS` | Per-request LLM timeout in seconds (default: 120, min 1) | --config value |
+| `VERITAS_MAX_RETRIES` | Retry limit per LLM request (default: 2, range 0-10) | --config value |
 | `VERITAS_GITHUB_TOKEN` | GitHub API token (PR mode) | --config value |
 | `VERITAS_GITLAB_TOKEN` | GitLab API token (PR mode) | --config value |
 | `VERITAS_GITLAB_URL` | GitLab instance URL | --config value (default: https://gitlab.com) |
@@ -117,6 +119,8 @@ Options:
 base_url = "https://openrouter.ai/api/v1"   # default
 model = "openai/gpt-4o-mini"                 # default (or free model discovered at runtime)
 zdr = false                                  # default: off
+timeout_seconds = 120                        # default: per-request timeout, >= 1 (FR-019)
+max_retries = 2                              # default: retry limit per request, 0-10 (FR-019)
 
 [hosting]
 provider = "github"                          # "github" or "gitlab"

@@ -174,6 +174,12 @@ Configuration layers, lowest to highest precedence:
 base_url = "https://openrouter.ai/api/v1"   # default
 model = "openai/gpt-4o-mini"                 # default
 zdr = false                                  # default: off
+timeout_seconds = 120                        # default: per-request timeout in seconds,
+                                              #  >= 1 (FR-019). A request that exceeds it
+                                              #  fails instead of waiting indefinitely.
+max_retries = 2                              # default: retries per request after a
+                                              #  timeout/failed attempt, 0-10 (FR-019).
+                                              #  0 means one attempt, no retry.
 
 [hosting]
 provider = "github"                          # "github" or "gitlab"
@@ -201,6 +207,8 @@ max_batches = 8                              # default: max batches per code rev
 | `VERITAS_BASE_URL` | LLM endpoint base URL (default: OpenRouter) |
 | `VERITAS_MODEL` | Model override (e.g. `openai:vendor/model` or `anthropic:claude-model`) |
 | `VERITAS_ZDR` | Zero-data-retention routing (`"true"`/`"false"`) |
+| `VERITAS_TIMEOUT_SECONDS` | Per-request LLM timeout in seconds (default: 120, min 1) |
+| `VERITAS_MAX_RETRIES` | Retry limit per LLM request (default: 2, range 0-10; 0 = no retry) |
 | `VERITAS_GITHUB_TOKEN` | GitHub API token (PR mode) |
 | `VERITAS_GITLAB_TOKEN` | GitLab API token (PR mode) |
 | `VERITAS_GITLAB_URL` | GitLab instance URL (default: https://gitlab.com) |

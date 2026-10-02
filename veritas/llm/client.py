@@ -29,10 +29,22 @@ def split_model_string(model_string: str) -> tuple[str, str]:
     return provider, model_id
 
 
-def build_kwargs(settings: Settings, log: Log) -> dict:
+def build_kwargs(settings: Settings, log: Log) -> tuple[str, str, dict]:
     """LangChain init_chat_model kwargs for the configured provider routing."""
     provider, model_id = split_model_string(settings.model_runtime)
-    kwargs: dict = {"temperature": 0.0}
+    # Bound every request (FR-019). These two are set once, before the branches,
+    # so no provider route can be added later without them: without a timeout the
+    # client library's own default applies, which on the OpenAI-compatible route
+    # is 30 minutes — a stalled endpoint would hold the whole run. `timeout` is
+    # the only spelling both backends accept: it is ChatOpenAI's validation alias
+    # for `request_timeout`, and ChatAnthropic's alias for
+    # `default_request_timeout`. Both models set `extra="ignore"`, so a wrong
+    # name would be dropped silently and leave the request unbounded.
+    kwargs: dict = {
+        "temperature": 0.0,
+        "timeout": settings.timeout_seconds,
+        "max_retries": settings.max_retries,
+    }
 
     if provider == "openai":
         # OpenAI-compatible route: OpenRouter by default, or any base_url the

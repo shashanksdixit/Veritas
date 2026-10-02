@@ -17,6 +17,8 @@ _VERITAS_ENV_VARS = (
     "VERITAS_BASE_URL",
     "VERITAS_MODEL",
     "VERITAS_ZDR",
+    "VERITAS_TIMEOUT_SECONDS",
+    "VERITAS_MAX_RETRIES",
     "VERITAS_GITHUB_TOKEN",
     "VERITAS_GITLAB_TOKEN",
     "VERITAS_GITLAB_URL",
@@ -182,3 +184,63 @@ def test_review_out_of_range_values_rejected(tmp_path):
         load_settings(str(low_batches))
     assert "max_batches" in str(excinfo.value)
     assert "greater than or equal to 1" in str(excinfo.value)
+
+
+# --- [llm] request bounds (FR-019) ---
+
+
+def _write_llm_config(tmp_path: Path, body: str) -> Path:
+    path = tmp_path / "llm-config.toml"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_llm_bounds_defaults_apply():
+    settings = Settings()
+    assert settings.timeout_seconds == 120
+    assert settings.max_retries == 2
+
+
+def test_llm_section_overrides_defaults(tmp_path):
+    path = _write_llm_config(tmp_path, "[llm]\ntimeout_seconds = 30.5\nmax_retries = 5\n")
+    settings = load_settings(str(path))
+    assert settings.timeout_seconds == 30.5
+    assert settings.max_retries == 5
+
+
+def test_env_overrides_llm_section(tmp_path, monkeypatch):
+    path = _write_llm_config(tmp_path, "[llm]\ntimeout_seconds = 30\nmax_retries = 1\n")
+    monkeypatch.setenv("VERITAS_TIMEOUT_SECONDS", "7.5")
+    monkeypatch.setenv("VERITAS_MAX_RETRIES", "0")
+    settings = load_settings(str(path))
+    assert settings.timeout_seconds == 7.5
+    # 0 is a meaningful value (one attempt, no retry), not "absent".
+    assert settings.max_retries == 0
+
+
+def test_llm_bounds_out_of_range_rejected(tmp_path):
+    low_timeout = _write_llm_config(tmp_path, "[llm]\ntimeout_seconds = 0\n")
+    with pytest.raises(ValidationError) as excinfo:
+        load_settings(str(low_timeout))
+    assert "timeout_seconds" in str(excinfo.value)
+    assert "greater than or equal to 1" in str(excinfo.value)
+
+    too_many_retries = _write_llm_config(tmp_path, "[llm]\nmax_retries = 11\n")
+    with pytest.raises(ValidationError) as excinfo:
+        load_settings(str(too_many_retries))
+    assert "max_retries" in str(excinfo.value)
+    assert "less than or equal to 10" in str(excinfo.value)
+
+
+def test_llm_boundary_values_accepted(tmp_path):
+    path = _write_llm_config(tmp_path, "[llm]\ntimeout_seconds = 1\nmax_retries = 10\n")
+    settings = load_settings(str(path))
+    assert settings.timeout_seconds == 1
+    assert settings.max_retries == 10
+
+
+def test_config_hash_changes_with_llm_bounds():
+    """Both are non-secret effective config, so the hash covers them."""
+    base = Settings()
+    assert base.config_hash != Settings(timeout_seconds=60).config_hash
+    assert base.config_hash != Settings(max_retries=7).config_hash
