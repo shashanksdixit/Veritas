@@ -123,7 +123,9 @@ def test_partial_failure_returns_exit_2(sample_project, settings):
     assert outcome.exit_code == 2
     report = Report.model_validate_json(Path(LAST_REPORT_JSON).read_text(encoding="utf-8"))
     assert report.run.report_status.value == "incomplete"
-    assert "code_quality_node" in (report.run.error or "")
+    # The failing batch is named with the files it held (FR-029 batch isolation,
+    # FR-027 partial-review status), and the provider message survives.
+    assert "code_quality: batch 1/1 failed (files: src/app.py)" in (report.run.error or "")
     assert "provider exploded" in (report.run.error or "")
 
 

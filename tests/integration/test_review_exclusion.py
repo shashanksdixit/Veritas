@@ -85,6 +85,7 @@ def _state(target: str, scope: ReviewScope = ReviewScope.PROJECT) -> ReviewState
         "files": {},
         "skipped_languages": [],
         "excluded_files": [],
+        "batch_plan": None,
         "project_context": None,
         "degraded_sast": None,
         "sast_findings": [],
@@ -276,3 +277,80 @@ def test_no_exclusion_log_line_when_nothing_excluded(exclusion_tree, monkeypatch
     monkeypatch.setattr(runtime.log, "info", lambda msg, **_kw: events.append(msg))
     make_scope_node(runtime)(_state(str(exclusion_tree)))
     assert not [e for e in events if e.startswith("scope: excluded")]
+
+
+# --- T076: batch plan wiring (only post-exclusion, supported source files) ---
+
+
+def _batched_paths(result) -> set[str]:
+    return {chunk.path for batch in result["batch_plan"].batches for chunk in batch.chunks}
+
+
+def test_requirement_docs_are_not_batched(exclusion_tree, monkeypatch):
+    _stub_sast(monkeypatch)
+    runtime = _runtime([])
+    result = make_scope_node(runtime)(_state(str(exclusion_tree)))
+    # README.md and docs/requirements.md are in the scope but are not source
+    # files, so they are never batched for the code review types.
+    assert {"README.md", "docs/requirements.md"} <= set(result["files"])
+    assert not {"README.md", "docs/requirements.md"} & _batched_paths(result)
+    assert _batched_paths(result) == {
+        "src/app.py",
+        "web/app.min.js",
+        ".specify/scripts/plan.py",
+    }
+
+
+def test_excluded_files_are_not_batched(exclusion_tree, monkeypatch):
+    _stub_sast(monkeypatch)
+    runtime = _runtime([".specify/", "web/"])
+    result = make_scope_node(runtime)(_state(str(exclusion_tree)))
+    batched = _batched_paths(result)
+    assert ".specify/scripts/plan.py" not in batched
+    assert "web/app.min.js" not in batched
+    assert batched == {"src/app.py"}
+    assert result["batch_plan"].not_reviewed_files == ()
+    assert result["batch_plan"].reviewed_files == ("src/app.py",)
+
+
+def test_batch_plan_returned_with_expected_budgets(exclusion_tree, monkeypatch):
+    _stub_sast(monkeypatch)
+    runtime = _runtime([])
+    runtime.settings.batch_chars = 4000
+    runtime.settings.max_batches = 3
+    result = make_scope_node(runtime)(_state(str(exclusion_tree)))
+    plan = result["batch_plan"]
+    assert plan is not None
+    assert all(len(batch.text) <= 4000 for batch in plan.batches)
+    assert len(plan.batches) <= 3
+    assert plan.reviewed_files == tuple(sorted(plan.reviewed_files))
+
+
+def test_batching_info_log_line(exclusion_tree, monkeypatch):
+    _stub_sast(monkeypatch)
+    events: list[str] = []
+    runtime = _runtime([".specify/"])
+    runtime.settings.batch_chars = 4000
+    runtime.settings.max_batches = 8
+    monkeypatch.setattr(runtime.log, "info", lambda msg, **_kw: events.append(msg))
+    plan = make_scope_node(runtime)(_state(str(exclusion_tree)))["batch_plan"]
+    expected = (
+        f"batching: {len(plan.reviewed_files)} file(s) in {len(plan.batches)} batch(es) "
+        f"of up to 4000 chars; {len(plan.split_files)} split, "
+        f"{len(plan.not_reviewed_files)} not reviewed"
+    )
+    assert expected in events
+
+
+def test_batching_warning_logged_at_warn(exclusion_tree, monkeypatch):
+    _stub_sast(monkeypatch)
+    warnings: list[str] = []
+    (exclusion_tree / "src" / "long_line.py").write_text("y" * 6000 + "\n", encoding="utf-8")
+    runtime = _runtime([])
+    runtime.settings.batch_chars = 4000
+    monkeypatch.setattr(runtime.log, "warn", lambda msg, **_kw: warnings.append(msg))
+    make_scope_node(runtime)(_state(str(exclusion_tree)))
+    assert (
+        "batching: src/long_line.py not reviewed: a single line exceeds batch_chars (4000)"
+        in warnings
+    )

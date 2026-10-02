@@ -117,6 +117,7 @@ def _initial_state(
         "files": {},
         "skipped_languages": [],
         "excluded_files": [],
+        "batch_plan": None,
         "project_context": None,
         "degraded_sast": None,
         "sast_findings": [],

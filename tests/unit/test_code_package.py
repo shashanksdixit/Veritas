@@ -64,6 +64,18 @@ _LINE_RANGE_SENTENCE = (
     "end_line MUST be the line number of its last line."
 )
 
+# FR-029: the code review types are shown chunked batches, so a chunk header can
+# mean part of a file only. They must be told not to invent findings about code
+# they cannot see. requirements.md is exempt: it still receives code_package,
+# which never shows a partial file (B2).
+_PARTIAL_FILE_RULE = (
+    "Some files are shown in parts. A header such as "
+    '"### FILE: path (lines 301-560 of 812)" means you can see only that range '
+    "of the file. Do not report problems that exist only because code outside "
+    "the shown range is not visible, such as imports or definitions you cannot "
+    "see."
+)
+
 
 def _prompt(name: str) -> str:
     return (_PROMPT_DIR / f"{name}.md").read_text(encoding="utf-8")
@@ -242,8 +254,8 @@ def test_requirements_prompt_uses_the_evidence_rule_not_cited_snippet():
 
 
 def test_prompt_version_is_current():
-    assert PROMPT_VERSION == "1.2.0"
-    assert current_prompt_version() == "1.2.0"
+    assert PROMPT_VERSION == "1.3.0"
+    assert current_prompt_version() == "1.3.0"
 
 
 def test_every_prompt_with_line_numbers_also_states_the_line_range_rule():
@@ -279,3 +291,24 @@ def test_every_prompt_file_header_matches_prompt_version():
     for name in _CODE_PROMPTS:
         first = _prompt(name).splitlines()[0]
         assert first == f"prompt_version: {PROMPT_VERSION}", name
+
+
+def test_batched_code_prompts_explain_partial_file_chunks():
+    """The four batched review types see chunk headers, so they must know a
+    '(lines s-e of n)' header means only that range is visible (FR-029)."""
+    for name in _LINE_RANGE_PROMPTS:
+        assert _PARTIAL_FILE_RULE in _normalized(_prompt(name)), name
+
+
+def test_partial_file_rule_follows_the_line_range_instruction():
+    # Placing it after the line-range rule keeps the citation rules together and
+    # stops a model from reading the chunk header as a line-numbering change.
+    for name in _LINE_RANGE_PROMPTS:
+        text = _normalized(_prompt(name))
+        assert text.index(_LINE_RANGE_SENTENCE) < text.index(_PARTIAL_FILE_RULE), name
+
+
+def test_requirements_prompt_has_no_partial_file_rule():
+    # It still receives code_package, which never shows part of a file, so
+    # telling it about chunk headers would describe input it cannot get.
+    assert _PARTIAL_FILE_RULE not in _normalized(_prompt("requirements"))

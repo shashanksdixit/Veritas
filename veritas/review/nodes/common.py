@@ -4,7 +4,9 @@ construction, redaction). Kept read-only: no write/execute capability here."""
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from veritas.config.constants import PROMPT_VERSION, REQUIREMENTS_SOURCES
 from veritas.models.entities import (
@@ -17,6 +19,9 @@ from veritas.models.entities import (
     Severity,
 )
 from veritas.utils.redaction import redact_secrets
+
+if TYPE_CHECKING:  # batching imports this module's renderers; import type-only
+    from veritas.review.batching import BatchPlan
 
 _PROMPT_DIR = Path(__file__).parent.parent / "prompts"
 
@@ -177,6 +182,33 @@ _BLOCK_SEPARATOR = "\n\n"
 _TRUNCATION_MARKER = "…(truncated)"
 
 
+def file_header(
+    path: str,
+    *,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    total_lines: int | None = None,
+) -> str:
+    """Render a file block header, or a chunk range header for a split file.
+
+    A whole file is ``### FILE: {path}``. A chunk of a file too large for one
+    batch carries its original line range: ``### FILE: {path} (lines {s}-{e} of
+    {total})``, so the reviewer cites real line numbers (FR-014, FR-029).
+    """
+    if start_line is None or end_line is None or total_lines is None:
+        return f"### FILE: {path}"
+    return f"### FILE: {path} (lines {start_line}-{end_line} of {total_lines})"
+
+
+def numbered_lines(lines: Sequence[str], start_line: int = 1) -> list[str]:
+    """Render lines as ``{n:>5}| {line}`` with 1-based ``n`` (FR-014).
+
+    ``start_line`` is the ORIGINAL line number of ``lines[0]``, so a chunk of a
+    split file keeps the numbers the reviewer must cite.
+    """
+    return [f"{n:>5}| {line}" for n, line in enumerate(lines, start=start_line)]
+
+
 def _numbered_file_block(path: str, content: str, budget: int) -> str | None:
     """Render one file as a header plus numbered lines, fitting ``budget``.
 
@@ -187,8 +219,8 @@ def _numbered_file_block(path: str, content: str, budget: int) -> str | None:
     least one numbered line and the truncation marker: a file that cannot be
     shown usefully is omitted rather than shown misleadingly.
     """
-    header = f"### FILE: {path}"
-    lines = [f"{n:>5}| {line}" for n, line in enumerate(content.splitlines(), start=1)]
+    header = file_header(path)
+    lines = numbered_lines(content.splitlines())
     if not lines:
         return header if len(header) <= budget else None
     whole = "\n".join([header, *lines])
@@ -226,31 +258,84 @@ def code_package(files: dict[str, str], *, max_files: int = 12, max_chars: int =
     return _BLOCK_SEPARATOR.join(parts)
 
 
+def _batch_paths(chunks) -> list[str]:
+    """Distinct paths in a batch, in first-appearance order.
+
+    A batch holds at most one chunk per file today, so this is normally the
+    chunk paths themselves; distincting keeps the log and the error message
+    accurate if a future planner ever puts two chunks of one file in a batch.
+    """
+    return list(dict.fromkeys(chunk.path for chunk in chunks))
+
+
 def llm_findings(
     llm,
+    plan: BatchPlan | None,
     prompt_name: str,
-    files: dict[str, str],
     context: str | None,
     *,
     category: Category,
+    log,
     source: FindingSource | None = None,
     extra: str = "",
-) -> list[CodeFinding]:
-    """Drive the LLM for a code-findings review type and parse results."""
+) -> tuple[list[CodeFinding], list[str]]:
+    """Drive the LLM for a code-findings review type over the shared batch plan.
+
+    The scope node planned the batches once and every code review type drives the
+    same plan, so all four see identical code (FR-029). Each batch is one LLM
+    call whose user message is the usual context/extra prefix followed by that
+    batch's text.
+
+    Per-batch failure isolation: a failure in one batch — anywhere between the
+    LLM call and building its findings — is recorded as an error and the
+    remaining batches still run, so a provider error loses one batch of review
+    rather than the whole review type. The error text is redacted before it is
+    recorded or logged (constitution Privacy & Data Handling).
+
+    Returns ``(findings, errors)``; the caller routes ``errors`` into the shared
+    errors channel, which makes the run's report status incomplete (FR-027).
+    """
     sys_prompt = load_prompt(prompt_name)
-    user = ""
+    batches = list(plan.batches) if plan is not None else []
+    if not batches:
+        # No source files in scope, or every file was dropped by the planner.
+        if log is not None:
+            log.info(f"{prompt_name}: no source files to review")
+        return ([], [])
+
+    prefix = ""
     if context:
-        user += f"{context}\n\n"
+        prefix += f"{context}\n\n"
     if extra:
-        user += f"{extra}\n\n"
-    user += f"Code to review:\n\n{code_package(files)}"
-    text = llm.complete(sys_prompt, user)
-    payloads = parse_json_array(text)
-    findings = [
-        build_code_finding(raw, category=category, source=source)
-        for raw in payloads
-    ]
-    return [f for f in findings if f.file in files]
+        prefix += f"{extra}\n\n"
+    prefix += "Code to review:\n\n"
+
+    total = len(batches)
+    findings: list[CodeFinding] = []
+    errors: list[str] = []
+    for position, batch in enumerate(batches, start=1):
+        paths = _batch_paths(batch.chunks)
+        if log is not None:
+            # Logged before the call so a hung or slow batch is identifiable.
+            log.info(f"{prompt_name}: batch {position}/{total} ({len(paths)} file(s))")
+        try:
+            text = llm.complete(sys_prompt, prefix + batch.text)
+            payloads = parse_json_array(text)
+            seen = set(paths)
+            findings.extend(
+                build_code_finding(raw, category=category, source=source)
+                for raw in payloads
+                if str(raw.get("file", "")).strip() in seen
+            )
+        except Exception as exc:  # noqa: BLE001 - isolate one batch, keep going
+            error = redact_secrets(
+                f"{prompt_name}: batch {position}/{total} failed "
+                f"(files: {', '.join(paths)}): {exc}"
+            )
+            errors.append(error)
+            if log is not None:
+                log.warn(error)
+    return (findings, errors)
 
 
 def llm_requirement_findings(

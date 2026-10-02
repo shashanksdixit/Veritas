@@ -24,6 +24,7 @@ from veritas.hosting.gitlab import GitLabClient
 from veritas.hosting.resolver import UnresolvableTarget, parse_pr_target
 from veritas.models.entities import ExcludedFile, ReviewRun, ReviewScope
 from veritas.review import ReviewFatalError, ReviewNotFoundError
+from veritas.review.batching import plan_batches
 from veritas.review.state import ReviewState
 from veritas.security.opengrep import collect_sast
 from veritas.utils.languages import is_supported
@@ -289,6 +290,23 @@ def make_scope_node(runtime) -> Callable[[ReviewState], dict]:
             runtime, {entry.path: entry.pattern for entry in result["excluded_files"]}
         )
 
+        # FR-029: batch the post-exclusion, supported-language source files only.
+        # Requirement documentation is not batched; it reaches the requirements
+        # node whole.
+        source_files = {path: text for path, text in result["files"].items() if is_supported(path)}
+        plan, warnings = plan_batches(
+            source_files,
+            batch_chars=runtime.settings.batch_chars,
+            max_batches=runtime.settings.max_batches,
+        )
+        for warning in warnings:
+            runtime.log.warn(warning)
+        runtime.log.info(
+            f"batching: {len(plan.reviewed_files)} file(s) in {len(plan.batches)} batch(es) "
+            f"of up to {runtime.settings.batch_chars} chars; {len(plan.split_files)} split, "
+            f"{len(plan.not_reviewed_files)} not reviewed"
+        )
+
         files: dict[str, str] = result["files"]
         # SAST scans exactly the post-exclusion file set (FR-029).
         sast = collect_sast(files, scope_value=scope.value, rules=runtime.opengrep_rules)
@@ -302,6 +320,7 @@ def make_scope_node(runtime) -> Callable[[ReviewState], dict]:
             "files": files,
             "skipped_languages": result["skipped_languages"],
             "excluded_files": result["excluded_files"],
+            "batch_plan": plan,
             "degraded_sast": sast.degraded,
             "sast_findings": sast.findings,
             "run": run,

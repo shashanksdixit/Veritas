@@ -16,6 +16,7 @@ from typing import Callable
 from veritas.config.constants import LAST_REPORT_JSON, SCHEMA_VERSION
 from veritas.models.entities import (
     CodeFinding,
+    Coverage,
     Report,
     ReportStatus,
     ReviewRun,
@@ -72,6 +73,31 @@ def _finalize_run(state: ReviewState) -> ReviewRun:
     )
 
 
+def _coverage(state: ReviewState, runtime) -> Coverage | None:
+    """Coverage describing the batch plan (FR-029), or None when there is none.
+
+    Coverage describes WHICH code the plan covered (budgets, batches used,
+    reviewed/split/not-reviewed paths, and what exclusion withheld). It does not
+    describe review success: a batch whose LLM call failed is reported through
+    the errors channel and sets an incomplete report status (FR-027), not here.
+
+    Stays None when the scope node produced no plan, so a report from a run
+    without coverage data renders exactly as it did before.
+    """
+    plan = state.get("batch_plan")
+    if plan is None:
+        return None
+    return Coverage(
+        batch_chars=runtime.settings.batch_chars,
+        max_batches=runtime.settings.max_batches,
+        batches_used=len(plan.batches),
+        reviewed_files=list(plan.reviewed_files),
+        split_files=list(plan.split_files),
+        excluded_files=list(state.get("excluded_files", [])),
+        not_reviewed_files=list(plan.not_reviewed_files),
+    )
+
+
 def _post_report(runtime, report: Report) -> None:
     host = getattr(runtime, "hosting", None)
     parsed = getattr(runtime, "pr_parsed", None)
@@ -109,6 +135,7 @@ def make_render_node(runtime) -> Callable[[ReviewState], dict]:
             code_findings=code,
             requirement_findings=req,
             summary=summary,
+            coverage=_coverage(state, runtime),
         )
         markdown = render_markdown(report)
 

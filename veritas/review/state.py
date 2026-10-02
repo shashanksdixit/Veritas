@@ -15,6 +15,7 @@ from veritas.models.entities import (
     ReviewScope,
     VerificationFailure,
 )
+from veritas.review.batching import BatchPlan
 
 
 class ReviewState(TypedDict):
@@ -40,6 +41,10 @@ class ReviewState(TypedDict):
     # the pattern that matched. The scope node is the only writer and is the
     # sole authority on the set, so this is an overwrite channel.
     excluded_files: list[ExcludedFile]
+    # Planned code-review batches over the post-exclusion source files (FR-029).
+    # None until the scope node builds it; every code review type uses this one
+    # plan, so the scope node is the only writer.
+    batch_plan: BatchPlan | None
     project_context: str | None
     degraded_sast: str | None
     sast_findings: list[dict]

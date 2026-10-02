@@ -15,14 +15,17 @@ from veritas.review.state import ReviewState
 
 def make_performance_node(runtime) -> Callable[[ReviewState], dict]:
     def performance_node(state: ReviewState) -> dict:
-        findings = llm_findings(
+        findings, errors = llm_findings(
             runtime.llm,
+            state["batch_plan"],
             "performance",
-            state["files"],
             state["project_context"],
             category=Category.PERFORMANCE,
+            log=runtime.log,
         )
         runtime.log.info(f"performance: {len(findings)} findings")
-        return {"code_findings": findings}
+        # errors rides the shared FR-027 channel: any recorded error makes the
+        # run's report status incomplete.
+        return {"code_findings": findings, "errors": errors}
 
     return performance_node

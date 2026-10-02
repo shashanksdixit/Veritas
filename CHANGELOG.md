@@ -9,6 +9,9 @@ constitution Principle VIII / FR-016.
 ## [Unreleased]
 
 ### Added
+- Prompt version **1.3.0**: code review prompts explain partial-file chunk headers
+  and forbid findings that exist only because code outside the shown range is not
+  visible; no report schema change.
 - Prompt version **1.2.0**: review prompts require a finding's line range to
   start and end on the first and last lines of its cited snippet, with a worked
   example, and to quote the exact lines a finding is about; no report schema

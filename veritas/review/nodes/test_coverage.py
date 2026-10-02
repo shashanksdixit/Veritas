@@ -16,14 +16,17 @@ from veritas.review.state import ReviewState
 
 def make_test_coverage_node(runtime) -> Callable[[ReviewState], dict]:
     def test_coverage_node(state: ReviewState) -> dict:
-        findings = llm_findings(
+        findings, errors = llm_findings(
             runtime.llm,
+            state["batch_plan"],
             "test_coverage",
-            state["files"],
             state["project_context"],
             category=Category.TEST_COVERAGE,
+            log=runtime.log,
         )
         runtime.log.info(f"test-coverage: {len(findings)} findings")
-        return {"code_findings": findings}
+        # errors rides the shared FR-027 channel: any recorded error makes the
+        # run's report status incomplete.
+        return {"code_findings": findings, "errors": errors}
 
     return test_coverage_node
