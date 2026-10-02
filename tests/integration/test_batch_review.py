@@ -19,7 +19,7 @@ from pathlib import Path
 
 from veritas.config.constants import LAST_REPORT_JSON
 from veritas.config.settings import Settings
-from veritas.models.entities import Report, ReviewRun, ReviewScope
+from veritas.models.entities import Report, ReviewRun, ReviewScope, VerificationReasonCode
 from veritas.review.batching import plan_batches
 from veritas.review.graph import Runtime, run_review
 from veritas.review.nodes.code_quality import make_code_quality_node
@@ -513,3 +513,144 @@ def test_end_to_end_batch_failure_makes_the_report_incomplete(tmp_path):
     # in coverage.
     assert report.coverage is not None
     assert report.coverage.batches_used >= 2
+
+
+# --- nothing is filtered on the way out of a batch (FR-013) ---
+
+
+class ConstantLLM:
+    """Returns one canned payload for every code-review call, whatever batch.
+
+    Answering every batch identically is what lets a test assert about a
+    citation that does not match the batch that produced it.
+    """
+
+    model_name = "fake-model"
+
+    def __init__(self, payload: str) -> None:
+        self.payload = payload
+        self.calls = 0
+
+    def complete(self, system: str, user: str) -> str:
+        self.calls += 1
+        if "requirements-traceability" in system.lower():
+            return "[]"  # keep requirement findings out of these assertions
+        return self.payload
+
+
+def _payload(file: str, line: int, snippet: str, finding_id: str = "cf-fixed") -> str:
+    return json.dumps(
+        [
+            {
+                "id": finding_id,
+                "file": file,
+                "start_line": line,
+                "start_col": 1,
+                "end_line": line,
+                "end_col": 1,
+                "severity": "warning",
+                "title": f"Issue at {file}:{line}",
+                "description": "Something worth fixing.",
+                "recommendation": "Fix it.",
+                "confidence": 0.9,
+                "cited_snippet": snippet,
+            }
+        ]
+    )
+
+
+def _write_project(tmp_path: Path, files: dict[str, str]) -> Path:
+    for name, text in files.items():
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    return tmp_path
+
+
+def _review(tmp_path: Path, llm) -> tuple:
+    """Run the whole pipeline over ``tmp_path`` with ``llm``; return outcome+report."""
+    outcome = run_review(
+        Settings(api_key="test-key", batch_chars=_BATCH_CHARS, max_batches=8),
+        ReviewScope.PROJECT,
+        str(tmp_path),
+        llm=llm,
+    )
+    # A verification failure is not a run error, so the run still succeeds.
+    assert outcome.exit_code == 0
+    return (outcome, _read_report())
+
+
+def test_finding_citing_a_file_not_in_scope_is_recorded_as_a_failure(tmp_path):
+    """A payload naming a file outside the scope is not filtered away by the
+    review type: verification records it as file_not_in_scope (FR-013)."""
+    _write_project(tmp_path, {"src/a.py": _lines(25, "a"), "src/b.py": _lines(25, "b")})
+    llm = ConstantLLM(_payload("src/does_not_exist.py", 3, "nope = 1"))
+    outcome, report = _review(tmp_path, llm)
+
+    failures = report.summary.verification_failures
+    assert failures
+    assert {f.reason_code for f in failures} == {VerificationReasonCode.FILE_NOT_IN_SCOPE}
+    assert {f.file for f in failures} == {"src/does_not_exist.py"}
+    assert "not in the reviewed file set" in failures[0].reason
+
+    # Not silently missing: every finding produced is accounted for as a
+    # recorded failure (none was verified), and the report names the file.
+    assert report.summary.verification_failure_count == len(report.code_findings)
+    markdown = Path(str(outcome.report_path)).read_text(encoding="utf-8")
+    assert "src/does_not_exist.py" in markdown
+    assert "Verification failures" in markdown
+
+
+def test_finding_citing_an_in_scope_file_in_a_different_batch_is_kept(tmp_path):
+    """Verification re-reads the cited file from the full scoped contents, not
+    from the batch that produced the finding, so a cross-batch citation with a
+    real snippet still verifies."""
+    files = {
+        "src/a.py": _lines(25, "a"),
+        "src/b.py": _lines(25, "b"),
+        "src/c.py": _lines(25, "c"),
+    }
+    _write_project(tmp_path, files)
+    plan, _ = plan_batches(files, batch_chars=_BATCH_CHARS, max_batches=8)
+    assert len(plan.batches) == 3
+    assert {chunk.path for chunk in plan.batches[-1].chunks} == {"src/c.py"}
+
+    # Every batch returns a citation into the LAST batch's file, so batches 1
+    # and 2 produce citations into a batch they were never shown.
+    line_no = 3
+    snippet = files["src/c.py"].splitlines()[line_no - 1]
+    _outcome, report = _review(tmp_path, ConstantLLM(_payload("src/c.py", line_no, snippet)))
+
+    kept = [f for f in report.code_findings if f.file == "src/c.py"]
+    assert kept
+    assert {f.line_range.start_line for f in kept} == {line_no}
+    # Verified as cited: no correction was needed.
+    assert all(f.citation_adjusted_from is None for f in kept)
+    assert report.summary.verification_failures == []
+
+
+def test_finding_citing_a_dot_slash_path_is_recorded_as_a_failure(tmp_path):
+    """Observed outcome: "./src/a.py" is not corrected and not verified.
+
+    The cited path is looked up verbatim against the scope keys, and the scope
+    holds "src/a.py", so the citation resolves to nothing. Verification records
+    it as file_not_in_scope rather than normalising it away or dropping it
+    silently (FR-013).
+    """
+    files = {"src/a.py": _lines(25, "a"), "src/b.py": _lines(25, "b")}
+    _write_project(tmp_path, files)
+    line_no = 3
+    snippet = files["src/a.py"].splitlines()[line_no - 1]
+    outcome, report = _review(tmp_path, ConstantLLM(_payload("./src/a.py", line_no, snippet)))
+
+    failures = report.summary.verification_failures
+    assert failures
+    # Recorded, not corrected: a corrected citation would have been kept and so
+    # would not appear here at all (correction only applies to
+    # SNIPPET_FOUND_ELSEWHERE).
+    assert {f.reason_code for f in failures} == {VerificationReasonCode.FILE_NOT_IN_SCOPE}
+    assert {f.file for f in failures} == {"./src/a.py"}
+    assert "not in the reviewed file set" in failures[0].reason
+    # Not silently missing: the report discloses it.
+    markdown = Path(str(outcome.report_path)).read_text(encoding="utf-8")
+    assert "./src/a.py" in markdown

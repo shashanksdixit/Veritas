@@ -286,6 +286,12 @@ def llm_findings(
     call whose user message is the usual context/extra prefix followed by that
     batch's text.
 
+    No payload is filtered on the way out. Whether a citation is real is decided
+    once, by the verification node, which re-reads the cited file from the full
+    scoped contents and records a ``VerificationFailure`` for a citation it
+    cannot confirm. Filtering here would drop such a finding silently, leaving
+    no record that it was ever made (FR-013).
+
     Per-batch failure isolation: a failure in one batch — anywhere between the
     LLM call and building its findings — is recorded as an error and the
     remaining batches still run, so a provider error loses one batch of review
@@ -321,11 +327,17 @@ def llm_findings(
         try:
             text = llm.complete(sys_prompt, prefix + batch.text)
             payloads = parse_json_array(text)
-            seen = set(paths)
+            # Every payload the LLM returns becomes a finding. Nothing is
+            # filtered here: a finding must never be dropped silently (FR-013).
+            # Verification is the single authority on whether a citation is real,
+            # and it records a finding citing an out-of-scope file as a
+            # file_not_in_scope failure instead of discarding it. It also checks
+            # an in-scope file against its full content, not just the batch the
+            # finding happened to be produced from, so a citation into another
+            # batch of the same file still verifies.
             findings.extend(
                 build_code_finding(raw, category=category, source=source)
                 for raw in payloads
-                if str(raw.get("file", "")).strip() in seen
             )
         except Exception as exc:  # noqa: BLE001 - isolate one batch, keep going
             error = redact_secrets(
