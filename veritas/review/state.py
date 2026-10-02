@@ -29,8 +29,11 @@ class ReviewState(TypedDict):
     requirement_findings: Annotated[list[RequirementFinding], add]
     # Verified findings produced by the verification node (overwrite channels —
     # the only consumer is render; FR-013 excludes unverifiable findings here).
-    verified_code_findings: list[CodeFinding]
-    verified_requirement_findings: list[RequirementFinding]
+    # None means the verification node never ran; a list (possibly empty) is its
+    # verdict. Render must test for None, not for emptiness, so that "kept
+    # nothing" is never mistaken for "never ran".
+    verified_code_findings: list[CodeFinding] | None
+    verified_requirement_findings: list[RequirementFinding] | None
     verification_failures: Annotated[list[VerificationFailure], add]
     run: ReviewRun
     phase: str

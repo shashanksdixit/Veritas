@@ -17,8 +17,10 @@ from veritas.config.constants import LAST_REPORT_JSON, SCHEMA_VERSION
 from veritas.models.entities import (
     CodeFinding,
     Coverage,
+    FindingSource,
     Report,
     ReportStatus,
+    RequirementFinding,
     ReviewRun,
 )
 from veritas.output.compact import render_compact
@@ -57,9 +59,8 @@ def _apply_suppressions(
     return kept
 
 
-def _finalize_run(state: ReviewState) -> ReviewRun:
+def _finalize_run(state: ReviewState, errors: list[str]) -> ReviewRun:
     run = state["run"]
-    errors = list(state.get("errors", []))
     if errors:
         return run.model_copy(
             update={
@@ -120,13 +121,46 @@ def _post_report(runtime, report: Report) -> None:
 
 def make_render_node(runtime) -> Callable[[ReviewState], dict]:
     def node(state: ReviewState) -> dict:
-        run = _finalize_run(state)
+        # FR-013: the verified channels are the only authority on what may be
+        # published. They are None when verification never ran, and a list when it
+        # did — a list that may legitimately be EMPTY. So the test is `is None`,
+        # never truthiness: `or` would read "verification kept nothing" as
+        # "verification never ran" and publish the very findings it had rejected.
+        withheld_errors: list[str] = []
 
-        raw_code = state.get("verified_code_findings") or state.get("code_findings", [])
-        raw_req = state.get("verified_requirement_findings") or state.get("requirement_findings", [])
+        verified_code = state.get("verified_code_findings")
+        if verified_code is None:
+            # Verification did not run, so no non-SAST citation has been grounded.
+            # SAST findings are ground truth in their own right (FR-013 exemption
+            # by actual source); everything else is withheld and counted, never
+            # published unverified.
+            all_code = state.get("code_findings", [])
+            code = [f for f in all_code if f.source is FindingSource.SAST]
+            withheld = len(all_code) - len(code)
+            if withheld:
+                withheld_errors.append(
+                    f"verification did not run; {withheld} unverified finding(s) withheld"
+                )
+        else:
+            code = list(verified_code)
 
-        code = _apply_suppressions(raw_code, state.get("files", {}), runtime.suppressions)
-        req = raw_req
+        verified_req = state.get("verified_requirement_findings")
+        if verified_req is None:
+            # RequirementFindings carry no source and no SAST exemption, so
+            # without verification all of them are withheld.
+            withheld = len(state.get("requirement_findings", []))
+            req: list[RequirementFinding] = []
+            if withheld:
+                withheld_errors.append(
+                    "verification did not run; "
+                    f"{withheld} unverified requirement finding(s) withheld"
+                )
+        else:
+            req = list(verified_req)
+
+        run = _finalize_run(state, [*state.get("errors", []), *withheld_errors])
+
+        code = _apply_suppressions(code, state.get("files", {}), runtime.suppressions)
 
         summary = compute_summary(code, req, state.get("verification_failures", []))
         report = Report(
@@ -153,6 +187,9 @@ def make_render_node(runtime) -> Callable[[ReviewState], dict]:
             "report_markdown": markdown,
             "run": run,
             "phase": "done",
+            # The errors channel is additive, so return only the entries added
+            # here — returning the merged list would duplicate every earlier one.
+            "errors": withheld_errors,
         }
 
     return node

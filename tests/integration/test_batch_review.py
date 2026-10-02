@@ -19,7 +19,16 @@ from pathlib import Path
 
 from veritas.config.constants import LAST_REPORT_JSON
 from veritas.config.settings import Settings
-from veritas.models.entities import Report, ReviewRun, ReviewScope, VerificationReasonCode
+from veritas.models.entities import (
+    FindingSource,
+    Report,
+    ReportStatus,
+    ReviewRun,
+    ReviewScope,
+    Severity,
+    VerificationReasonCode,
+    Verdict,
+)
 from veritas.review.batching import plan_batches
 from veritas.review.graph import Runtime, run_review
 from veritas.review.nodes.code_quality import make_code_quality_node
@@ -27,6 +36,7 @@ from veritas.review.nodes.performance import make_performance_node
 from veritas.review.nodes.requirements import make_requirements_node
 from veritas.review.nodes.security import make_security_node
 from veritas.review.nodes.test_coverage import make_test_coverage_node
+from veritas.security.opengrep import OpengrepResult
 from veritas.utils.logging import Log
 
 _CODE_MARKER = "Code to review:\n\n"
@@ -538,7 +548,13 @@ class ConstantLLM:
         return self.payload
 
 
-def _payload(file: str, line: int, snippet: str, finding_id: str = "cf-fixed") -> str:
+def _payload(
+    file: str,
+    line: int,
+    snippet: str,
+    finding_id: str = "cf-fixed",
+    severity: str = "warning",
+) -> str:
     return json.dumps(
         [
             {
@@ -548,7 +564,7 @@ def _payload(file: str, line: int, snippet: str, finding_id: str = "cf-fixed") -
                 "start_col": 1,
                 "end_line": line,
                 "end_col": 1,
-                "severity": "warning",
+                "severity": severity,
                 "title": f"Issue at {file}:{line}",
                 "description": "Something worth fixing.",
                 "recommendation": "Fix it.",
@@ -593,9 +609,10 @@ def test_finding_citing_a_file_not_in_scope_is_recorded_as_a_failure(tmp_path):
     assert {f.file for f in failures} == {"src/does_not_exist.py"}
     assert "not in the reviewed file set" in failures[0].reason
 
-    # Not silently missing: every finding produced is accounted for as a
-    # recorded failure (none was verified), and the report names the file.
-    assert report.summary.verification_failure_count == len(report.code_findings)
+    # Not silently missing: nothing is published, and every finding the LLM
+    # produced is instead accounted for as a recorded failure.
+    assert [f for f in report.code_findings if f.source is not FindingSource.SAST] == []
+    assert len(failures) == report.summary.verification_failure_count == 8
     markdown = Path(str(outcome.report_path)).read_text(encoding="utf-8")
     assert "src/does_not_exist.py" in markdown
     assert "Verification failures" in markdown
@@ -654,3 +671,113 @@ def test_finding_citing_a_dot_slash_path_is_recorded_as_a_failure(tmp_path):
     # Not silently missing: the report discloses it.
     markdown = Path(str(outcome.report_path)).read_text(encoding="utf-8")
     assert "./src/a.py" in markdown
+
+
+# --- the render node is the grounding gate (FR-013) ---
+
+
+def _section(markdown: str, heading: str) -> str:
+    """The body of one ``## `` section of the report, up to the next one."""
+    body = markdown.split(f"{heading}\n", 1)[1]
+    return body.split("\n## ", 1)[0]
+
+
+def test_findings_all_failing_verification_are_excluded_from_the_report(tmp_path):
+    """Verification kept nothing, so nothing unverified may reach the report.
+
+    ``verified_code_findings`` is an empty list here, which is falsy — a render
+    node that treated "empty" as "absent" would fall back to the raw
+    ``code_findings`` and publish the 8 findings (4 review types × 2 batches) it
+    had just rejected.
+    """
+    _write_project(tmp_path, {"src/a.py": _lines(25, "a"), "src/b.py": _lines(25, "b")})
+    # severity=error so that a leak is also visible in the verdict.
+    llm = ConstantLLM(_payload("src/does_not_exist.py", 3, "nope = 1", severity="error"))
+    outcome, report = _review(tmp_path, llm)
+
+    # Rejected findings are not in the report, whatever their source.
+    assert [f for f in report.code_findings if f.source != FindingSource.SAST] == []
+    assert report.code_findings == []
+    # Nor do they drive any count...
+    assert report.summary.total_code_findings == 0
+    assert report.summary.severity_counts == {}
+    assert report.summary.category_counts == {}
+    # ...or the verdict. All 8 are error-severity, so publishing even one would
+    # force RequiresModification; the verdict that remains comes from the
+    # requirements node's own "unclear" finding, not from a rejected citation.
+    assert Severity.ERROR not in report.summary.severity_counts
+    assert report.summary.verdict is not Verdict.REQUIRES_MODIFICATION
+    # Nor do they appear in the Code Findings section.
+    markdown = Path(str(outcome.report_path)).read_text(encoding="utf-8")
+    code_section = _section(markdown, "## Code Findings")
+    assert "No code findings." in code_section
+    assert "src/does_not_exist.py" not in code_section
+    # They are all accounted for as recorded failures instead of vanishing.
+    failures = report.summary.verification_failures
+    assert len(failures) == report.summary.verification_failure_count == 8
+    assert {f.reason_code for f in failures} == {VerificationReasonCode.FILE_NOT_IN_SCOPE}
+    assert {f.file for f in failures} == {"src/does_not_exist.py"}
+
+
+def test_render_withholds_non_sast_findings_when_verification_did_not_run(
+    tmp_path, monkeypatch
+):
+    """When the verification node never produced a verdict, only SAST ground truth
+    may be published; the rest are withheld and the run is marked incomplete."""
+    files = {"src/a.py": _lines(25, "a"), "src/b.py": _lines(25, "b")}
+    _write_project(tmp_path, files)
+
+    # One SAST finding, at a location no LLM finding cites, so it survives the
+    # security node's own SAST de-duplication.
+    def _stub(files_seen, *, scope_value, rules=None, opengrep_bin="opengrep"):
+        return OpengrepResult(
+            findings=[
+                {
+                    "path": "src/b.py",
+                    "start": {"line": 7, "col": 1},
+                    "end": {"line": 7, "col": 10},
+                    "check_id": "py.lang.security.audit.eval-detected",
+                    "extra": {
+                        "severity": "WARNING",
+                        "message": "Audit: use of eval detected",
+                        "lines": files_seen["src/b.py"].splitlines()[6],
+                    },
+                }
+            ],
+            rules="r",
+        )
+
+    monkeypatch.setattr("veritas.review.nodes.scope.collect_sast", _stub)
+
+    def _exploding_verify_node(runtime):
+        def verify_node(state):
+            raise RuntimeError("verification exploded")
+
+        return verify_node
+
+    monkeypatch.setattr(
+        "veritas.review.nodes.verification.make_verify_node", _exploding_verify_node
+    )
+
+    # The LLM citation is genuine (real file, real line, real snippet): it is
+    # withheld because verification never ran, not because it was invalid.
+    line_no = 3
+    snippet = files["src/a.py"].splitlines()[line_no - 1]
+    outcome = run_review(
+        Settings(api_key="test-key", batch_chars=_BATCH_CHARS, max_batches=8),
+        ReviewScope.PROJECT,
+        str(tmp_path),
+        llm=ConstantLLM(_payload("src/a.py", line_no, snippet, severity="error")),
+    )
+    report = _read_report()
+
+    # Only SAST ground truth is published.
+    assert [f.source for f in report.code_findings] == [FindingSource.SAST]
+    assert report.code_findings[0].title == "Audit: use of eval detected"
+    # The 8 unverifiable LLM findings are counted as withheld, in the error.
+    assert report.summary.verification_failures == []
+    assert "verification did not run" in report.run.error
+    assert "8 unverified finding(s) withheld" in report.run.error
+    # And the report is marked incomplete, with a non-zero exit code.
+    assert report.run.report_status == ReportStatus.INCOMPLETE
+    assert outcome.exit_code == 2

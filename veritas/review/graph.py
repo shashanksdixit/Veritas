@@ -109,8 +109,12 @@ def _initial_state(
         "target": target,
         "code_findings": [],
         "requirement_findings": [],
-        "verified_code_findings": [],
-        "verified_requirement_findings": [],
+        # None, not []: these two channels mean "verification produced a verdict".
+        # A verdict that kept nothing is an empty list; only None means the
+        # verification node never ran, and the render node needs to tell those
+        # two apart to publish only grounded findings (FR-013).
+        "verified_code_findings": None,
+        "verified_requirement_findings": None,
         "verification_failures": [],
         "run": run,
         "phase": "scope",
