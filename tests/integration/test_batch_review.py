@@ -15,7 +15,11 @@ plan. These tests pin the three properties that makes safe:
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 from pathlib import Path
+from random import Random
 
 from veritas.config.constants import LAST_REPORT_JSON
 from veritas.config.settings import Settings
@@ -32,6 +36,7 @@ from veritas.models.entities import (
 from veritas.review.batching import plan_batches
 from veritas.review.graph import Runtime, run_review
 from veritas.review.nodes.code_quality import make_code_quality_node
+from veritas.review.nodes.common import load_prompt
 from veritas.review.nodes.performance import make_performance_node
 from veritas.review.nodes.requirements import make_requirements_node
 from veritas.review.nodes.security import make_security_node
@@ -106,8 +111,45 @@ def _finding_from_batch(user: str, finding_id: str) -> str:
     )
 
 
+# Every review type the graph fans out to, named as its node names its prompt.
+# requirements is deliberately in here too: it is unbatched but the graph drives
+# it from the same superstep, so it calls the LLM from the same threads.
+_REVIEW_PROMPT_NAMES = tuple(name for name, _factory in _REVIEW_TYPES) + ("requirements",)
+
+
+@lru_cache(maxsize=None)
+def _review_prompt(review: str) -> str:
+    """The exact system string one review type sends on every one of its calls.
+
+    Each node hands ``load_prompt(name)`` straight to ``complete``, so comparing
+    the recorded system prompt against this identifies the caller without
+    relying on thread order.
+    """
+    return load_prompt(review)
+
+
+def _review_of(system: str) -> str:
+    """Which review type a system prompt belongs to, or ``"other"``."""
+    for name in _REVIEW_PROMPT_NAMES:
+        if system == _review_prompt(name):
+            return name
+    return "other"
+
+
 class SpyLLM:
     """Records every call and answers each batch with a grounded finding.
+
+    The graph runs all five review nodes in one superstep, so they share this
+    object across threads and the order of ``calls`` is not reproducible. A
+    configured failure is therefore scoped to one review type by ``fail_review``
+    and counted against that type's own calls, which ``llm_findings`` issues
+    sequentially in plan order: ``fail_on=2, fail_review="code_quality"`` fails
+    code quality's second batch however the threads interleave, and a global
+    call number is refused outright.
+
+    A test that drives ``llm_findings`` for a single review type from the main
+    thread still sees one stream, so counting per review type is identical to
+    counting globally there.
 
     ``events`` is shared with the log capture so a test can assert that the
     per-batch info line was emitted before that batch's LLM call.
@@ -119,20 +161,46 @@ class SpyLLM:
         self,
         *,
         fail_on: int | None = None,
+        fail_review: str | None = None,
         message: str = "provider exploded",
         events: list[str] | None = None,
     ):
+        if fail_on is not None and fail_review is None:
+            raise ValueError(
+                "fail_on needs fail_review: a bare call number is not deterministic, "
+                "because the review nodes call the LLM from parallel threads"
+            )
+        if fail_review is not None and fail_review not in _REVIEW_PROMPT_NAMES:
+            raise ValueError(
+                f"unknown review type {fail_review!r}; "
+                f"expected one of {_REVIEW_PROMPT_NAMES}"
+            )
         self.calls: list[tuple[str, str]] = []
         self.events: list[str] = events if events is not None else []
         self._fail_on = fail_on
+        self._fail_review = fail_review
         self._message = message
+        self._lock = threading.Lock()
+        self._calls_per_review: dict[str, int] = {}
+
+    def calls_for(self, review: str) -> list[tuple[str, str]]:
+        """The recorded calls of one review type, in the order it issued them."""
+        prompt = _review_prompt(review)
+        with self._lock:
+            return [(s, u) for s, u in self.calls if s == prompt]
 
     def complete(self, system: str, user: str) -> str:
-        self.calls.append((system, user))
-        self.events.append(f"llm-call-{len(self.calls)}")
-        if self._fail_on is not None and len(self.calls) == self._fail_on:
+        with self._lock:
+            self.calls.append((system, user))
+            index = len(self.calls)
+            review = _review_of(system)
+            nth = self._calls_per_review.get(review, 0) + 1
+            self._calls_per_review[review] = nth
+            self.events.append(f"llm-call-{index}")
+            should_fail = review == self._fail_review and nth == self._fail_on
+        if should_fail:
             raise RuntimeError(self._message)
-        return _finding_from_batch(user, f"cf-{len(self.calls)}")
+        return _finding_from_batch(user, f"cf-{index}")
 
 
 def _runtime(llm, *, capture: list[str] | None = None, **settings_kwargs) -> Runtime:
@@ -209,7 +277,7 @@ def test_every_review_type_sees_a_split_files_chunk_header():
 
 def test_one_failing_batch_keeps_findings_from_the_other_batches():
     plan = _three_batch_plan()
-    llm = SpyLLM(fail_on=2)
+    llm = SpyLLM(fail_on=2, fail_review="code_quality")
     result = make_code_quality_node(_runtime(llm))(_state(plan))
 
     assert len(llm.calls) == 3  # every batch was still attempted
@@ -221,7 +289,7 @@ def test_one_failing_batch_keeps_findings_from_the_other_batches():
 
 def test_failed_batch_error_names_the_batch_and_its_files():
     plan = _three_batch_plan()
-    llm = SpyLLM(fail_on=1, message="429 rate limited")
+    llm = SpyLLM(fail_on=1, fail_review="code_quality", message="429 rate limited")
     result = make_code_quality_node(_runtime(llm))(_state(plan))
     (error,) = result["errors"]
     assert error == "code_quality: batch 1/3 failed (files: src/a.py): 429 rate limited"
@@ -231,27 +299,11 @@ def test_failed_batch_error_names_the_batch_and_its_files():
 
 def test_failing_batch_is_isolated_for_one_review_type_only():
     """Only the failing type records an error; the other three still finish."""
-
-    class FailsOnCodeQualityBatch2(SpyLLM):
-        """Raises on the second code-quality call, ignoring the other types."""
-
-        def __init__(self):
-            super().__init__()
-            self._code_quality_calls = 0
-
-        def complete(self, system: str, user: str) -> str:
-            if "code-quality" not in system.lower():
-                return super().complete(system, user)
-            self._code_quality_calls += 1
-            self.calls.append((system, user))
-            if self._code_quality_calls == 2:
-                raise RuntimeError("provider exploded")
-            return _finding_from_batch(user, "cf-cq")
-
     plan = _three_batch_plan()
     per_type_errors = {}
     for name, factory in _REVIEW_TYPES:
-        result = factory(_runtime(FailsOnCodeQualityBatch2()))(_state(plan))
+        llm = SpyLLM(fail_on=2, fail_review="code_quality")
+        result = factory(_runtime(llm))(_state(plan))
         per_type_errors[name] = result["errors"]
 
     assert len(per_type_errors["code_quality"]) == 1
@@ -264,7 +316,7 @@ def test_failing_batch_is_isolated_for_one_review_type_only():
 def test_batch_failure_message_is_redacted():
     plan = _three_batch_plan()
     secret = "sk-abcdefghijklmnop1234"
-    llm = SpyLLM(fail_on=2, message=f"auth failed for {secret}")
+    llm = SpyLLM(fail_on=2, fail_review="code_quality", message=f"auth failed for {secret}")
     result = make_code_quality_node(_runtime(llm))(_state(plan))
     (error,) = result["errors"]
     assert secret not in error
@@ -277,10 +329,93 @@ def test_redacted_batch_error_is_also_redacted_in_the_log():
     plan = _three_batch_plan()
     secret = "sk-abcdefghijklmnop1234"
     events: list[str] = []
-    llm = SpyLLM(fail_on=2, message=f"auth failed for {secret}")
+    llm = SpyLLM(fail_on=2, fail_review="code_quality", message=f"auth failed for {secret}")
     make_code_quality_node(_runtime(llm, capture=events))(_state(plan))
     warned = [e for e in events if e.startswith("warn:")]
     assert warned and secret not in warned[0] and "[REDACTED]" in warned[0]
+
+
+# --- the fake's failure targeting survives the graph's thread fan-out ---
+
+
+def _tagged_body(tag: str) -> str:
+    """A user message shaped like one batch, tagged so calls can be told apart."""
+    return f"{_CODE_MARKER}### FILE: src/{tag}.py (lines 1-1)\n1 | {tag}\n"
+
+
+def _tag_of(user: str) -> str:
+    """The tag baked into a :func:`_tagged_body` message."""
+    return user.split(_CODE_MARKER, 1)[1].splitlines()[1].split("| ", 1)[1]
+
+
+def _race(llm: SpyLLM, schedule: list[tuple[str, str]]) -> list[str]:
+    """Issue one ``llm`` call per schedule entry from its own thread at once.
+
+    Every caller waits on a barrier, so all of them are in flight before any of
+    them reaches the spy and the arrival order is the scheduler's, not the
+    schedule's. Returns the tags of the calls that raised.
+    """
+    start = threading.Barrier(len(schedule))
+
+    def call(review: str, tag: str) -> str | None:
+        start.wait()
+        try:
+            llm.complete(_review_prompt(review), _tagged_body(tag))
+        except RuntimeError:
+            return tag
+        return None
+
+    with ThreadPoolExecutor(max_workers=len(schedule)) as pool:
+        return [tag for tag in pool.map(lambda pair: call(*pair), schedule) if tag]
+
+
+def test_configured_failure_targets_its_own_review_type_under_thread_interleaving():
+    """``fail_on`` counts one review type's calls, not the interleaved stream.
+
+    ``run_review`` drives the five review nodes in one superstep, so a single
+    LLM object sees their calls in an order the scheduler picks. Counting the
+    failure against the target review type's own sequential call order keeps the
+    failure on the same batch every run, so this shuffles the callers, races
+    them from a barrier, and still expects exactly the 2nd code_quality call to
+    raise.
+    """
+    counts = {
+        "code_quality": 3,
+        "security": 2,
+        "test_coverage": 2,
+        "performance": 2,
+        "requirements": 1,
+    }
+    for seed in range(8):
+        order: list[str] = []
+        for review, count in counts.items():
+            order += [review] * count
+        Random(seed).shuffle(order)
+
+        llm = SpyLLM(fail_on=2, fail_review="code_quality")
+        schedule = [(review, f"{seed}-{n}-{review}") for n, review in enumerate(order)]
+        raised = _race(llm, schedule)
+
+        # Exactly one call raised, and it was a code_quality one.
+        assert len(raised) == 1, (seed, order)
+        failed = raised[0]
+
+        # It is the 2nd call of its own review type — the batch ordinal the node
+        # fixes — and not the 2nd call of the shared stream.
+        code_quality = llm.calls_for("code_quality")
+        assert len(code_quality) == 3, seed
+        assert _tag_of(code_quality[1][1]) == failed, (seed, order)
+        # The other two code_quality calls were answered.
+        others = {_tag_of(code_quality[0][1]), _tag_of(code_quality[2][1])}
+        assert failed not in others, (seed, order)
+
+        # Every call was recorded once under its own review type, and the
+        # failure never disturbed the shared bookkeeping.
+        assert len(llm.calls) == len(schedule), seed
+        for review, count in counts.items():
+            if review != "code_quality":
+                assert len(llm.calls_for(review)) == count, (seed, review)
+        assert len([e for e in llm.events if e.startswith("llm-call-")]) == len(schedule)
 
 
 # --- zero batches ---
@@ -507,7 +642,10 @@ def test_split_file_chunks_are_reviewed_by_every_type_end_to_end(tmp_path):
 
 def test_end_to_end_batch_failure_makes_the_report_incomplete(tmp_path):
     project = _split_project(tmp_path)
-    llm = SpyLLM(fail_on=2)
+    # Named review type, not a bare call number: the five nodes share this LLM
+    # across threads, so "the 2nd call" would land on whichever review type the
+    # scheduler happened to run second.
+    llm = SpyLLM(fail_on=2, fail_review="code_quality")
     outcome = run_review(
         _end_to_end_settings(tmp_path),
         ReviewScope.PROJECT,
