@@ -106,12 +106,21 @@ tool is complete.
 
 ### Privacy & Data Handling
 A zero-data-retention (ZDR) toggle MUST gate OpenRouter routing, restricting it
-to zero-data-retention endpoints only when enabled. ZDR is off by default. Veritas
+to zero-data-retention endpoints only when enabled. ZDR is enforced per request and
+exists only on OpenRouter; on any other backend (a direct provider API or a
+self-hosted endpoint), zero data retention depends on the user's account agreement
+with that provider and cannot be enforced by Veritas. ZDR is off by default. Veritas
 has no way to detect whether a given run is significant/proprietary versus
 disposable, so this constitution does not mandate an environment-based default.
-Instead, whenever ZDR is off, the system MUST print a warning on every run stating
-that some free-tier models explicitly reserve the right to train on inputs/outputs,
-and recommending ZDR be enabled for any review of proprietary or sensitive code.
+Instead, whenever ZDR is off, the system MUST print a data-retention warning exactly
+once on every run, worded for the configured backend: on OpenRouter, stating that
+some free-tier models explicitly reserve the right to train on inputs/outputs and
+recommending ZDR be enabled for any review of proprietary or sensitive code; on any
+other backend, stating that data retention is governed by the user's account
+agreement with that provider. If ZDR is enabled and the configured backend is not
+OpenRouter, the run MUST stop before any code is fetched or sent, with an error
+stating that ZDR is only supported with OpenRouter; Veritas MUST NOT proceed as if
+ZDR were in force.
 Enabling ZDR is the user's informed choice; Veritas's constitutional obligation is
 to make that choice informed, not to guess at or enforce an environment. Source code and diffs MAY be sent to LLM
 providers only in accordance with the configured policy and never without explicit
@@ -154,4 +163,4 @@ MAJOR for backward-incompatible principle changes or removals, MINOR for added o
 materially expanded principles, PATCH for clarifications and wording fixes. Every
 PR and completed review MUST verify compliance with this constitution.
 
-**Version**: 5.0.0 | **Ratified**: 2026-09-15 | **Last Amended**: 2026-09-22
+**Version**: 5.1.0 | **Ratified**: 2026-09-15 | **Last Amended**: 2026-10-03
