@@ -18,7 +18,8 @@ from langgraph.graph import END, START, StateGraph
 from veritas.config.constants import REPORT_PATTERN, SCHEMA_VERSION
 from veritas.config.settings import Settings
 from veritas.hosting.resolver import UnresolvableTarget, parse_pr_target
-from veritas.llm.client import LLMClient
+from veritas.llm.client import LLMClient, split_model_string
+from veritas.llm.zdr import backend_is_openrouter, zdr_warning_text
 from veritas.models.entities import ReviewRun, ReviewScope
 from veritas.review import ReviewFatalError
 from veritas.review.nodes import (  # noqa: F401  (node factories registered below)
@@ -155,6 +156,31 @@ def _precheck_local_target(scope_val: ReviewScope, target: str) -> None:
             )
 
 
+def _gate_zdr(settings: Settings, log: Log) -> None:
+    """Refuse an unenforceable ZDR setup, else warn once — the first thing a run does.
+
+    ZDR is a per-request OpenRouter feature, so on any other backend the setting
+    cannot be honoured (FR-021, constitution Privacy & Data Handling v5.1.0). This
+    is the first statement in ``run_review`` so that a run configured for ZDR can
+    never have fetched a PR, read a file, built a hosting client or called a model
+    before the refusal.
+    """
+    provider, _model_id = split_model_string(settings.model_runtime)
+    if not settings.zdr:
+        log.warn(zdr_warning_text(settings.base_url, provider))
+        return
+    if backend_is_openrouter(provider, settings.base_url):
+        return
+    raise ReviewFatalError(
+        "ZDR is only supported with OpenRouter. The configured backend is "
+        f"{provider} at {settings.base_url}; zero data retention there depends on "
+        "your account agreement with that provider and cannot be enforced per "
+        "request. Nothing was sent. Set zdr = false (VERITAS_ZDR=false) if your "
+        "account already has zero data retention, or point base_url at "
+        "https://openrouter.ai/api/v1."
+    )
+
+
 def run_review(
     settings: Settings,
     scope_val: ReviewScope,
@@ -172,6 +198,9 @@ def run_review(
     """
     log = Log(verbose=verbose)
     report_path = output or _default_report_path()
+
+    # Before anything is fetched, read, or called (FR-021).
+    _gate_zdr(settings, log)
 
     if scope_val == ReviewScope.PR:
         try:

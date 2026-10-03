@@ -25,32 +25,39 @@ def test_runtime_model_id_preserved(caplog):
     assert runtime_model_id(settings) == "vendor/some-model"
 
 
-def test_zdr_off_emits_warning(caplog):
-    log = Log(stream=None)
+def test_zdr_off_sends_no_provider_block(capsys):
     settings = Settings(api_key="k", zdr=False)
-    provider, _model, kwargs = build_kwargs(settings, log)
+    provider, _model, kwargs = build_kwargs(settings)
     assert provider == "openai"
     assert "base_url" in kwargs
+    assert "extra_body" not in kwargs
     assert "model_kwargs" not in kwargs
-    assert "ZDR is OFF" in caplog.text or True
+    # Nothing is emitted here: build_kwargs runs more than once per run, so the
+    # per-run warning belongs to the start-up path (FR-021, T079).
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 
 
-def test_zdr_on_injects_provider_block(caplog):
+def test_zdr_on_injects_provider_block():
+    """extra_body, never model_kwargs: LangChain spreads model_kwargs as top-level
+    client arguments, where the OpenAI SDK rejects `provider` with a TypeError."""
     settings = Settings(api_key="k", zdr=True)
-    _provider, _model, kwargs = build_kwargs(settings, Log(stream=None))
-    assert kwargs["model_kwargs"] == {"provider": {"zdr": True, "data_collection": "deny"}}
+    _provider, _model, kwargs = build_kwargs(settings)
+    assert kwargs["extra_body"] == {"provider": {"zdr": True, "data_collection": "deny"}}
+    assert "model_kwargs" not in kwargs
 
 
 def test_openai_api_key_passed():
     settings = Settings(api_key="sk-value")
-    _provider, _model, kwargs = build_kwargs(settings, Log(stream=None))
+    _provider, _model, kwargs = build_kwargs(settings)
     assert kwargs["api_key"] == "sk-value"
 
 
 def test_anthropic_without_optional_extra_raises():
     settings = Settings(model="anthropic:claude-x", api_key="k")
     with pytest.raises(RuntimeError, match="langchain-anthropic"):
-        build_kwargs(settings, Log(stream=None))
+        build_kwargs(settings)
 
 
 def test_discover_free_models_none_api_key_returns_empty(caplog):
@@ -102,7 +109,7 @@ def _bounded(**overrides) -> Settings:
 def test_build_kwargs_bounds_openai_compatible_branches(model_string):
     """Both the openai route and the unknown-provider fallback are bounded."""
     settings = _bounded(model=model_string)
-    provider, model_id, kwargs = build_kwargs(settings, Log(stream=None))
+    provider, model_id, kwargs = build_kwargs(settings)
     assert (provider, model_id) == tuple(model_string.split(":", 1))
     assert kwargs["timeout"] == 42.0
     assert kwargs["max_retries"] == 4
@@ -120,25 +127,21 @@ def test_build_kwargs_bounds_the_anthropic_branch(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "langchain_anthropic", types.ModuleType("langchain_anthropic"))
     settings = _bounded(model="anthropic:claude-x")
-    provider, model_id, kwargs = build_kwargs(settings, Log(stream=None))
+    provider, model_id, kwargs = build_kwargs(settings)
     assert (provider, model_id) == ("anthropic", "claude-x")
     assert kwargs["timeout"] == 42.0
     assert kwargs["max_retries"] == 4
 
 
 def test_build_kwargs_defaults_are_used_when_settings_not_set():
-    _provider, _model_id, kwargs = build_kwargs(
-        Settings(api_key="k"), Log(stream=None)
-    )
+    _provider, _model_id, kwargs = build_kwargs(Settings(api_key="k"))
     assert kwargs["timeout"] == 120
     assert kwargs["max_retries"] == 2
 
 
 def test_build_kwargs_passes_zero_retries_through():
     """0 means "no retry" and must survive, not be dropped as falsy."""
-    _provider, _model_id, kwargs = build_kwargs(
-        Settings(api_key="k", max_retries=0), Log(stream=None)
-    )
+    _provider, _model_id, kwargs = build_kwargs(Settings(api_key="k", max_retries=0))
     assert kwargs["max_retries"] == 0
 
 
@@ -146,7 +149,7 @@ def test_constructed_openai_model_carries_the_bounds():
     """The values must survive model construction, not just build_kwargs."""
     from langchain_openai import ChatOpenAI
 
-    model = build_chat_model(_bounded(), Log(stream=None))
+    model = build_chat_model(_bounded())
     assert isinstance(model, ChatOpenAI)
     # `timeout` is ChatOpenAI's validation alias for `request_timeout`.
     assert model.request_timeout == 42.0
@@ -242,9 +245,9 @@ def _close_client(client) -> None:
 
 
 def _stalled_client(port: int) -> LLMClient:
-    # zdr stays OFF: ZDR's model_kwargs are rejected by the OpenAI SDK's
-    # Completions.create signature, which would fail before any socket is opened
-    # and make this test pass for the wrong reason.
+    # zdr stays OFF: this endpoint is not OpenRouter, so a zdr=true client is
+    # refused outright by the run start-up gate and would never reach this socket.
+    # The point here is the timeout, so the refusal must not be what fails first.
     return LLMClient(
         Settings(
             api_key="test",

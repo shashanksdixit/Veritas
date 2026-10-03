@@ -44,6 +44,7 @@ constitution Principle VIII / FR-016.
   `summary`, and `markdown_content`.
 
 ### Changed
+- ZDR now works on OpenRouter (sent in the request body; previously it crashed every LLM call), fails closed on non-OpenRouter backends, and its warning prints once per run with backend-specific wording.
 - LLM requests are bounded by `[llm] timeout_seconds` (default 120) and
   `[llm] max_retries` (default 2); previously the client defaults allowed a
   stalled request to wait up to 30 minutes.

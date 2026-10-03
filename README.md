@@ -234,10 +234,21 @@ Zero-data-retention routing is off by default. When enabled
 (`VERITAS_ZDR=true`), requests carry both `provider.zdr: true` and
 `provider.data_collection: "deny"` for OpenRouter routing.
 
-Whenever ZDR is off (the default), Veritas prints a warning on every run: some
-free-tier models explicitly reserve the right to train on inputs/outputs, and ZDR
-is recommended for reviews of proprietary or sensitive code. Enabling ZDR is the
-user's informed choice.
+ZDR is enforced per request and exists only on OpenRouter. If `VERITAS_ZDR=true`
+is set on any other backend — a native Anthropic route, or an OpenAI-compatible
+`base_url` whose host is not `openrouter.ai` or a subdomain of it — the run stops
+before fetching any code or calling any model, with an error saying ZDR is only
+supported with OpenRouter. On those backends zero data retention depends on your
+account agreement with that provider and cannot be enforced by Veritas; set
+`VERITAS_ZDR=false` if your account already provides zero retention, or point
+`VERITAS_BASE_URL` at `https://openrouter.ai/api/v1`.
+
+Whenever ZDR is off (the default), Veritas prints a data-retention warning exactly
+once per run, worded for the backend. On OpenRouter it warns that some free-tier
+models explicitly reserve the right to train on inputs/outputs and recommends ZDR
+for reviews of proprietary or sensitive code. On any other backend it warns that
+retention is governed by your account agreement with that provider. Enabling ZDR is
+the user's informed choice.
 
 ## Suppression workflow
 

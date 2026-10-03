@@ -16,7 +16,7 @@ from langchain.chat_models import init_chat_model  # type: ignore[import-untyped
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from veritas.config.settings import Settings
-from veritas.llm.zdr import zdr_model_kwargs
+from veritas.llm.zdr import backend_is_openrouter, zdr_body_extras
 from veritas.utils.logging import Log
 
 
@@ -29,8 +29,14 @@ def split_model_string(model_string: str) -> tuple[str, str]:
     return provider, model_id
 
 
-def build_kwargs(settings: Settings, log: Log) -> tuple[str, str, dict]:
-    """LangChain init_chat_model kwargs for the configured provider routing."""
+def build_kwargs(settings: Settings) -> tuple[str, str, dict]:
+    """LangChain init_chat_model kwargs for the configured provider routing.
+
+    Deliberately free of logging: this runs more than once per run (see
+    ``runtime_model_id``), so anything emitted here is printed more than once per
+    run. The single per-run data-retention warning belongs to the run start-up
+    path, which runs exactly once (FR-021).
+    """
     provider, model_id = split_model_string(settings.model_runtime)
     # Bound every request (FR-019). These two are set once, before the branches,
     # so no provider route can be added later without them: without a timeout the
@@ -46,16 +52,7 @@ def build_kwargs(settings: Settings, log: Log) -> tuple[str, str, dict]:
         "max_retries": settings.max_retries,
     }
 
-    if provider == "openai":
-        # OpenAI-compatible route: OpenRouter by default, or any base_url the
-        # user configures (e.g. a self-hosted OpenAI-compatible endpoint).
-        kwargs["base_url"] = settings.base_url
-        if settings.api_key:
-            kwargs["api_key"] = settings.api_key
-        zdr_extra = zdr_model_kwargs(settings, log)
-        if zdr_extra:
-            kwargs["model_kwargs"] = zdr_extra
-    elif provider == "anthropic":
+    if provider == "anthropic":
         try:
             import langchain_anthropic  # noqa: F401
         except ImportError as exc:
@@ -66,25 +63,37 @@ def build_kwargs(settings: Settings, log: Log) -> tuple[str, str, dict]:
         if settings.api_key:
             kwargs["api_key"] = settings.api_key
     else:
-        # Unknown provider prefix: treat like an OpenAI-compatible endpoint.
+        # OpenAI-compatible route, reached by both the `openai` prefix and an
+        # unknown one: OpenRouter by default, or any base_url the user configures
+        # (e.g. a self-hosted OpenAI-compatible endpoint). Neither prefix has a
+        # native client of its own, so both are handled identically here.
         kwargs["base_url"] = settings.base_url
         if settings.api_key:
             kwargs["api_key"] = settings.api_key
+        # ZDR's provider block is an OpenRouter *request-body* field, so it travels
+        # as `extra_body` (a real ChatOpenAI field the OpenAI SDK merges into the
+        # JSON payload) and never as `model_kwargs`: LangChain spreads those as
+        # top-level client arguments, where `provider` is not a parameter of
+        # Completions.create and raises TypeError on every call. Guarded on the
+        # host as well — the run start-up gate has already refused zdr=true on a
+        # non-OpenRouter backend, and a provider block nothing honours would be a
+        # silent false claim of zero data retention.
+        if settings.zdr and backend_is_openrouter(provider, settings.base_url):
+            kwargs["extra_body"] = zdr_body_extras(True)
 
     # model_id here is the backend's own model identifier (e.g. OpenRouter
     # catalog id "openai/gpt-4o-mini" or Anthropic's "claude-sonnet-4-6").
     return provider, model_id, kwargs
 
 
-def build_chat_model(settings: Settings, log: Log | None = None):
-    log = log or Log()
-    provider, model_id, kwargs = build_kwargs(settings, log)
+def build_chat_model(settings: Settings):
+    provider, model_id, kwargs = build_kwargs(settings)
     return init_chat_model(model=model_id, model_provider=provider, **kwargs)
 
 
 def runtime_model_id(settings: Settings) -> str:
     """The backend model identifier recorded as ReviewRun.model_name."""
-    _provider, model_id, _kwargs = build_kwargs(settings, Log(stream=None))
+    _provider, model_id = split_model_string(settings.model_runtime)
     return model_id
 
 
@@ -94,7 +103,7 @@ class LLMClient:
     def __init__(self, settings: Settings, log: Log | None = None) -> None:
         self.settings = settings
         self.log = log or Log()
-        self._model = build_chat_model(settings, self.log)
+        self._model = build_chat_model(settings)
         self.model_name = runtime_model_id(settings)
 
     def complete(self, system: str, user: str, *, max_tokens: int | None = None) -> str:
