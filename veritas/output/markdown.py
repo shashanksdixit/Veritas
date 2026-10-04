@@ -217,8 +217,8 @@ def _render_coverage(out: list[str], coverage: Coverage) -> None:
     out.append("")
     out.append(
         f"Code is reviewed in batches of up to {coverage.batch_chars} characters, "
-        f"at most {coverage.max_batches} batches per review type. "
-        "Files matching an exclusion pattern are not reviewed."
+        f"at most {coverage.max_batches} batches per review type, with application "
+        "code before test files. Files matching an exclusion pattern are not reviewed."
     )
     out.append("")
 

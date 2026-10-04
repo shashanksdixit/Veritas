@@ -1,12 +1,20 @@
-"""Unit tests — deterministic batch planner (T076, FR-029).
+"""Unit tests — deterministic batch planner (T076/T083, FR-029).
 
 ``plan_batches`` is pure, so the algorithm, its invariants and its rendering are
 asserted directly. Scope wiring (only supported source files are batched) is in
 ``tests/integration/test_review_exclusion.py``.
+
+Application code is batched before test files (T083), so a scope whose test paths
+sort before its source paths still spends its batches on the code first and drops
+tests at the cap.
 """
+
+import subprocess
+import sys
 
 import pytest
 
+from veritas.review import batching as batching_module
 from veritas.review.batching import plan_batches
 
 _SMALL = {
@@ -34,6 +42,45 @@ def _assert_invariants(plan, files, batch_chars):
     assert list(plan.split_files) == sorted(plan.split_files)
     assert list(plan.not_reviewed_files) == sorted(plan.not_reviewed_files)
     assert [b.index for b in plan.batches] == list(range(1, len(plan.batches) + 1))
+
+
+def _mixed_scope() -> dict[str, str]:
+    """A repo-shaped scope: tests sort before the source they cover (``t`` < ``v``).
+
+    Six whole-file blocks of 726, 956, 841, 496, 496 and 496 chars: with
+    ``batch_chars=600`` each takes a batch of its own (two never fit together), so
+    the batch each file lands in is exactly its place in the ordering.
+    """
+    files = {
+        "veritas/config/settings.py": _lines(30),
+        "veritas/review/batching.py": _lines(40),
+        "veritas/review/graph.py": _lines(35),
+    }
+    files.update({f"tests/unit/test_{name}.py": _lines(20) for name in ("app", "batch", "config")})
+    return files
+
+
+def _sorted_order_plan(files, **kwargs) -> object:
+    """The plan the old pure-sorted ordering produced, for comparison in a test."""
+    original = batching_module._batch_order
+    batching_module._batch_order = sorted
+    try:
+        return plan_batches(files, **kwargs)
+    finally:
+        batching_module._batch_order = original
+
+
+def _batch_of(plan, path: str) -> int:
+    for batch in plan.batches:
+        if any(chunk.path == path for chunk in batch.chunks):
+            return batch.index
+    raise AssertionError(f"{path} is in no batch")
+
+
+def _is_test(path: str) -> bool:
+    from veritas.review.test_index import is_test_file
+
+    return is_test_file(path)
 
 
 def test_small_files_pack_into_one_batch():
@@ -227,3 +274,145 @@ def test_whole_file_block_matches_code_package_block_format():
     files = {"src/a.py": "x = 1\nz = 3\n"}
     plan, _ = plan_batches(files, batch_chars=4000, max_batches=8)
     assert plan.batches[0].text == code_package(files)
+
+
+# --- application code before test files (T083, FR-029) ---
+
+
+def test_every_source_file_is_batched_before_any_test_file():
+    files = _mixed_scope()
+    plan, warnings = plan_batches(files, batch_chars=1200, max_batches=8)
+    assert warnings == []
+    # Three source batches, then the tests: two test blocks (994 chars together)
+    # share the fourth and the last test takes one of its own.
+    assert len(plan.batches) == 5
+
+    sources = {path for path in files if not _is_test(path)}
+    tests = {path for path in files if _is_test(path)}
+    # The failure this fixes: every test path sorts before every source path, so
+    # sorted-order planning would have put the tests in the first batches.
+    assert all(min(tests) < path for path in sources)
+    assert max(_batch_of(plan, path) for path in sources) < min(
+        _batch_of(plan, path) for path in tests
+    )
+
+
+def test_a_tight_batch_limit_drops_tests_and_never_application_code():
+    files = {
+        "veritas/app.py": _lines(30),
+        "veritas/batching.py": _lines(30),
+    }
+    files.update({f"tests/unit/test_{index}.py": _lines(30) for index in range(6)})
+    # Each block is 726 chars and the budget holds one, so the two batches go to
+    # the first two files of whichever ordering is used - and only to those.
+    budgets = {"batch_chars": 800, "max_batches": 2}
+
+    plan, warnings = plan_batches(files, **budgets)
+    assert warnings == []
+
+    # What the requirement asks for: the cap reaches tests, never the code.
+    assert set(plan.reviewed_files) == {"veritas/app.py", "veritas/batching.py"}
+    assert all(_is_test(path) for path in plan.not_reviewed_files)
+    assert len(plan.not_reviewed_files) == 6
+
+    # And what it replaced: with sorted ordering the two batches go to the tests
+    # that sort first, and application code is left unreviewed.
+    sorted_plan, _ = _sorted_order_plan(files, **budgets)
+    assert set(sorted_plan.reviewed_files) == {
+        "tests/unit/test_0.py",
+        "tests/unit/test_1.py",
+    }
+    assert {path for path in files if not _is_test(path)} <= set(sorted_plan.not_reviewed_files)
+
+
+def test_a_source_file_is_still_split_and_a_small_test_still_rides_along():
+    # The test-first rule changes placement, not the algorithm: an oversized
+    # source file still splits at line boundaries, and a small test file that fits
+    # the last batch is still reviewed under the rule that runs after the cap.
+    files = {
+        "veritas/large.py": _lines(200),
+        "tests/unit/test_tiny.py": "x = 1\n",
+    }
+    plan, warnings = plan_batches(files, batch_chars=1000, max_batches=8)
+    assert warnings == []
+    assert plan.split_files == ("veritas/large.py",)
+    assert plan.not_reviewed_files == ()
+    assert [c.path for c in plan.batches[-1].chunks] == [
+        "veritas/large.py",
+        "tests/unit/test_tiny.py",
+    ]
+    assert list(plan.reviewed_files) == sorted(files), "coverage lists stay in path order"
+    assert list(plan.not_reviewed_files) == sorted(plan.not_reviewed_files)
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        pytest.param(
+            {f"veritas/pkg/{name}.py": _lines(30) for name in ("app", "core", "util")},
+            id="only source files",
+        ),
+        pytest.param(
+            {f"tests/unit/test_{name}.py": _lines(30) for name in ("app", "core", "util")},
+            id="only test files",
+        ),
+    ],
+)
+def test_a_scope_of_one_kind_of_file_plans_exactly_as_sorted_order_did(files):
+    # One group means the two orderings coincide, so nothing about the existing
+    # behaviour changes for a scope that has tests or has no tests.
+    for budgets in ({"batch_chars": 800, "max_batches": 2}, {"batch_chars": 48000, "max_batches": 8}):
+        plan, warnings = plan_batches(files, **budgets)
+        sorted_plan, sorted_warnings = _sorted_order_plan(files, **budgets)
+        assert plan == sorted_plan
+        assert warnings == sorted_warnings
+
+
+def test_the_plan_is_independent_of_dict_order_with_mixed_files():
+    files = _mixed_scope()
+    forward, forward_warnings = plan_batches(files, batch_chars=600, max_batches=8)
+    backward, backward_warnings = plan_batches(
+        dict(reversed(list(files.items()))), batch_chars=600, max_batches=8
+    )
+    assert forward == backward
+    assert forward_warnings == backward_warnings
+
+
+def test_invariants_hold_for_a_mixed_source_and_test_scope():
+    files = _mixed_scope()
+    for batch_chars in (400, 600, 1500, 48000):
+        plan, _ = plan_batches(files, batch_chars=batch_chars, max_batches=8)
+        _assert_invariants(plan, files, batch_chars)
+
+
+def test_a_split_test_file_is_never_reviewed_before_a_source_file():
+    # The ordering is by file, not by block: a source file that needs several
+    # chunks still comes before a test file that would fit in the batch after it.
+    files = {
+        "veritas/large.py": _lines(200),
+        "tests/unit/test_small.py": "x = 1\n",
+        "tests/unit/test_also_small.py": "y = 2\n",
+    }
+    plan, _ = plan_batches(files, batch_chars=1000, max_batches=8)
+    holders = {path: _batch_of(plan, path) for path in files}
+    assert holders["veritas/large.py"] < holders["tests/unit/test_small.py"]
+    assert holders["tests/unit/test_small.py"] <= holders["tests/unit/test_also_small.py"]
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("veritas.review.batching", "veritas.review.test_index"),
+        ("veritas.review.test_index", "veritas.review.batching"),
+        ("veritas.review.graph", "veritas.review.batching"),
+    ],
+)
+def test_the_planner_imports_the_test_index_without_a_cycle(first, second):
+    # batching -> test_index is a runtime import, so each entry point has to be
+    # importable first on its own: test_index must not import back.
+    result = subprocess.run(
+        [sys.executable, "-c", f"import {first}; import {second}"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr

@@ -1,9 +1,15 @@
-"""Deterministic batch planner for code-review inputs (T076, FR-029).
+"""Deterministic batch planner for code-review inputs (T076/T083, FR-029).
 
 Pure: no settings, no filesystem, no I/O — it takes the scoped file contents and
 the two configured budgets and returns the batches plus coverage bookkeeping.
 Every code review type consumes the same plan, so a run reviews the same code
 regardless of which review type is looking at it.
+
+Application code is batched before test files, each group in sorted path order:
+when the batch limit is reached it is tests that go unreviewed, never the code
+under review (FR-029). Test files are identified exactly as the test index
+identifies them, so "which tests exist" and "which tests are reviewed" cannot
+disagree.
 
 A batch holds whole-file blocks and, for a file too large for one batch, one
 chunk per batch at a time. Blocks inside a batch are joined with a blank line and
@@ -18,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from veritas.review.nodes.common import file_header, numbered_lines
+from veritas.review.test_index import is_test_file
 
 # Blocks within a batch are separated by a blank line, and the separator counts
 # toward the budget. Same separator code_package uses.
@@ -138,13 +145,25 @@ def _fits(blocks: list[tuple[FileChunk, str]], block: str, batch_chars: int) -> 
     return used + len(_BLOCK_SEPARATOR) + len(block) <= batch_chars
 
 
+def _batch_order(files: dict[str, str]) -> list[str]:
+    """Non-test source files first, then test files; each group in path order.
+
+    ``False`` sorts before ``True``, so application code is placed before the tests
+    that cover it and the batch cap can only reach the tests. Only batch
+    composition depends on this; the coverage tuples are sorted on the way out, so
+    the report still lists paths in path order (FR-029).
+    """
+    return sorted(files, key=lambda path: (is_test_file(path), path))
+
+
 def plan_batches(
     files: dict[str, str], *, batch_chars: int, max_batches: int
 ) -> tuple[BatchPlan, list[str]]:
     """Plan review batches over ``files`` (FR-029).
 
     Deterministic and independent of ``files``' insertion order: paths are
-    processed in sorted order. A file is assigned as follows:
+    processed with non-test source files first and test files last, each group in
+    sorted order. A file is assigned as follows:
 
     * it fits in the remaining space of the current (last) batch -> appended;
     * it fits in a batch of its own but not there -> a new batch, if fewer than
@@ -155,7 +174,9 @@ def plan_batches(
       partial review), as it is when a single line cannot fit at all.
 
     Files are still tried after the cap is reached, so a small file that fits
-    the last batch is reviewed rather than dropped.
+    the last batch is reviewed rather than dropped - which, with tests placed
+    last, is what lets a small test file still be reviewed while application code
+    never is left out by the cap.
 
     Returns the plan and warning messages (ASCII only).
     """
@@ -165,7 +186,7 @@ def plan_batches(
     split: list[str] = []
     not_reviewed: list[str] = []
 
-    for path in sorted(files):
+    for path in _batch_order(files):
         content = files[path]
         lines = content.splitlines()
         total = len(lines)
@@ -210,9 +231,11 @@ def plan_batches(
     return (
         BatchPlan(
             batches=_finalize(batches),
-            reviewed_files=tuple(reviewed),
-            split_files=tuple(split),
-            not_reviewed_files=tuple(not_reviewed),
+            # Sorted on the way out: batch composition follows the test-first rule,
+            # but the coverage lists the report renders stay in path order.
+            reviewed_files=tuple(sorted(reviewed)),
+            split_files=tuple(sorted(split)),
+            not_reviewed_files=tuple(sorted(not_reviewed)),
         ),
         warnings,
     )

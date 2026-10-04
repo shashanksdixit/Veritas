@@ -9,6 +9,8 @@ constitution Principle VIII / FR-016.
 ## [Unreleased]
 
 ### Added
+- Batching reviews application code before test files, so when the batch limit is
+  reached it is tests, not application code, that go unreviewed.
 - The test index is ordered by relevance per batch (name match, then Python
   import match, then the rest), with a 16000-character per-batch limit, so
   truncation drops the least relevant tests instead of an alphabetical tail.

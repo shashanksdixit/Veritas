@@ -496,7 +496,8 @@ def test_coverage_renders_plain_language_sentence():
     md = render_markdown(_report(coverage=_coverage(batch_chars=40000, max_batches=8)))
     assert (
         "Code is reviewed in batches of up to 40000 characters, at most 8 batches "
-        "per review type. Files matching an exclusion pattern are not reviewed." in md
+        "per review type, with application code before test files. Files matching "
+        "an exclusion pattern are not reviewed." in md
     )
 
 
