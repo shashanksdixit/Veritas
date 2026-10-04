@@ -50,9 +50,10 @@ _TEST_DIR_SEGMENTS = frozenset({"tests", "test", "__tests__"})
 # Matched against the file name only. Anchored patterns rather than a substring
 # test for "test": attest.py, contest/main.py and src/testing_utils.py are
 # ordinary code, not tests.
+#
+# Python is split out because for it the name is not sufficient: a test_*.py or
+# *_test.py file also has to define a test, or be unparseable (see is_test_file).
 _TEST_FILE_PATTERNS = (
-    "test_*.py",
-    "*_test.py",
     "*_test.go",
     "*Test.java",
     "*Tests.java",
@@ -65,6 +66,8 @@ _TEST_FILE_PATTERNS = (
     "*.spec.js",
     "*.spec.ts",
 )
+
+_PYTHON_TEST_PATTERNS = ("test_*.py", "*_test.py")
 
 # Markers stripped from a stem to recover the name of the thing under test. The
 # dot markers must be tried before the bare "test" suffix, or "batching.test"
@@ -94,15 +97,42 @@ def _posix(path: str) -> PurePosixPath:
     return PurePosixPath(path.replace("\\", "/"))
 
 
-def is_test_file(path: str) -> bool:
-    """True when ``path`` names a test file or sits in a test tree."""
+def is_test_file(path: str, content: str) -> bool:
+    """True when ``path`` names a test file, given the file's content (FR-004).
+
+    Three rules, in order:
+
+    * a path segment of ``tests``, ``test`` or ``__tests__`` makes the file a test
+      whatever it is called or written in - that is what a test tree means, and a
+      helper module inside one is part of the suite;
+    * for a non-Python file, a conventional test-file name is enough, because
+      there is no cheaper way to tell ``app.test.ts`` from ``app.ts``;
+    * for a Python file the name alone is not enough. ``test_index.py`` and
+      ``test_coverage.py`` are application modules that happen to start with
+      ``test_``, and treating them as tests hid real code from review and put
+      implementation modules in the coverage index. So a ``test_*.py`` or
+      ``*_test.py`` name counts only when the file actually defines a test
+      function or test method - or cannot be parsed, which is a fact about the
+      file rather than a guess about it.
+
+    ``content`` is required rather than defaulted: the same answer must not be
+    available from the path alone, since that is exactly what was wrong before.
+    """
     segments = [part for part in path.replace("\\", "/").split("/") if part]
     if not segments:
         return False
     if _TEST_DIR_SEGMENTS.intersection(segments):
         return True
     name = segments[-1]
-    return any(fnmatchcase(name, pattern) for pattern in _TEST_FILE_PATTERNS)
+    pure = _posix(path)
+    if pure.suffix != ".py":
+        return any(fnmatchcase(name, pattern) for pattern in _TEST_FILE_PATTERNS)
+    if not any(fnmatchcase(name, pattern) for pattern in _PYTHON_TEST_PATTERNS):
+        return False
+    # Parsed once, and unparseable counts: a syntax error is why we cannot see the
+    # test names, and the name still says this was meant to be one.
+    names = _python_test_names(content)
+    return names is None or bool(names)
 
 
 def subject_stem(path: str) -> str:
@@ -271,7 +301,8 @@ def build_batch_test_indexes(
     ``batches``, ``truncated_batches`` and ``max_chars``.
     """
     entries = [
-        _entry(path, files[path]) for path in sorted(path for path in files if is_test_file(path))
+        _entry(path, files[path])
+        for path in sorted(path for path in files if is_test_file(path, files[path]))
     ]
     batches = list(plan.batches) if plan is not None else []
     stats: dict = {
@@ -288,7 +319,13 @@ def build_batch_test_indexes(
     for batch in batches:
         # Sorted for the same reason the entries are: a batch's own file order
         # must not leak into the ranking.
-        sources = sorted({chunk.path for chunk in batch.chunks if not is_test_file(chunk.path)})
+        sources = sorted(
+            {
+                chunk.path
+                for chunk in batch.chunks
+                if not is_test_file(chunk.path, files[chunk.path])
+            }
+        )
         subjects = {subject_stem(path) for path in sources}
         modules = {module for module in (module_path(path) for path in sources) if module}
         ranked: list[TestFileEntry] = []

@@ -8,8 +8,8 @@ regardless of which review type is looking at it.
 Application code is batched before test files, each group in sorted path order:
 when the batch limit is reached it is tests that go unreviewed, never the code
 under review (FR-029). Test files are identified exactly as the test index
-identifies them, so "which tests exist" and "which tests are reviewed" cannot
-disagree.
+identifies them - a Python module named ``test_*.py`` is application code unless
+it holds tests - so the two can never disagree about what a test file is.
 
 A batch holds whole-file blocks and, for a file too large for one batch, one
 chunk per batch at a time. Blocks inside a batch are joined with a blank line and
@@ -149,11 +149,16 @@ def _batch_order(files: dict[str, str]) -> list[str]:
     """Non-test source files first, then test files; each group in path order.
 
     ``False`` sorts before ``True``, so application code is placed before the tests
-    that cover it and the batch cap can only reach the tests. Only batch
-    composition depends on this; the coverage tuples are sorted on the way out, so
-    the report still lists paths in path order (FR-029).
+    that cover it and the batch cap can only reach the tests. Test files are
+    recognised by the same call the test index makes, with the same content, so
+    "which tests exist" and "which tests are reviewed" cannot disagree - and a
+    Python module named ``test_*.py`` that holds no tests, such as
+    ``test_index.py``, is application code on both sides (FR-004, FR-029).
+
+    Only batch composition depends on this; the coverage tuples are sorted on the
+    way out, so the report still lists paths in path order (FR-029).
     """
-    return sorted(files, key=lambda path: (is_test_file(path), path))
+    return sorted(files, key=lambda path: (is_test_file(path, files[path]), path))
 
 
 def plan_batches(

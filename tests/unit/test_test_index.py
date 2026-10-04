@@ -32,9 +32,8 @@ _TEST_TREE_PATHS = (
     "src/app/tests/conftest.py",
 )
 
+# Non-Python names: nothing cheaper than the name decides these.
 _TEST_NAME_PATHS = (
-    "test_app.py",
-    "app_test.py",
     "app_test.go",
     "AppTest.java",
     "AppTests.java",
@@ -47,6 +46,14 @@ _TEST_NAME_PATHS = (
     "app.spec.js",
     "app.spec.ts",
 )
+
+_PYTHON_TEST_NAME_PATHS = ("test_app.py", "app_test.py")
+
+# What a Python test file looks like inside, and what an application module that
+# happens to be named like one looks like inside.
+_TEST_SOURCE = "def test_one():\n    pass\n"
+_TEST_CLASS_SOURCE = "class TestThing:\n    def test_it(self):\n        pass\n"
+_MODULE_SOURCE = '"""Not a test."""\n\n\ndef make_node():\n    return None\n'
 
 _LOOK_ALIKES = (
     "attest.py",
@@ -102,33 +109,79 @@ def _omitted_or_zero(index: str) -> int:
     return _omitted(index) if index.rsplit("\n", 1)[-1].startswith("...and ") else 0
 
 
-# --- is_test_file: unchanged by T082, kept so a rename cannot quietly break it ---
+# --- is_test_file ---
 
 
-@pytest.mark.parametrize("path", _TEST_TREE_PATHS + _TEST_NAME_PATHS)
+@pytest.mark.parametrize("path", _TEST_TREE_PATHS)
 def test_test_paths_are_recognised(path):
-    assert is_test_file(path) is True
+    # A test tree decides it: the content cannot make these anything else.
+    assert is_test_file(path, _TEST_SOURCE) is True
+    assert is_test_file(path, "") is True
+
+
+@pytest.mark.parametrize("path", _TEST_NAME_PATHS)
+def test_non_python_test_names_are_recognised(path):
+    assert is_test_file(path, "") is True
+
+
+@pytest.mark.parametrize("path", _PYTHON_TEST_NAME_PATHS)
+@pytest.mark.parametrize("content", [_TEST_SOURCE, _TEST_CLASS_SOURCE])
+def test_a_python_test_name_needs_a_test_inside(path, content):
+    assert is_test_file(path, content) is True
 
 
 @pytest.mark.parametrize("path", _LOOK_ALIKES)
 def test_ordinary_files_are_not_tests(path):
-    assert is_test_file(path) is False
+    assert is_test_file(path, _TEST_SOURCE) is False
+
+
+def test_a_python_module_named_like_a_test_is_application_code():
+    # The bug T084 fixes: veritas/review/test_index.py is this module's own path,
+    # and it starts with test_ without defining a single test.
+    assert is_test_file("veritas/review/test_index.py", _MODULE_SOURCE) is False
+    assert (
+        is_test_file(
+            "veritas/review/nodes/test_coverage.py",
+            "def make_test_coverage_node(runtime):\n    return node\n",
+        )
+        is False
+    )
+    # A helper module that happens to define something called test_* is still only
+    # a test if it is named like one.
+    assert is_test_file("src/test_helpers.py", _TEST_SOURCE) is True
+
+
+def test_a_python_test_name_with_a_syntax_error_is_still_a_test():
+    # "Could not parse" is a fact about the file, and the name says what it was
+    # meant to be.
+    assert is_test_file("src/test_broken.py", "def test_x(:\n") is True
+    assert is_test_file("src/test_broken.py", "") is False
+
+
+def test_a_python_file_in_a_test_tree_is_a_test_without_any_test_inside():
+    assert is_test_file("tests/unit/helpers.py", _MODULE_SOURCE) is True
+    assert is_test_file("tests/unit/helpers.py", "") is True
+
+
+def test_a_python_file_outside_a_test_tree_with_no_tests_is_not_a_test():
+    assert is_test_file("src/app.py", _MODULE_SOURCE) is False
 
 
 def test_empty_and_root_path_are_not_tests():
-    assert is_test_file("") is False
-    assert is_test_file("/") is False
+    assert is_test_file("", _TEST_SOURCE) is False
+    assert is_test_file("/", _TEST_SOURCE) is False
 
 
 def test_uppercase_directory_segment_is_not_a_test_tree():
     # Only the exact lower-case segment names a test tree: a directory called
     # TESTS proves nothing, and the segment names are not normalised case.
-    assert is_test_file("TESTS/helpers.py") is False
+    assert is_test_file("TESTS/helpers.py", _TEST_SOURCE) is False
 
 
 def test_windows_separated_test_tree_is_recognised():
-    assert is_test_file("a\\tests\\b.py") is True
-    assert is_test_file("a\\app_test.py") is True
+    assert is_test_file("a\\tests\\b.py", _TEST_SOURCE) is True
+    assert is_test_file("a\\app_test.py", _TEST_SOURCE) is True
+    assert is_test_file("a\\test_helpers.py", _MODULE_SOURCE) is False
 
 
 # --- subject_stem ---
@@ -304,7 +357,7 @@ def test_every_test_file_appears_in_every_batch():
 
     for index in indexes.values():
         assert sorted(_paths_of(index)) == sorted(
-            path for path in files if is_test_file(path)
+            path for path in files if is_test_file(path, files[path])
         )
     assert stats["test_files"] == 4
     assert stats["batches"] == 2
@@ -345,8 +398,12 @@ def test_a_chunk_of_a_split_file_still_matches_its_test():
 
 
 def _many_files(count: int = 24) -> dict[str, str]:
+    # Both sources a plan names are in the mapping: identifying a batch's source
+    # files needs their content, and the planner is given this same mapping.
     return {
         "src/batching.py": "y = 2\n",
+        "veritas/config/settings.py": "z = 3\n",
+        "veritas/review/batching.py": "w = 4\n",
         "tests/unit/test_batching.py": "def test_packs():\n    pass\n",
         "tests/unit/test_settings_import.py": (
             "import veritas.config.settings\n\n\ndef test_load():\n    pass\n"
@@ -449,7 +506,10 @@ def test_oversized_first_line_falls_back_to_a_file_and_name_count():
 
 
 def test_default_budget_is_16000_characters():
-    files = {f"tests/test_{index:04d}.py": f"def test_{index}():\n    pass\n" for index in range(400)}
+    files = {
+        "src/app.py": "x = 1\n",
+        **{f"tests/test_{index:04d}.py": f"def test_{index}():\n    pass\n" for index in range(400)},
+    }
     _, stats = build_batch_test_indexes(files, _plan(["src/app.py"]))
 
     assert stats["max_chars"] == 16000

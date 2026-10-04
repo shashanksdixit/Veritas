@@ -77,10 +77,11 @@ def _batch_of(plan, path: str) -> int:
     raise AssertionError(f"{path} is in no batch")
 
 
-def _is_test(path: str) -> bool:
+def _is_test(files: dict[str, str], path: str) -> bool:
+    """The planner's own answer, asked the way it asks it."""
     from veritas.review.test_index import is_test_file
 
-    return is_test_file(path)
+    return is_test_file(path, files[path])
 
 
 def test_small_files_pack_into_one_batch():
@@ -287,8 +288,8 @@ def test_every_source_file_is_batched_before_any_test_file():
     # share the fourth and the last test takes one of its own.
     assert len(plan.batches) == 5
 
-    sources = {path for path in files if not _is_test(path)}
-    tests = {path for path in files if _is_test(path)}
+    sources = {path for path in files if not _is_test(files, path)}
+    tests = {path for path in files if _is_test(files, path)}
     # The failure this fixes: every test path sorts before every source path, so
     # sorted-order planning would have put the tests in the first batches.
     assert all(min(tests) < path for path in sources)
@@ -312,7 +313,7 @@ def test_a_tight_batch_limit_drops_tests_and_never_application_code():
 
     # What the requirement asks for: the cap reaches tests, never the code.
     assert set(plan.reviewed_files) == {"veritas/app.py", "veritas/batching.py"}
-    assert all(_is_test(path) for path in plan.not_reviewed_files)
+    assert all(_is_test(files, path) for path in plan.not_reviewed_files)
     assert len(plan.not_reviewed_files) == 6
 
     # And what it replaced: with sorted ordering the two batches go to the tests
@@ -322,7 +323,7 @@ def test_a_tight_batch_limit_drops_tests_and_never_application_code():
         "tests/unit/test_0.py",
         "tests/unit/test_1.py",
     }
-    assert {path for path in files if not _is_test(path)} <= set(sorted_plan.not_reviewed_files)
+    assert {path for path in files if not _is_test(files, path)} <= set(sorted_plan.not_reviewed_files)
 
 
 def test_a_source_file_is_still_split_and_a_small_test_still_rides_along():
@@ -416,3 +417,86 @@ def test_the_planner_imports_the_test_index_without_a_cycle(first, second):
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+# --- a Python module named test_* is application code (T084, FR-004) ---
+
+
+def _module_source(functions: int = 12) -> str:
+    """A plausible application module: functions, no test* definitions."""
+    return "".join(f"def helper_{index:06d}():\n    return {index}\n" for index in range(1, functions + 1))
+
+
+def _test_source(functions: int = 12) -> str:
+    return "".join(f"def test_thing_{index:06d}():\n    assert True\n" for index in range(1, functions + 1))
+
+
+def _test_named_scope() -> dict[str, str]:
+    """Source modules whose names look like tests, beside files that really are.
+
+    Every block is 617 or 692 chars, so at ``batch_chars=800`` each file takes a
+    batch of its own and a file's batch index is its place in the ordering.
+    """
+    return {
+        "veritas/review/test_index.py": _module_source(),
+        "veritas/review/nodes/test_coverage.py": _module_source(),
+        "veritas/review/batching.py": _module_source(),
+        "tests/unit/test_batching.py": _test_source(),
+        "tests/unit/test_app.py": _test_source(),
+    }
+
+
+def test_a_test_named_source_module_is_batched_with_the_application_code():
+    files = _test_named_scope()
+    plan, warnings = plan_batches(files, batch_chars=800, max_batches=8)
+    assert warnings == []
+    assert len(plan.batches) == 5
+
+    sources = {path for path in files if not _is_test(files, path)}
+    tests = {path for path in files if _is_test(files, path)}
+    assert sources == {
+        "veritas/review/test_index.py",
+        "veritas/review/nodes/test_coverage.py",
+        "veritas/review/batching.py",
+    }
+    assert max(_batch_of(plan, path) for path in sources) < min(
+        _batch_of(plan, path) for path in tests
+    )
+    assert plan.reviewed_files == tuple(sorted(files))
+
+
+def test_a_test_named_source_module_is_never_dropped_before_a_real_test():
+    # The regression: with the old name-only rule both modules were "tests", so at a
+    # tight cap they were dropped with the suite while a test file survived.
+    files = {
+        "veritas/review/test_index.py": _module_source(),
+        "veritas/review/batching.py": _lines(30),
+        "tests/unit/test_batching.py": _lines(30),
+        "tests/unit/test_app.py": _lines(30),
+    }
+    plan, _ = plan_batches(files, batch_chars=800, max_batches=2)
+
+    assert set(plan.reviewed_files) == {
+        "veritas/review/test_index.py",
+        "veritas/review/batching.py",
+    }
+    assert plan.not_reviewed_files == ("tests/unit/test_app.py", "tests/unit/test_batching.py")
+
+
+def test_the_same_name_gives_opposite_answers_inside_and_outside_a_test_tree():
+    # src/test_helpers.py defines a test, so it is one; tests/unit/test_helpers.py
+    # defines none but sits in a test tree, so it is one too; and the module of the
+    # same name outside any tree defines none, so it is application code.
+    files = {
+        "veritas/review/test_index.py": _module_source(),
+        "src/test_helpers.py": _test_source(),
+        "tests/unit/test_helpers.py": _module_source(),
+    }
+    plan, _ = plan_batches(files, batch_chars=4000, max_batches=8)
+    assert len(plan.batches) == 1, "small files share a batch, so order is unobservable"
+
+    assert _is_test(files, "src/test_helpers.py") is True
+    assert _is_test(files, "tests/unit/test_helpers.py") is True
+    assert _is_test(files, "veritas/review/test_index.py") is False
+    # The module is a source file to match against, so it leads the ordering.
+    assert batching_module._batch_order(files)[0] == "veritas/review/test_index.py"

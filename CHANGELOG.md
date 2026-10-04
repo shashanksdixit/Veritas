@@ -8,6 +8,11 @@ constitution Principle VIII / FR-016.
 
 ## [Unreleased]
 
+### Fixed
+- Python source modules whose names start with test_ (e.g. test_index.py) are no
+  longer treated as test files, so they are reviewed as application code and kept
+  out of the test index.
+
 ### Added
 - Batching reviews application code before test files, so when the batch limit is
   reached it is tests, not application code, that go unreviewed.
