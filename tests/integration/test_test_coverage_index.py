@@ -1,42 +1,53 @@
-"""Integration tests — test index for the test-coverage review (T081, FR-004).
+"""Integration tests — relevance-ordered test index for the test-coverage review
+(T082, FR-004).
 
 A batch only holds part of the scope, so the test-coverage reviewer used to see
 the tests that happened to share its batch and report the rest as missing. These
 tests pin the fix and its boundaries:
 
-* the index is built once, from the same post-exclusion source files the batches
-  are planned from, and travels in state;
-* every batch of the test-coverage review carries it, so a batch holding only
-  ``src/app.py`` still sees the tests for ``src/util.py``;
-* no other review type is sent an index, and it says what it can say without one;
-* a scope with no tests says so rather than implying no tests exist.
+* the scope node builds one index per batch from the same post-exclusion source
+  files the plan was built from, and each batch's index is ranked for its own
+  code, so two batches get two different orderings;
+* ``llm_findings`` hands each batch only its own entry, and every caller that
+  passes nothing sends the message it sent before;
+* no other review type is sent an index, and a scope with no tests says so
+  instead of implying no tests exist;
+* end to end, a suite too large for one index still gets the tests of the code in
+  front of it - the regression that motivated ranking rather than sorting.
 """
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from functools import partial
 from pathlib import Path
+from threading import Lock
 
 import pytest
 
 from veritas.config.settings import Settings
-from veritas.models.entities import ReviewRun, ReviewScope
-from veritas.review.graph import Runtime
+from veritas.models.entities import Category, ReviewRun, ReviewScope
+from veritas.review.graph import Runtime, run_review
 from veritas.review.nodes import scope as scope_module
 from veritas.review.nodes.code_quality import make_code_quality_node
+from veritas.review.nodes.common import load_prompt, llm_findings
 from veritas.review.nodes.performance import make_performance_node
 from veritas.review.nodes.scope import make_scope_node
 from veritas.review.nodes.security import make_security_node
 from veritas.review.nodes.test_coverage import make_test_coverage_node
-from veritas.review.test_index import INDEX_HEADER, NO_TEST_FILES_NOTICE, build_test_index
+from veritas.review.test_index import (
+    INDEX_HEADER,
+    NO_TEST_FILES_NOTICE,
+    build_batch_test_indexes,
+)
 from veritas.security.opengrep import OpengrepResult
 from veritas.utils.logging import Log
 
 _CODE_MARKER = "Code to review:\n\n"
 
 # Two 25-line files render to ~594-char blocks, so at batch_chars=1000 one block
-# does not fit beside the other and each source file takes its own batch.
+# does not fit beside the other and src/app.py takes a batch of its own.
 _BATCH_CHARS = 1000
 
 
@@ -45,20 +56,53 @@ def _lines(count: int, tag: str) -> str:
 
 
 class RecordingLLM:
-    """Records every user message a review node sends and returns no findings."""
+    """Records every user message a review node sends and returns no findings.
+
+    ``run_review`` drives the five review nodes from one superstep, so the calls
+    arrive on several threads and their order is not reproducible; the system
+    prompt is what identifies the caller. ``users`` restores batch order by
+    reading the batch header out of the message, which is what a node-level test
+    wants to assert on.
+    """
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self._lock = Lock()
+        self.model_name = "recording"
 
     def complete(self, system: str, user: str) -> str:
-        self.calls.append((system, user))
+        with self._lock:
+            self.calls.append((system, user))
         return "[]"
 
-    def users(self) -> list[str]:
-        return [user for _system, user in self.calls]
+    def users(self, review: str | None = None) -> list[str]:
+        if review is None:
+            return [user for _system, user in self.calls]
+        prompt = load_prompt(review)
+        return [user for system, user in self.calls if system == prompt]
 
-    def code_bodies(self) -> list[str]:
-        return [user.split(_CODE_MARKER, 1)[1] for user in self.users()]
+    def code_bodies(self, review: str | None = None) -> list[str]:
+        return [user.split(_CODE_MARKER, 1)[1] for user in self.users(review)]
+
+    def index_of(self, user: str) -> str:
+        """Whatever the node put before the code: index, notice, or nothing."""
+        return user.split(_CODE_MARKER, 1)[0]
+
+    def index_text(self, user: str) -> str:
+        """The index alone, without the shared context a node puts around it."""
+        prefix = self.index_of(user)
+        start = prefix.find(INDEX_HEADER)
+        return prefix[start:] if start >= 0 else prefix
+
+    def batch_order(self, review: str | None = None) -> list[str]:
+        """The users of ``review``, in the order the planner numbered the batches."""
+        users = self.users(review)
+
+        def batch_number(user: str) -> str:
+            match = re.search(r"^### FILE: (.+)$", user.split(_CODE_MARKER, 1)[1], re.M)
+            return match.group(1)
+
+        return sorted(users, key=batch_number)
 
 
 def _stub_sast(monkeypatch) -> None:
@@ -83,7 +127,7 @@ def _state(target: str) -> dict:
         target=target,
         config_hash="h",
         model_name="m",
-        prompt_version="1.4.0",
+        prompt_version="1.5.0",
         started_at=datetime.now(),
     )
     return {
@@ -101,7 +145,7 @@ def _state(target: str) -> dict:
         "skipped_languages": [],
         "excluded_files": [],
         "batch_plan": None,
-        "test_index": None,
+        "test_indexes": None,
         "project_context": None,
         "degraded_sast": None,
         "sast_findings": [],
@@ -128,6 +172,16 @@ def project_tree(tmp_path: Path) -> Path:
     return tmp_path
 
 
+@pytest.fixture
+def crowded_tree(project_tree: Path) -> Path:
+    """``project_tree`` plus twelve filler test files that sort before its tests."""
+    for index in range(12):
+        (project_tree / "tests" / f"test_filler_{index:02d}.py").write_text(
+            "def test_filler():\n    pass\n", encoding="utf-8"
+        )
+    return project_tree
+
+
 def _scoped(
     project_tree: Path,
     monkeypatch,
@@ -142,111 +196,215 @@ def _scoped(
     return {**_state(str(project_tree)), **result}
 
 
-# --- the scope node builds the index from the post-exclusion source files ---
+def _indexed_paths(index: str) -> list[str]:
+    return [
+        line[2:].split(":", 1)[0].split(" (", 1)[0]
+        for line in index.splitlines()
+        if line.startswith("- ")
+    ]
 
 
-def test_scope_state_carries_the_index_of_post_exclusion_test_files(project_tree, monkeypatch):
-    # A test file under an excluded directory: never fetched, so never indexed,
-    # which is the point of building the index from the same source files.
+# --- the scope node builds one index per batch ---
+
+
+def test_scope_state_carries_one_index_per_batch(project_tree, monkeypatch):
+    state = _scoped(project_tree, monkeypatch)
+    plan = state["batch_plan"]
+    assert len(plan.batches) == 2
+
+    indexes = state["test_indexes"]
+    assert sorted(indexes) == [batch.index for batch in plan.batches]
+    for index in indexes.values():
+        assert index.startswith(f"{INDEX_HEADER}\n")
+        assert "Code to review:" not in index
+
+
+def test_each_batch_index_is_ranked_for_its_own_code(project_tree, monkeypatch):
+    # The same two test files in two batches holding different source files: the
+    # batch holding src/app.py leads with app's test, the other leads with util's.
+    state = _scoped(project_tree, monkeypatch)
+    indexes = state["test_indexes"]
+
+    assert _indexed_paths(indexes[1]) == ["tests/test_app.py", "tests/test_util.py"]
+    assert _indexed_paths(indexes[2]) == ["tests/test_util.py", "tests/test_app.py"]
+
+
+def test_scope_indexes_exclude_excluded_test_files(project_tree, monkeypatch):
+    # A test file under an excluded directory: never fetched, so never indexed.
     (project_tree / "tests" / "legacy").mkdir()
     (project_tree / "tests" / "legacy" / "test_old.py").write_text(
         "def test_excluded_by_pattern():\n    pass\n", encoding="utf-8"
     )
     state = _scoped(project_tree, monkeypatch, exclude=["tests/legacy/"])
 
-    assert state["test_index"] == (
-        f"{INDEX_HEADER}\n"
-        "- tests/test_app.py: test_app_starts, test_app_stops\n"
-        "- tests/test_util.py: TestUtil.test_helper_math"
-    )
-    assert "test_excluded_by_pattern" not in state["test_index"]
-    assert "tests/legacy" not in state["test_index"]
+    for index in state["test_indexes"].values():
+        assert set(_indexed_paths(index)) == {"tests/test_app.py", "tests/test_util.py"}
+    assert "test_excluded_by_pattern" not in str(state["test_indexes"])
     assert "tests/legacy/test_old.py" not in state["files"]
 
 
-def test_index_covers_the_files_that_are_batched(project_tree, monkeypatch):
-    # Same input on both sides: an indexed test file is always a reviewed file,
-    # so the index cannot describe a file the reviewer will never see.
-    state = _scoped(project_tree, monkeypatch)
-    batched = {chunk.path for batch in state["batch_plan"].batches for chunk in batch.chunks}
-    indexed = {
-        line[2:].split(":", 1)[0].split(" (", 1)[0]
-        for line in state["test_index"].splitlines()[1:]
-    }
-    assert indexed == {"tests/test_app.py", "tests/test_util.py"}
-    assert indexed <= batched
-
-
-def test_scope_sets_the_index_to_none_when_the_scope_has_no_tests(tmp_path, monkeypatch):
+def test_scope_sets_indexes_to_none_when_the_scope_has_no_tests(tmp_path, monkeypatch):
     (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
     _stub_sast(monkeypatch)
     result = make_scope_node(_runtime(RecordingLLM()))(_state(str(tmp_path)))
 
-    assert result["test_index"] is None
+    assert result["test_indexes"] is None
 
 
-def test_test_index_log_line_reports_the_counts(project_tree, monkeypatch):
+def test_test_index_log_line(project_tree, monkeypatch):
     _stub_sast(monkeypatch)
     events: list[str] = []
-    runtime = _runtime(RecordingLLM())
+    runtime = _runtime(RecordingLLM(), batch_chars=_BATCH_CHARS)
     monkeypatch.setattr(runtime.log, "info", lambda message, **_kw: events.append(message))
-    result = make_scope_node(runtime)(_state(str(project_tree)))
+    make_scope_node(runtime)(_state(str(project_tree)))
 
-    index_lines = [event for event in events if event.startswith("test index:")]
-    assert len(index_lines) == 1
-    assert index_lines[0] == (
-        f"test index: 2 test file(s), 3 test name(s), {len(result['test_index'])} chars"
-    )
-
-
-def test_test_index_log_line_reports_omitted_files(project_tree, monkeypatch):
-    # A scope with more tests than the budget can hold, so the index is cut and
-    # the log has to say how many files the model was not shown.
-    for index in range(12):
-        (project_tree / "tests" / f"test_extra_{index:02d}.py").write_text(
-            "def test_extra():\n    pass\n", encoding="utf-8"
-        )
-    _stub_sast(monkeypatch)
-    monkeypatch.setattr(scope_module, "build_test_index", partial(build_test_index, max_chars=220))
-    events: list[str] = []
-    runtime = _runtime(RecordingLLM())
-    monkeypatch.setattr(runtime.log, "info", lambda message, **_kw: events.append(message))
-    result = make_scope_node(runtime)(_state(str(project_tree)))
-
-    index = result["test_index"]
-    assert index.endswith("more test file(s) not listed (index limit 220 characters).")
-    omitted = int(index.rsplit("...and ", 1)[1].split(" ", 1)[0])
-    listed = len(index.splitlines()) - 2
-    assert omitted == 14 - listed == 13
     assert [event for event in events if event.startswith("test index:")] == [
-        f"test index: 14 test file(s), 15 test name(s), {len(index)} chars, "
-        f"truncated ({omitted} file(s) omitted)"
+        "test index: 2 test file(s), 3 test name(s); up to 16000 chars per batch; "
+        "0 of 2 batch(es) truncated"
     ]
 
 
-# --- every test-coverage batch carries the index ---
+def test_test_index_log_line_counts_truncated_batches(crowded_tree, monkeypatch):
+    _stub_sast(monkeypatch)
+    monkeypatch.setattr(
+        scope_module,
+        "build_batch_test_indexes",
+        partial(build_batch_test_indexes, max_chars=250),
+    )
+    events: list[str] = []
+    runtime = _runtime(RecordingLLM(), batch_chars=_BATCH_CHARS)
+    monkeypatch.setattr(runtime.log, "info", lambda message, **_kw: events.append(message))
+    result = make_scope_node(runtime)(_state(str(crowded_tree)))
+
+    assert len(result["test_indexes"]) == len(result["batch_plan"].batches)
+    assert [event for event in events if event.startswith("test index:")] == [
+        "test index: 14 test file(s), 15 test name(s); up to 250 chars per batch; "
+        "3 of 3 batch(es) truncated"
+    ]
 
 
-def test_each_batch_sees_the_tests_for_the_code_in_the_other_batch(project_tree, monkeypatch):
+# --- llm_findings: per-batch context, and nothing else changed ---
+
+
+def test_batch_extra_reaches_only_its_own_batch(project_tree, monkeypatch):
     state = _scoped(project_tree, monkeypatch)
-    batches = state["batch_plan"].batches
-    assert len(batches) == 2, "the regression needs two batches"
+    plan = state["batch_plan"]
 
+    llm = RecordingLLM()
+    llm_findings(
+        llm,
+        plan,
+        "code_quality",
+        None,
+        category=Category.TEST_COVERAGE,
+        log=None,
+        batch_extra={1: "INDEX FOR ONE", 2: "INDEX FOR TWO"},
+    )
+
+    users = llm.batch_order()
+    assert len(users) == 2
+    assert "### FILE: src/app.py" in users[0]
+    assert "INDEX FOR ONE" in users[0] and "INDEX FOR TWO" not in users[0]
+    assert "### FILE: src/util.py" in users[1]
+    assert "INDEX FOR TWO" in users[1] and "INDEX FOR ONE" not in users[1]
+
+
+def test_batch_extra_goes_after_extra_and_before_the_code(project_tree, monkeypatch):
+    state = _scoped(project_tree, monkeypatch)
+    plan = state["batch_plan"]
+
+    llm = RecordingLLM()
+    llm_findings(
+        llm,
+        plan,
+        "code_quality",
+        "PROJECT CONTEXT",
+        category=Category.TEST_COVERAGE,
+        log=None,
+        extra="SHARED EXTRA",
+        batch_extra={batch.index: f"INDEX {batch.index}" for batch in plan.batches},
+    )
+
+    for number, user in enumerate(llm.batch_order(), start=1):
+        assert user.index("PROJECT CONTEXT") < user.index("SHARED EXTRA")
+        assert user.index("SHARED EXTRA") < user.index(f"INDEX {number}")
+        assert user.index(f"INDEX {number}") < user.index(_CODE_MARKER)
+
+
+def test_a_caller_without_batch_extra_sends_the_unchanged_message(project_tree, monkeypatch):
+    # Every other review type passes nothing, so its messages must be what they
+    # were before the parameter existed: context, then extra, then the code.
+    state = _scoped(project_tree, monkeypatch)
+    plan = state["batch_plan"]
+
+    llm = RecordingLLM()
+    llm_findings(
+        llm,
+        plan,
+        "code_quality",
+        "PROJECT CONTEXT",
+        category=Category.TEST_COVERAGE,
+        log=None,
+        extra="SHARED EXTRA",
+    )
+
+    for user, batch in zip(llm.batch_order(), plan.batches, strict=True):
+        assert user == f"PROJECT CONTEXT\n\nSHARED EXTRA\n\n{_CODE_MARKER}{batch.text}"
+
+
+def test_a_batch_with_no_entry_is_left_alone(project_tree, monkeypatch):
+    # batch_extra present but silent about this batch must not add a stray blank
+    # block or swallow the code.
+    state = _scoped(project_tree, monkeypatch)
+    plan = state["batch_plan"]
+
+    llm = RecordingLLM()
+    llm_findings(
+        llm,
+        plan,
+        "code_quality",
+        None,
+        category=Category.TEST_COVERAGE,
+        log=None,
+        batch_extra={1: "INDEX FOR ONE"},
+    )
+
+    assert llm.batch_order()[1] == f"{_CODE_MARKER}{plan.batches[1].text}"
+
+
+def test_an_empty_batch_extra_dict_changes_nothing(project_tree, monkeypatch):
+    state = _scoped(project_tree, monkeypatch)
+    plan = state["batch_plan"]
+
+    llm = RecordingLLM()
+    llm_findings(
+        llm, plan, "code_quality", None, category=Category.TEST_COVERAGE, log=None, batch_extra={}
+    )
+
+    for user, batch in zip(llm.batch_order(), plan.batches, strict=True):
+        assert user == f"{_CODE_MARKER}{batch.text}"
+
+
+# --- the test-coverage node, and only that node ---
+
+
+def test_test_coverage_sends_each_batch_its_own_index(project_tree, monkeypatch):
+    state = _scoped(project_tree, monkeypatch)
     llm = RecordingLLM()
     make_test_coverage_node(_runtime(llm, batch_chars=_BATCH_CHARS))(state)
 
-    bodies = llm.code_bodies()
-    assert len(bodies) == 2
-    # The first batch is src/app.py alone: neither test file is in it, which is
-    # the situation that used to produce "no tests exist for this code".
-    app_batch = bodies[0]
-    assert app_batch.startswith("### FILE: src/app.py")
-    assert "tests/test_app.py" not in app_batch
-    for user in llm.users():
+    users = llm.batch_order()
+    assert len(users) == 2
+    assert _indexed_paths(llm.index_text(users[0])) == [
+        "tests/test_app.py",
+        "tests/test_util.py",
+    ]
+    assert _indexed_paths(llm.index_text(users[1])) == [
+        "tests/test_util.py",
+        "tests/test_app.py",
+    ]
+    for user in users:
         assert INDEX_HEADER in user
-        assert "- tests/test_app.py: test_app_starts, test_app_stops" in user
-        assert "- tests/test_util.py: TestUtil.test_helper_math" in user
-        # The index is context the reviewer reads, ahead of the code.
         assert user.index(INDEX_HEADER) < user.index(_CODE_MARKER)
 
 
@@ -257,11 +415,8 @@ def test_test_coverage_sends_the_index_when_there_is_only_one_batch(project_tree
     llm = RecordingLLM()
     make_test_coverage_node(_runtime(llm, batch_chars=50_000))(state)
 
-    assert len(llm.calls) == 1
+    assert len(llm.users()) == 1
     assert INDEX_HEADER in llm.users()[0]
-
-
-# --- and only the test-coverage review ---
 
 
 @pytest.mark.parametrize(
@@ -269,7 +424,7 @@ def test_test_coverage_sends_the_index_when_there_is_only_one_batch(project_tree
     [make_code_quality_node, make_security_node, make_performance_node],
     ids=["code_quality", "security", "performance"],
 )
-def test_other_review_types_are_not_sent_the_index(project_tree, monkeypatch, factory):
+def test_other_review_types_are_not_sent_any_index(project_tree, monkeypatch, factory):
     state = _scoped(project_tree, monkeypatch)
 
     llm = RecordingLLM()
@@ -285,13 +440,10 @@ def test_other_review_types_are_not_sent_the_index(project_tree, monkeypatch, fa
     assert "test_app_starts" in bodies, "the test files are reviewed as ordinary code"
 
 
-# --- a scope with no tests ---
-
-
 def test_no_tests_in_scope_tells_the_reviewer_so(tmp_path, monkeypatch):
     (tmp_path / "app.py").write_text(_lines(25, "app"), encoding="utf-8")
     state = _scoped(tmp_path, monkeypatch)
-    assert state["test_index"] is None
+    assert state["test_indexes"] is None
 
     llm = RecordingLLM()
     make_test_coverage_node(_runtime(llm, batch_chars=_BATCH_CHARS))(state)
@@ -302,12 +454,12 @@ def test_no_tests_in_scope_tells_the_reviewer_so(tmp_path, monkeypatch):
         assert INDEX_HEADER not in user
 
 
-def test_a_state_without_the_index_key_does_not_raise(tmp_path, monkeypatch):
-    # Nodes are called with whatever state exists; a missing key means the same
-    # as no tests in scope, not a KeyError.
+def test_a_state_without_the_indexes_key_does_not_raise(tmp_path, monkeypatch):
+    # Nodes are called with whatever state exists; a missing key means the same as
+    # no tests in scope, not a KeyError.
     (tmp_path / "app.py").write_text(_lines(25, "app"), encoding="utf-8")
     state = _scoped(tmp_path, monkeypatch)
-    state.pop("test_index")
+    state.pop("test_indexes")
 
     llm = RecordingLLM()
     result = make_test_coverage_node(_runtime(llm, batch_chars=_BATCH_CHARS))(state)
@@ -316,10 +468,91 @@ def test_a_state_without_the_index_key_does_not_raise(tmp_path, monkeypatch):
     assert NO_TEST_FILES_NOTICE in llm.users()[0]
 
 
-def test_the_index_survives_a_node_that_returns_nothing_findings(project_tree, monkeypatch):
+def test_the_indexes_survive_a_node_that_finds_nothing(project_tree, monkeypatch):
     state = _scoped(project_tree, monkeypatch)
     llm = RecordingLLM()
     result = make_test_coverage_node(_runtime(llm, batch_chars=_BATCH_CHARS))(state)
 
     assert result == {"code_findings": [], "errors": []}
-    assert state["test_index"] is not None, "the node must not clear the shared state"
+    assert set(state["test_indexes"]) == {1, 2}, "the node must not clear shared state"
+
+
+# --- end to end: the regression a single alphabetical index caused ---
+
+
+def _regression_tree(tmp_path: Path) -> Path:
+    """A suite whose alphabetical order buries the test of src/batching.py.
+
+    ``tests/test_filler_*`` sorts before ``tests/unit/test_batching.py``, so an
+    index that listed files in path order would spend its whole budget on fillers
+    and never mention batching's tests.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests" / "unit").mkdir(parents=True)
+    (tmp_path / "src" / "batching.py").write_text(_lines(25, "batch"), encoding="utf-8")
+    (tmp_path / "src" / "other.py").write_text(_lines(25, "other"), encoding="utf-8")
+    (tmp_path / "tests" / "unit" / "test_batching.py").write_text(
+        "def test_packs_whole_files_first():\n    pass\n\n\n"
+        "def test_is_deterministic_in_insertion_order():\n    pass\n",
+        encoding="utf-8",
+    )
+    for index in range(12):
+        (tmp_path / "tests" / f"test_filler_{index:02d}.py").write_text(
+            "def test_filler():\n    pass\n", encoding="utf-8"
+        )
+    return tmp_path
+
+
+def test_batching_tests_survive_a_truncated_index_end_to_end(tmp_path, monkeypatch):
+    """The batch holding src/batching.py must still see batching's own tests.
+
+    The budget holds two of the suite's thirteen test files. In path order they
+    would be tests/test_filler_00.py and tests/test_filler_01.py, and batching's
+    own tests would be among the eleven the reviewer is never told about; by
+    relevance the batch's own test is listed first, with its names.
+    """
+    _stub_sast(monkeypatch)
+    monkeypatch.setattr(
+        scope_module,
+        "build_batch_test_indexes",
+        partial(build_batch_test_indexes, max_chars=300),
+    )
+    tree = _regression_tree(tmp_path)
+    llm = RecordingLLM()
+    outcome = run_review(
+        Settings(api_key="test-key", batch_chars=_BATCH_CHARS, max_batches=8),
+        ReviewScope.PROJECT,
+        str(tree),
+        llm=llm,
+    )
+    assert outcome.exit_code == 0
+
+    # The fillers really do sort before the batching test, so this is not luck.
+    fillers = sorted(path.relative_to(tree).as_posix() for path in tree.rglob("test_filler_*.py"))
+    assert fillers[0] < "tests/unit/test_batching.py"
+
+    calls = [
+        user
+        for user in llm.users("test_coverage")
+        if "### FILE: src/batching.py" in user.split(_CODE_MARKER, 1)[1]
+    ]
+    assert len(calls) == 1, "src/batching.py should have been reviewed in one batch"
+    index = llm.index_text(calls[0])
+
+    assert _indexed_paths(index) == ["tests/unit/test_batching.py", "tests/test_filler_00.py"]
+    assert (
+        "- tests/unit/test_batching.py: test_packs_whole_files_first, "
+        "test_is_deterministic_in_insertion_order" in index
+    )
+    assert index.rstrip().endswith(
+        "more test file(s) not listed (index limit 300 characters)."
+    )
+    # The batch holding the fillers leads with the file it actually contains, so
+    # relevance follows the batch rather than one global ordering.
+    other = [
+        llm.index_text(user)
+        for user in llm.users("test_coverage")
+        if "### FILE: tests/test_filler_00.py" in user.split(_CODE_MARKER, 1)[1]
+    ]
+    assert len(other) == 1
+    assert _indexed_paths(other[0])[0] == "tests/test_filler_00.py"

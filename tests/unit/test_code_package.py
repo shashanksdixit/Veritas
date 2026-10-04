@@ -76,7 +76,7 @@ _PARTIAL_FILE_RULE = (
     "see."
 )
 
-# Only the test-coverage review is given the scope's test index (T081, FR-004):
+# Only the test-coverage review is given the scope's test index (T082, FR-004):
 # the other review types neither receive nor are told about it.
 _TEST_INDEX_RULE = (
     'The user message may include a "Test index" listing test files and test '
@@ -86,6 +86,13 @@ _TEST_INDEX_RULE = (
     "name plausibly covers. Tests outside the reviewed scope may also exist, so "
     'describe a gap as "no test found in the reviewed scope" rather than '
     "asserting that no test exists."
+)
+
+# An index cut at its character limit ends by saying how many test files were not
+# listed, so the reviewer has to know the list is partial (T082, FR-004).
+_TRUNCATED_INDEX_RULE = (
+    "If the index says that some test files were not listed, a test name missing "
+    "from the index is not evidence that the test does not exist."
 )
 
 
@@ -266,8 +273,8 @@ def test_requirements_prompt_uses_the_evidence_rule_not_cited_snippet():
 
 
 def test_prompt_version_is_current():
-    assert PROMPT_VERSION == "1.4.0"
-    assert current_prompt_version() == "1.4.0"
+    assert PROMPT_VERSION == "1.5.0"
+    assert current_prompt_version() == "1.5.0"
 
 
 def test_every_prompt_with_line_numbers_also_states_the_line_range_rule():
@@ -337,3 +344,16 @@ def test_test_index_rule_is_in_the_test_coverage_prompt_only():
         if name == "test_coverage":
             continue
         assert _TEST_INDEX_RULE not in _normalized(_prompt(name)), name
+
+
+def test_test_coverage_prompt_explains_a_truncated_index():
+    # An index that ran out of room says so; without this the reviewer would read
+    # the absence of a test name as the absence of the test (FR-004).
+    assert _TRUNCATED_INDEX_RULE in _normalized(_prompt("test_coverage"))
+
+
+def test_truncated_index_rule_is_in_the_test_coverage_prompt_only():
+    for name in _CODE_PROMPTS:
+        if name == "test_coverage":
+            continue
+        assert _TRUNCATED_INDEX_RULE not in _normalized(_prompt(name)), name

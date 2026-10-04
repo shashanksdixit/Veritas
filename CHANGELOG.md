@@ -9,6 +9,10 @@ constitution Principle VIII / FR-016.
 ## [Unreleased]
 
 ### Added
+- The test index is ordered by relevance per batch (name match, then Python
+  import match, then the rest), with a 16000-character per-batch limit, so
+  truncation drops the least relevant tests instead of an alphabetical tail.
+  Prompt version **1.5.0**.
 - Prompt version **1.4.0**: the test coverage review is shown an index of every
   test file in scope, with the Python test names inside each, so a batch no longer
   looks untested when its tests are in another batch; no report schema change.

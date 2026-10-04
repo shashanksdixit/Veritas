@@ -48,11 +48,10 @@ class ReviewState(TypedDict):
     # None until the scope node builds it; every code review type uses this one
     # plan, so the scope node is the only writer.
     batch_plan: BatchPlan | None
-    # Index of the test files (and Python test names) in scope, handed to the
-    # test-coverage review with every batch so tests in other batches are not
-    # reported as missing (FR-004). None means the scope holds no test files; the
-    # scope node is the only writer.
-    test_index: str | None
+    # One test index per batch (FR-004), keyed by the batch's 1-based index and
+    # ranked for the code that batch holds. None means the scope holds no test
+    # files; the scope node is the only writer.
+    test_indexes: dict[int, str] | None
     project_context: str | None
     degraded_sast: str | None
     sast_findings: list[dict]

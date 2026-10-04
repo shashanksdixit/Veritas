@@ -322,6 +322,7 @@ def llm_findings(
     log,
     source: FindingSource | None = None,
     extra: str = "",
+    batch_extra: dict[int, str] | None = None,
 ) -> tuple[list[CodeFinding], list[str]]:
     """Drive the LLM for a code-findings review type over the shared batch plan.
 
@@ -329,6 +330,12 @@ def llm_findings(
     same plan, so all four see identical code (FR-029). Each batch is one LLM
     call whose user message is the usual context/extra prefix followed by that
     batch's text.
+
+    ``batch_extra`` carries per-batch context keyed by ``Batch.index`` (1-based) -
+    the test-coverage review uses it for that batch's test index (FR-004), since
+    which tests matter depends on which code is in the batch. The entry for the
+    batch being sent goes after ``extra`` and before the code; a batch with no
+    entry, and every caller that passes nothing, send the message unchanged.
 
     No payload is filtered on the way out. Whether a citation is real is decided
     once, by the verification node, which re-reads the cited file from the full
@@ -358,7 +365,6 @@ def llm_findings(
         prefix += f"{context}\n\n"
     if extra:
         prefix += f"{extra}\n\n"
-    prefix += "Code to review:\n\n"
 
     total = len(batches)
     findings: list[CodeFinding] = []
@@ -369,7 +375,14 @@ def llm_findings(
             # Logged before the call so a hung or slow batch is identifiable.
             log.info(f"{prompt_name}: batch {position}/{total} ({len(paths)} file(s))")
         try:
-            text = llm.complete(sys_prompt, prefix + batch.text)
+            batch_note = ""
+            if batch_extra is not None:
+                # Assembled per batch, so a lookup miss or a caller that passes
+                # nothing leaves the message exactly as it was.
+                note = batch_extra.get(batch.index)
+                if note:
+                    batch_note = f"{note}\n\n"
+            text = llm.complete(sys_prompt, prefix + batch_note + "Code to review:\n\n" + batch.text)
             payloads = parse_json_array(text)
             # Every payload the LLM returns becomes a finding. Nothing is
             # filtered here: a finding must never be dropped silently (FR-013).

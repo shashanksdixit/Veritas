@@ -26,7 +26,7 @@ from veritas.models.entities import ExcludedFile, ReviewRun, ReviewScope
 from veritas.review import ReviewFatalError, ReviewNotFoundError
 from veritas.review.batching import plan_batches
 from veritas.review.state import ReviewState
-from veritas.review.test_index import build_test_index
+from veritas.review.test_index import build_batch_test_indexes
 from veritas.security.opengrep import collect_sast
 from veritas.utils.languages import is_supported
 from veritas.utils.paths import matching_exclusion
@@ -308,18 +308,16 @@ def make_scope_node(runtime) -> Callable[[ReviewState], dict]:
             f"{len(plan.not_reviewed_files)} not reviewed"
         )
 
-        # FR-004: the same post-exclusion source files, so the test-coverage
-        # review knows which tests exist even when the tests for a given batch
-        # are in another one. Excluded files are absent from the index by
-        # construction, which is the point.
-        test_index, index_stats = build_test_index(source_files)
-        omitted = ""
-        if index_stats["truncated"]:
-            omitted = f", truncated ({index_stats['omitted_files']} file(s) omitted)"
+        # FR-004: the same post-exclusion source files and the same plan, so each
+        # batch carries an index of the tests ranked for the code it holds. Excluded
+        # files are absent from the index by construction, which is the point.
+        test_indexes, index_stats = build_batch_test_indexes(source_files, plan)
         runtime.log.info(
             f"test index: {index_stats['test_files']} test file(s), "
-            f"{index_stats['test_names']} test name(s), "
-            f"{index_stats['chars']} chars{omitted}"
+            f"{index_stats['test_names']} test name(s); "
+            f"up to {index_stats['max_chars']} chars per batch; "
+            f"{index_stats['truncated_batches']} of {index_stats['batches']} "
+            "batch(es) truncated"
         )
 
         files: dict[str, str] = result["files"]
@@ -336,7 +334,7 @@ def make_scope_node(runtime) -> Callable[[ReviewState], dict]:
             "skipped_languages": result["skipped_languages"],
             "excluded_files": result["excluded_files"],
             "batch_plan": plan,
-            "test_index": test_index,
+            "test_indexes": test_indexes,
             "degraded_sast": sast.degraded,
             "sast_findings": sast.findings,
             "run": run,

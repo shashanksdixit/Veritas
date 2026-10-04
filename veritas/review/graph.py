@@ -123,7 +123,7 @@ def _initial_state(
         "skipped_languages": [],
         "excluded_files": [],
         "batch_plan": None,
-        "test_index": None,
+        "test_indexes": None,
         "project_context": None,
         "degraded_sast": None,
         "sast_findings": [],
