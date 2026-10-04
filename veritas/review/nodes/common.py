@@ -4,6 +4,7 @@ construction, redaction). Kept read-only: no write/execute capability here."""
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -209,6 +210,49 @@ def numbered_lines(lines: Sequence[str], start_line: int = 1) -> list[str]:
     return [f"{n:>5}| {line}" for n, line in enumerate(lines, start=start_line)]
 
 
+# The ``{n:>5}| `` prefix above: optional spaces, one or more digits, the bar,
+# then at most the single space that separates it from the code.
+_LINE_NUMBER_PREFIX = re.compile(r"^ *\d+\| ?")
+
+
+def strip_line_number_prefixes(snippet: str) -> tuple[str, bool]:
+    """Remove the review prompts' line-number prefixes from a cited snippet.
+
+    Review code is shown line-numbered, and models copy that format straight
+    into ``cited_snippet`` — ``"   21| def f():"``. The prefix is not in the
+    file, so verification would reject an otherwise real citation for the
+    prefix alone. Stripping where the finding is built means verification,
+    state, the report and the suppression fingerprint all see the code the
+    reviewer meant (FR-014).
+
+    All or nothing per snippet: prefixes come off only when EVERY non-blank
+    line carries one, because a half-strip would mangle real code (a snippet
+    like ``x = a | b`` is not line-numbered). Blank and whitespace-only lines
+    carry no prefix, so they are kept as empty lines and the remaining lines
+    keep their positions. Indentation after the prefix is preserved.
+
+    The removed numbers are ignored — the finding's cited line range, not the
+    prefix, says where the code is — so ``"   99| def f():"`` cleans to
+    ``"def f():"`` and is then located by verification as usual.
+
+    Returns ``(cleaned, True)`` when prefixes were removed, else the snippet
+    unchanged with ``False``.
+    """
+    lines = snippet.splitlines()
+    if not any(line.strip() for line in lines):
+        return (snippet, False)
+    cleaned: list[str] = []
+    for line in lines:
+        if not line.strip():
+            cleaned.append("")
+            continue
+        match = _LINE_NUMBER_PREFIX.match(line)
+        if match is None:
+            return (snippet, False)
+        cleaned.append(line[match.end() :])
+    return ("\n".join(cleaned), True)
+
+
 def _numbered_file_block(path: str, content: str, budget: int) -> str | None:
     """Render one file as a header plus numbered lines, fitting ``budget``.
 
@@ -335,10 +379,31 @@ def llm_findings(
             # an in-scope file against its full content, not just the batch the
             # finding happened to be produced from, so a citation into another
             # batch of the same file still verifies.
-            findings.extend(
-                build_code_finding(raw, category=category, source=source)
-                for raw in payloads
-            )
+            #
+            # The cited snippet is cleaned of the prompts' line-number prefixes
+            # first, so a reviewer who quoted the code as it was shown is not
+            # rejected for the quoting (FR-014). Each removal is counted and
+            # logged: silently rewriting what the model said would be as
+            # dishonest as dropping it.
+            batch_findings: list[CodeFinding] = []
+            cleaned_count = 0
+            for raw in payloads:
+                payload = dict(raw)
+                cited = payload.get("cited_snippet")
+                if cited:
+                    cleaned, stripped = strip_line_number_prefixes(str(cited))
+                    if stripped:
+                        payload["cited_snippet"] = cleaned
+                        cleaned_count += 1
+                batch_findings.append(
+                    build_code_finding(payload, category=category, source=source)
+                )
+            if cleaned_count > 0 and log is not None:
+                log.info(
+                    f"{prompt_name}: batch {position}/{total}: removed line-number "
+                    f"prefixes from {cleaned_count} snippet(s)"
+                )
+            findings.extend(batch_findings)
         except Exception as exc:  # noqa: BLE001 - isolate one batch, keep going
             error = redact_secrets(
                 f"{prompt_name}: batch {position}/{total} failed "
