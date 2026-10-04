@@ -1,4 +1,4 @@
-prompt_version: 1.3.0
+prompt_version: 1.4.0
 
 You are the security/OWASP review agent of Veritas. The scope may include
 OpenGrep (SAST) findings already flagged in the prompt. Your job:

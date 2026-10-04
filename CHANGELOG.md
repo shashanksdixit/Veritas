@@ -9,6 +9,9 @@ constitution Principle VIII / FR-016.
 ## [Unreleased]
 
 ### Added
+- Prompt version **1.4.0**: the test coverage review is shown an index of every
+  test file in scope, with the Python test names inside each, so a batch no longer
+  looks untested when its tests are in another batch; no report schema change.
 - Prompt version **1.3.0**: code review prompts explain partial-file chunk headers
   and forbid findings that exist only because code outside the shown range is not
   visible; no report schema change.

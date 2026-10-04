@@ -76,6 +76,18 @@ _PARTIAL_FILE_RULE = (
     "see."
 )
 
+# Only the test-coverage review is given the scope's test index (T081, FR-004):
+# the other review types neither receive nor are told about it.
+_TEST_INDEX_RULE = (
+    'The user message may include a "Test index" listing test files and test '
+    "names that exist in the reviewed scope, including tests that are not shown "
+    "in this batch. Before reporting missing or insufficient tests, check the "
+    "index, and do not report missing tests for behaviour that an indexed test "
+    "name plausibly covers. Tests outside the reviewed scope may also exist, so "
+    'describe a gap as "no test found in the reviewed scope" rather than '
+    "asserting that no test exists."
+)
+
 
 def _prompt(name: str) -> str:
     return (_PROMPT_DIR / f"{name}.md").read_text(encoding="utf-8")
@@ -254,8 +266,8 @@ def test_requirements_prompt_uses_the_evidence_rule_not_cited_snippet():
 
 
 def test_prompt_version_is_current():
-    assert PROMPT_VERSION == "1.3.0"
-    assert current_prompt_version() == "1.3.0"
+    assert PROMPT_VERSION == "1.4.0"
+    assert current_prompt_version() == "1.4.0"
 
 
 def test_every_prompt_with_line_numbers_also_states_the_line_range_rule():
@@ -312,3 +324,16 @@ def test_requirements_prompt_has_no_partial_file_rule():
     # It still receives code_package, which never shows part of a file, so
     # telling it about chunk headers would describe input it cannot get.
     assert _PARTIAL_FILE_RULE not in _normalized(_prompt("requirements"))
+
+
+def test_test_coverage_prompt_explains_the_test_index():
+    assert _TEST_INDEX_RULE in _normalized(_prompt("test_coverage"))
+
+
+def test_test_index_rule_is_in_the_test_coverage_prompt_only():
+    # The other four review types are never handed an index, so naming one would
+    # describe input they cannot get and invite them to hedge on missing tests.
+    for name in _CODE_PROMPTS:
+        if name == "test_coverage":
+            continue
+        assert _TEST_INDEX_RULE not in _normalized(_prompt(name)), name

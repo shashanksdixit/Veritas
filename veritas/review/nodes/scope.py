@@ -26,6 +26,7 @@ from veritas.models.entities import ExcludedFile, ReviewRun, ReviewScope
 from veritas.review import ReviewFatalError, ReviewNotFoundError
 from veritas.review.batching import plan_batches
 from veritas.review.state import ReviewState
+from veritas.review.test_index import build_test_index
 from veritas.security.opengrep import collect_sast
 from veritas.utils.languages import is_supported
 from veritas.utils.paths import matching_exclusion
@@ -307,6 +308,20 @@ def make_scope_node(runtime) -> Callable[[ReviewState], dict]:
             f"{len(plan.not_reviewed_files)} not reviewed"
         )
 
+        # FR-004: the same post-exclusion source files, so the test-coverage
+        # review knows which tests exist even when the tests for a given batch
+        # are in another one. Excluded files are absent from the index by
+        # construction, which is the point.
+        test_index, index_stats = build_test_index(source_files)
+        omitted = ""
+        if index_stats["truncated"]:
+            omitted = f", truncated ({index_stats['omitted_files']} file(s) omitted)"
+        runtime.log.info(
+            f"test index: {index_stats['test_files']} test file(s), "
+            f"{index_stats['test_names']} test name(s), "
+            f"{index_stats['chars']} chars{omitted}"
+        )
+
         files: dict[str, str] = result["files"]
         # SAST scans exactly the post-exclusion file set (FR-029).
         sast = collect_sast(files, scope_value=scope.value, rules=runtime.opengrep_rules)
@@ -321,6 +336,7 @@ def make_scope_node(runtime) -> Callable[[ReviewState], dict]:
             "skipped_languages": result["skipped_languages"],
             "excluded_files": result["excluded_files"],
             "batch_plan": plan,
+            "test_index": test_index,
             "degraded_sast": sast.degraded,
             "sast_findings": sast.findings,
             "run": run,
