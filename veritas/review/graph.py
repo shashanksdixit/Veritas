@@ -124,6 +124,8 @@ def _initial_state(
         "excluded_files": [],
         "batch_plan": None,
         "test_indexes": None,
+        "requirement_sources": [],
+        "requirements": [],
         "project_context": None,
         "degraded_sast": None,
         "sast_findings": [],

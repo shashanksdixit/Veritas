@@ -17,6 +17,8 @@ constitution Principle VIII / FR-016.
   **1.7.0**.
 
 ### Added
+- Requirement sources are discovered by pattern (spec-kit specs/*/spec.md first)
+  and spec-kit FR lines are extracted deterministically.
 - Report schema **1.4.0**: adds optional `CodeFinding.severity_adjusted_from`.
   Migration: earlier reports remain valid; the field defaults to null.
 - Prompt version **1.6.0**: code review prompts carry a severity rubric with

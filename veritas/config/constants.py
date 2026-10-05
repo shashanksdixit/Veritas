@@ -32,17 +32,31 @@ MAX_SCOPE_FILES = 500
 # Files searched as project conventions documentation (FR-010).
 CONVENTIONS_FILENAMES = ("AGENTS.md", "CONVENTIONS.md", "STYLE.md")
 
-# Files searched as requirement sources (FR-008, spec-kit structured first).
-REQUIREMENTS_SOURCES = (
-    "spec.md",
-    "spec-kit.md",
+# Requirement sources (FR-008), in discovery priority order. Lower rank wins; a
+# spec-kit feature spec is ahead of all of these and shares one rank, since which
+# feature a spec describes does not make it more authoritative than another.
+# Requires a companion entry in veritas/review/requirements_source.py, which
+# owns the patterns; this is the order and the root/docs file names only.
+REQUIREMENTS_ROOT_SOURCES = (
     "requirements.md",
     "REQUIREMENTS.md",
     "PRD.md",
     "docs/requirements.md",
     "docs/prd.md",
+    "spec.md",
+    "spec-kit.md",
     "README.md",
 )
+REQUIREMENTS_SPEC_GLOB_PARTS = ("specs", "*", "spec.md")
+
+# Max characters of a requirement's text carried into a review prompt (FR-008);
+# a longer FR line is cut here and marked with a trailing "...".
+REQUIREMENTS_MAX_TEXT_CHARS = 800
+
+# Backwards-compatible alias for the old fixed-name tuple. The discovery rules now
+# live in veritas/review/requirements_source.py, which also recognises
+# specs/<feature>/spec.md; this name is the root/docs subset only.
+REQUIREMENTS_SOURCES = REQUIREMENTS_ROOT_SOURCES
 
 # Natural-language review rules file (FR-011).
 NATURAL_LANGUAGE_RULES_GLOB = ".veritas/rules.md"

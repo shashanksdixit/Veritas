@@ -25,6 +25,12 @@ from veritas.hosting.resolver import UnresolvableTarget, parse_pr_target
 from veritas.models.entities import ExcludedFile, ReviewRun, ReviewScope
 from veritas.review import ReviewFatalError, ReviewNotFoundError
 from veritas.review.batching import plan_batches
+from veritas.review.requirements_source import (
+    Requirement,
+    extract_requirements,
+    is_requirements_source,
+    source_priority,
+)
 from veritas.review.state import ReviewState
 from veritas.review.test_index import build_batch_test_indexes
 from veritas.security.opengrep import collect_sast
@@ -92,35 +98,82 @@ def _log_exclusions(runtime, excluded: dict[str, str]) -> None:
     runtime.log.info(f"scope: excluded {len(excluded)} file(s): {detail}")
 
 
+def _requirement_source_paths(files: dict[str, str]) -> list[str]:
+    """The requirement sources in ``files``, in FR-008 discovery order.
+
+    Priority first, then path, so two specs discovered in the same rank come out
+    in a stable order whatever order the scope was walked in.
+    """
+    return sorted(
+        (path for path in files if is_requirements_source(path)),
+        key=lambda path: (source_priority(path), path),
+    )
+
+
 def _collect_requirement_docs(
     root: str, patterns: list[str], excluded: dict[str, str]
 ) -> dict[str, str]:
     """Capture requirements documentation files (FR-008) into the scope.
 
-    Markdown/manifest requirement sources are excluded from language review but
-    MUST still flow to the requirements node via the shared ``files`` channel.
-    Relative keys, same normalization as walked source files. Exclusion
-    patterns apply here too, before the file is read (FR-029).
+    Markdown requirement sources are excluded from language review but MUST still
+    flow to the requirements node via the shared ``files`` channel. Discovered by
+    pattern in FR-008 priority order, so a spec-kit feature spec anywhere under
+    the tree is found, not just the eight root/docs names. Relative keys, same
+    normalization as walked source files. Exclusion patterns apply here too,
+    before the file is read (FR-029).
     """
-    from veritas.config.constants import REQUIREMENTS_SOURCES
-
     docs: dict[str, str] = {}
     root_path = Path(root)
     if not root_path.is_dir():
         return docs
-    for name in REQUIREMENTS_SOURCES:
-        candidate = root_path / name
-        if not candidate.is_file():
-            continue
-        if _is_excluded(name, patterns, excluded):
+    candidates: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for name in filenames:
+            full = Path(dirpath) / name
+            if full.is_file():
+                candidates.append(_normalize_rel(str(full.relative_to(root_path))))
+    for rel in sorted(
+        (path for path in candidates if is_requirements_source(path)),
+        key=lambda path: (source_priority(path), path),
+    ):
+        if _is_excluded(rel, patterns, excluded):
             continue
         try:
-            if candidate.stat().st_size > _MAX_FILE_BYTES:
+            if (root_path / rel).stat().st_size > _MAX_FILE_BYTES:
                 continue
-            docs[name] = candidate.read_text(encoding="utf-8", errors="replace")
+            docs[rel] = (root_path / rel).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
     return docs
+
+
+def _discover_requirements(log, files: dict[str, str]) -> tuple[list[str], list[Requirement]]:
+    """Name the requirement sources and pull the requirements out of them (FR-008).
+
+    One line says what was found, because "no requirements" and "no documentation"
+    are different situations for a reader of the log and should not look alike.
+    Extraction failures are per-source and non-fatal: one unreadable spec must not
+    cost the whole review its requirements.
+    """
+    sources = _requirement_source_paths(files)
+    requirements: list[Requirement] = []
+    for path in sources:
+        extracted, warnings = extract_requirements(path, files[path])
+        for warning in warnings:
+            log.warn(f"requirements: {warning}")
+        requirements.extend(extracted)
+
+    if not sources:
+        log.info("requirements: no requirements documentation in scope")
+    elif not requirements:
+        log.info(f"requirements: sources found but no structured requirements; free text from {sources[0]}")
+    else:
+        log.info(
+            f"requirements: {len(requirements)} requirement(s) from "
+            f"{len(sources)} source(s): {', '.join(sources)}"
+        )
+    return sources, requirements
 
 
 def build_hosting_client(settings, provider: str, log):
@@ -231,11 +284,13 @@ def _fetch_pr(runtime) -> dict:
             content = host.get_file_at_ref(parsed.owner, parsed.repo, path, sha)
         files[path] = content
 
-    from veritas.config.constants import REQUIREMENTS_SOURCES
-
+    # FR-008: any file the PR touches that is a requirement source, found by
+    # pattern rather than by an exact-name list, so a feature spec added under
+    # specs/ is fetched when the PR changes it. Only sources in the PR are
+    # available; this loop never looks outside the diff.
     for item in items:
         path = _normalize_rel(item["filename"])
-        if path not in REQUIREMENTS_SOURCES or path in files:
+        if not is_requirements_source(path) or path in files:
             continue
         if _is_excluded(path, patterns, excluded):
             continue
@@ -321,6 +376,7 @@ def make_scope_node(runtime) -> Callable[[ReviewState], dict]:
         )
 
         files: dict[str, str] = result["files"]
+        requirement_sources, requirements = _discover_requirements(runtime.log, files)
         # SAST scans exactly the post-exclusion file set (FR-029).
         sast = collect_sast(files, scope_value=scope.value, rules=runtime.opengrep_rules)
         if sast.degraded:
@@ -335,6 +391,8 @@ def make_scope_node(runtime) -> Callable[[ReviewState], dict]:
             "excluded_files": result["excluded_files"],
             "batch_plan": plan,
             "test_indexes": test_indexes,
+            "requirement_sources": requirement_sources,
+            "requirements": requirements,
             "degraded_sast": sast.degraded,
             "sast_findings": sast.findings,
             "run": run,

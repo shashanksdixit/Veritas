@@ -16,6 +16,7 @@ from veritas.models.entities import (
     VerificationFailure,
 )
 from veritas.review.batching import BatchPlan
+from veritas.review.requirements_source import Requirement
 
 
 class ReviewState(TypedDict):
@@ -52,6 +53,15 @@ class ReviewState(TypedDict):
     # ranked for the code that batch holds. None means the scope holds no test
     # files; the scope node is the only writer.
     test_indexes: dict[int, str] | None
+    # Requirement sources found in scope, in FR-008 discovery order (priority
+    # then path). The scope node is the only writer; an empty list means the scope
+    # holds no requirements documentation, which is different from a source that
+    # exists but yielded nothing parseable.
+    requirement_sources: list[str]
+    # Functional requirements extracted from the spec-kit sources among them
+    # (FR-008), each with its own file and line so it can be cited as evidence.
+    # Empty when every source is free text.
+    requirements: list[Requirement]
     project_context: str | None
     degraded_sast: str | None
     sast_findings: list[dict]
