@@ -24,6 +24,7 @@ from veritas.utils.logging import Log
 
 _SPEC_TEXT = "# Feature\n\n- **FR-001**: The system MUST ship.\n- **FR-002**: It MUST be fast.\n"
 _CHECKLIST_TEXT = "- [x] FR-001 done\n"
+_FREE_TEXT_SPEC = "# Feature\n\nWritten as prose, not as FR lines.\n"
 
 
 @pytest.fixture
@@ -240,46 +241,32 @@ def test_pr_scope_does_not_fetch_an_excluded_spec(monkeypatch):
     assert result["requirement_sources"] == []
 
 
-# --- the requirements node is unchanged by any of this (B2a does not touch it) ---
+# --- the requirements node: structured when there are requirements, free text
+# otherwise (B2a discovery feeds B2b evaluation; the free-text path is unchanged) ---
 
 
-def test_the_requirements_node_output_does_not_depend_on_the_new_state_keys():
-    """Same files in, same findings out, whether or not B2a's keys are present.
+def test_the_free_text_path_runs_unchanged_when_nothing_was_extracted():
+    """No structured requirements means the T038 path exactly as it was.
 
-    B2a adds `requirement_sources` and `requirements` to state; the requirements
-    node must ignore them, because B2a is discovery only and the node's own
-    source selection and judging are a later step.
+    B2a put `requirements` in state but the node still ignored it; B2b is where it
+    starts reading it. What must not change is the fallback: a project whose
+    documentation has no FR lines is still judged as prose, and a project with no
+    documentation at all still gets the single unclear finding rather than nothing.
     """
     from veritas.models.entities import RequirementStatus
 
-    from veritas.review.requirements_source import Requirement
-
-    files = {"src/app.py": "print('hello')\n", "specs/001-a/spec.md": _SPEC_TEXT}
-    state = {"files": files, "project_context": None}
-    without = make_requirements_node(_runtime(llm=NullLLM()))(dict(state))
-    with_keys = make_requirements_node(_runtime(llm=NullLLM()))(
-        {
-            **state,
-            "requirement_sources": ["specs/001-a/spec.md"],
-            "requirements": [
-                Requirement(
-                    id="FR-001",
-                    text="The system MUST ship.",
-                    file="specs/001-a/spec.md",
-                    line=3,
-                )
-            ],
-        }
+    files = {"src/app.py": "print('hello')\n", "spec.md": _FREE_TEXT_SPEC}
+    llm = NullLLM()
+    free_text = make_requirements_node(_runtime(llm=llm))(
+        {"files": files, "project_context": None}
     )
+    # The requirements source is still chosen and handed over whole.
+    assert len(llm.calls) == 1
+    assert _FREE_TEXT_SPEC in llm.calls[0][1]
 
-    # Ids are generated per finding, so everything else must be identical.
-    assert [f.model_dump(exclude={"id"}) for f in without["requirement_findings"]] == [
-        f.model_dump(exclude={"id"}) for f in with_keys["requirement_findings"]
-    ]
-    # And with an llm that returns nothing and no documentation at all, the
-    # existing single-unclear-finding fallback still fires.
     fallback = make_requirements_node(_runtime(llm=NullLLM()))(
         {"files": {"src/app.py": "x = 1\n"}, "project_context": None}
     )["requirement_findings"]
     assert len(fallback) == 1
     assert fallback[0].status is RequirementStatus.UNCLEAR
+    assert free_text["requirement_findings"] == []

@@ -17,6 +17,9 @@ constitution Principle VIII / FR-016.
   **1.7.0**.
 
 ### Added
+- Structured requirements are evaluated against every batch and merged
+  deterministically; a gap is reported only when every batch found no
+  implementation and coverage was complete. Prompt version **1.8.0**.
 - Requirement sources are discovered by pattern (spec-kit specs/*/spec.md first)
   and spec-kit FR lines are extracted deterministically.
 - Report schema **1.4.0**: adds optional `CodeFinding.severity_adjusted_from`.

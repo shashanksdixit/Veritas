@@ -1,4 +1,4 @@
-prompt_version: 1.7.0
+prompt_version: 1.8.0
 
 You are the test-coverage judgment agent of Veritas (FR-004).
 

@@ -23,6 +23,7 @@ from veritas.utils.redaction import redact_secrets
 
 if TYPE_CHECKING:  # batching imports this module's renderers; import type-only
     from veritas.review.batching import BatchPlan
+    from veritas.review.requirements_source import Requirement
 
 _PROMPT_DIR = Path(__file__).parent.parent / "prompts"
 
@@ -447,6 +448,62 @@ def llm_requirement_findings(
     text = llm.complete(sys_prompt, user)
     payloads = parse_json_array(text)
     return [build_requirement_finding(raw) for raw in payloads]
+
+
+def llm_requirement_answers(
+    llm,
+    plan: BatchPlan | None,
+    requirements: list[Requirement],
+    context: str | None,
+    *,
+    log,
+) -> tuple[list[dict], list[str]]:
+    """Ask each batch how it answers every structured requirement (FR-007).
+
+    One call per batch of the shared plan, mirroring :func:`llm_findings`: the same
+    per-batch log line before the call, the same per-batch failure isolation, and
+    the same redacted error text, so a provider error costs one batch of
+    requirement coverage rather than the whole review. Errors come back for the
+    caller to route into the shared errors channel (FR-027) *and* to consult when
+    merging, because a failed batch means a gap cannot be concluded (FR-007).
+
+    The returned payloads are the raw answer objects; parsing the individual
+    answers, dropping ids that are not in ``requirements`` and merging per batch
+    into final statuses is :func:`veritas.review.nodes.requirements.merge_answers`
+    and lives with the node, because only the node knows the coverage facts the
+    merge depends on.
+    """
+    sys_prompt = load_prompt("requirements_structured")
+    batches = list(plan.batches) if plan is not None else []
+    if not batches or not requirements:
+        return ([], [])
+
+    listing = "\n".join(f"{r.id}: {r.text}" for r in requirements)
+    prefix = ""
+    if context:
+        prefix += f"{context}\n\n"
+    prefix += f"Requirements:\n\n{listing}\n\n"
+
+    total = len(batches)
+    payloads: list[dict] = []
+    errors: list[str] = []
+    for position, batch in enumerate(batches, start=1):
+        paths = _batch_paths(batch.chunks)
+        if log is not None:
+            # Logged before the call so a hung or slow batch is identifiable.
+            log.info(f"requirements: batch {position}/{total} ({len(paths)} file(s))")
+        try:
+            text = llm.complete(sys_prompt, prefix + "Code to review:\n\n" + batch.text)
+            payloads.extend(parse_json_array(text))
+        except Exception as exc:  # noqa: BLE001 - isolate one batch, keep going
+            error = redact_secrets(
+                f"requirements: batch {position}/{total} failed "
+                f"(files: {', '.join(paths)}): {exc}"
+            )
+            errors.append(error)
+            if log is not None:
+                log.warn(error)
+    return (payloads, errors)
 
 
 def grounding_filter(finding: CodeFinding, files: dict[str, str]) -> bool:

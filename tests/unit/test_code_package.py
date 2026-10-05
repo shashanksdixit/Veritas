@@ -18,11 +18,13 @@ from veritas.review.nodes.common import code_package, current_prompt_version
 _PROMPT_DIR = Path(__file__).resolve().parents[2] / "veritas" / "review" / "prompts"
 
 # Prompts that receive a code package, and therefore must tell the model how
-# to read the line-number prefix.
+# to read the line-number prefix. requirements_structured is the sixth: it judges
+# extracted requirements against one batch at a time (FR-007).
 _CODE_PROMPTS = (
     "code_quality",
     "performance",
     "requirements",
+    "requirements_structured",
     "security",
     "test_coverage",
 )
@@ -334,7 +336,8 @@ def test_every_code_prompt_carries_the_line_number_instruction():
         assert _LINE_NUMBER_RULE in _normalized(_prompt(name)), name
 
 
-def test_instruction_present_in_all_five_prompt_files():
+def test_instruction_present_in_every_prompt_file():
+    """No prompt may ship without the numbering rule, so a new one is covered too."""
     files = sorted(p.name for p in _PROMPT_DIR.glob("*.md"))
     assert files == [f"{name}.md" for name in _CODE_PROMPTS]
     for filename in files:
@@ -356,8 +359,8 @@ def test_requirements_prompt_uses_the_evidence_rule_not_cited_snippet():
 
 
 def test_prompt_version_is_current():
-    assert PROMPT_VERSION == "1.7.0"
-    assert current_prompt_version() == "1.7.0"
+    assert PROMPT_VERSION == "1.8.0"
+    assert current_prompt_version() == "1.8.0"
 
 
 def test_every_prompt_with_line_numbers_also_states_the_line_range_rule():
@@ -371,7 +374,7 @@ def test_every_prompt_with_line_numbers_also_states_the_line_range_rule():
         checked += 1
         assert _COUNTING_RULE in text, path.name
         assert _QUOTE_EXACTLY_RULE in text, path.name
-    assert checked == len(_CODE_PROMPTS) == 5
+    assert checked == len(_CODE_PROMPTS) == 6
 
 
 def test_line_range_prompts_state_the_start_and_end_rule():
@@ -470,12 +473,15 @@ def test_every_code_prompt_defines_all_three_severities(name, error, warning, in
 
 
 def test_the_severity_rubric_is_in_the_four_code_prompts_only():
-    # requirements.md has no severity in its output, so a rubric there would grade
-    # a field the review never returns.
-    assert set(_RUBRIC_PROMPTS) == set(_CODE_PROMPTS) - {"requirements"}
+    # Neither requirements prompt has a severity in its output, so a rubric there
+    # would grade a field the review never returns.
+    assert set(_RUBRIC_PROMPTS) == set(_CODE_PROMPTS) - {
+        "requirements",
+        "requirements_structured",
+    }
     for name in _CODE_PROMPTS:
         present = _RUBRIC_HEADER in _normalized(_prompt(name))
-        assert present is (name != "requirements"), name
+        assert present is (name in _RUBRIC_PROMPTS), name
 
 
 def test_the_rubric_follows_the_instructions_it_qualifies():
