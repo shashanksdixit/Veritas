@@ -18,6 +18,7 @@ from veritas.models.entities import (
     compute_fingerprint,
 )
 from veritas.review.nodes import verification as verification_module
+from veritas.review.nodes.common import build_code_finding
 from veritas.review.nodes.verification import (
     FOUND_AT_MAX,
     SNIPPET_MAX_CHARS,
@@ -143,6 +144,73 @@ def test_requirement_good_evidence_passes():
         explanation="e",
     )
     assert verify_requirement_finding(rf, FILES) == []
+
+
+# ---------------------------------------------------------------------------
+# T086 — redaction is applied to both sides of the comparison (FR-013)
+# ---------------------------------------------------------------------------
+
+# A file that really does hardcode a key. The finding's snippet reached state
+# already masked (build_code_finding redacts), so verification compares a masked
+# snippet against this raw text; before T086 the comparison failed and dropped the
+# exact finding a security review most needs to report.
+_API_KEY = "AKIAIOSFODNN7EXAMPLE"
+SECRET_FILES = {
+    "src/conf.py": f'import os\nAWS = "aws_access_key_id = {_API_KEY}"\nprint(AWS)\n',
+}
+
+# What the masked snippet looks like once it has been through the same redaction:
+# the key itself is replaced, the assignment around it survives.
+REDACTED_SECRET_LINE = 'AWS = "aws_access_key_id = [REDACTED]"'
+
+
+def test_finding_quoting_a_secret_still_verifies():
+    finding = _finding(snippet=REDACTED_SECRET_LINE, start=2, end=2, id="f-secret")
+    finding.file = "src/conf.py"
+    assert verify_code_finding(finding, SECRET_FILES) is None
+
+
+def test_the_raw_secret_never_reaches_the_finding_that_is_kept():
+    finding = _finding(snippet=f'AWS = "aws_access_key_id = {_API_KEY}"', start=2, end=2, id="f-secret")
+    finding.file = "src/conf.py"
+    # build_code_finding is what mangles the snippet on the way in; this is the
+    # state verification then compares against.
+    built = build_code_finding(
+        {
+            "file": "src/conf.py",
+            "start_line": 2,
+            "end_line": 2,
+            "severity": "error",
+            "title": "Hardcoded AWS key",
+            "description": f"the key {_API_KEY} is committed in source",
+            "recommendation": "Read the key from the environment.",
+            "cited_snippet": f'AWS = "aws_access_key_id = {_API_KEY}"',
+        },
+        category=Category.SECURITY,
+    )
+    assert _API_KEY not in built.cited_snippet
+    assert _API_KEY not in built.description
+    assert verify_code_finding(built, SECRET_FILES) is None
+
+
+def test_a_secret_snippet_is_found_elsewhere_when_the_citation_is_off():
+    # The reviewer quoted the masked key but cited the wrong line. Correction has
+    # to search the redacted file too, or it cannot find the snippet it verified.
+    finding = _finding(snippet=REDACTED_SECRET_LINE, start=1, end=1, id="f-off")
+    finding.file = "src/conf.py"
+    assert verify_code_finding(finding, SECRET_FILES) is not None
+    corrected = correct_citation(finding, SECRET_FILES)
+    assert corrected is not None
+    assert corrected.line_range.start_line == 2
+    assert _API_KEY not in corrected.cited_snippet
+
+
+def test_a_secret_free_snippet_is_unaffected_by_the_redaction():
+    # Secret-free files redact to themselves, so every T066 outcome still holds.
+    assert verify_code_finding(_finding(snippet='print("hello")'), FILES) is None
+    failure = verify_code_finding(_finding(snippet="def totally_different(): pass"), FILES)
+    assert failure is not None
+    assert failure.reason_code == VerificationReasonCode.SNIPPET_NOT_FOUND
 
 
 # ---------------------------------------------------------------------------

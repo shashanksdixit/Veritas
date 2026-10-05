@@ -10,6 +10,11 @@ Each recorded failure carries a structured cause (`reason_code`) plus the
 redacted, truncated snippets and off-window line numbers that explain it (T066),
 so a reader can tell *why* a claim was dropped without re-running the tool.
 
+Comparison is symmetric under redaction (T086, FR-013): a finding's snippet was
+masked before it entered state, so the file is masked the same way before the two
+are compared. Without that, every finding quoting a hardcoded secret — the ones a
+report most needs — would fail to verify against its own file and be dropped.
+
 A near-miss citation is not dropped: when the snippet occurs exactly once and
 sits within two lines of the cited range, the citation is corrected to the real
 location and the reviewer's original range is preserved in
@@ -56,6 +61,27 @@ def _normalize(text: str) -> str:
     return "".join(text.split())
 
 
+def _redact_lines(lines: list[str]) -> list[str]:
+    """The same lines with secrets masked, one line at a time (FR-013).
+
+    Verification compares a snippet the reviewer quoted against the file it came
+    from, and that snippet was redacted before it reached state — a hardcoded
+    ``api_key`` arrives as ``api_key = [REDACTED]``. Comparing that against the raw
+    file text fails on exactly the findings that most need reporting, so both
+    sides go through ``redact_secrets()`` and the redaction cancels out.
+
+    Redaction is applied line by line here, not to the joined text, because
+    :func:`_strip_with_line_map` and :func:`_find_snippet_spans` report findings
+    by line number and must keep them aligned. The accepted consequence: a
+    multi-line secret — a PEM or private-key block — is redacted as a whole when a
+    reviewer quotes it in one snippet, but not when the file is redacted line by
+    line, so a snippet quoting such a block can still fail to verify. That is a
+    real finding being dropped rather than a secret being leaked, which is the
+    right way round.
+    """
+    return [redact_secrets(line) for line in lines]
+
+
 def _prepare_snippet(text: str | None) -> str | None:
     """Redact then truncate a snippet before it enters state or the report.
 
@@ -96,6 +122,9 @@ def _find_snippet_start_lines(expected_normalized: str, lines: list[str]) -> tup
     live"; the per-character line map translates an offset back to a 1-based
     line number. The search advances by one character after each hit so
     overlapping occurrences are all counted.
+
+    ``lines`` must already be redacted (:func:`_redact_lines`) to match against a
+    snippet that was redacted before it reached state (FR-013).
     """
     if not expected_normalized:
         return ([], 0)
@@ -124,6 +153,11 @@ def verify_code_finding(finding: CodeFinding, files: dict[str, str]) -> Verifica
     failures): unknown file → fail; cited start line past EOF → fail; otherwise
     the whitespace-normalized cited snippet must appear in the cited window. A
     finding with no ``cited_snippet`` has nothing to check and passes.
+
+    The snippet and the window are compared after both are redacted
+    (:func:`_redact_lines`, FR-013): the stored snippet is already masked, so
+    matching it against raw file text would fail on every finding that quotes a
+    secret — the ones a report most needs.
     """
     claimed = _prepare_snippet(finding.cited_snippet)
     start = finding.line_range.start_line
@@ -161,12 +195,17 @@ def verify_code_finding(finding: CodeFinding, files: dict[str, str]) -> Verifica
         )
     if finding.cited_snippet:
         expected = _normalize(finding.cited_snippet)
+        # Both sides redacted: the stored snippet is masked, so the file must be
+        # masked the same way for the two to be comparable (FR-013). `actual` below
+        # stays raw here because _prepare_snippet redacts it on the way out.
+        redacted_lines = _redact_lines(lines)
         # Confirm the normalized snippet appears within (or covering) the cited
         # lines, tolerating whitespace-only drift from LLM narration.
         window = "\n".join(lines[start - 1 : end])
-        if expected and expected not in _normalize(window):
+        redacted_window = "\n".join(redacted_lines[start - 1 : end])
+        if expected and expected not in _normalize(redacted_window):
             actual = _prepare_snippet(window)
-            start_lines, total = _find_snippet_start_lines(expected, lines)
+            start_lines, total = _find_snippet_start_lines(expected, redacted_lines)
             if total == 0:
                 return failure(
                     VerificationReasonCode.SNIPPET_NOT_FOUND,
@@ -202,6 +241,9 @@ def _find_snippet_spans(expected_normalized: str, lines: list[str]) -> list[tupl
     line of its last — and is deliberately uncapped, because citation correction
     needs to know that a snippet occurs *exactly* once before it will move a
     finding. Advances one character per hit so overlapping occurrences all count.
+
+    ``lines`` must already be redacted (:func:`_redact_lines`), so the span is
+    found for the same reason the window check passes (FR-013).
     """
     if not expected_normalized:
         return []
@@ -234,6 +276,10 @@ def correct_citation(finding: CodeFinding, files: dict[str, str]) -> CodeFinding
     snippet is absent, the file is out of scope, the occurrence is ambiguous
     (more than one match), or the real location is too far from the cited range to
     be the same citation. The input finding is never mutated.
+
+    The file is searched line by line through :func:`_redact_lines`, so a snippet
+    that quotes a secret is located in the same masked text the window check
+    compares against (FR-013).
     """
     if not finding.cited_snippet:
         return None
@@ -244,7 +290,7 @@ def correct_citation(finding: CodeFinding, files: dict[str, str]) -> CodeFinding
     if not expected:
         return None
 
-    spans = _find_snippet_spans(expected, content.splitlines())
+    spans = _find_snippet_spans(expected, _redact_lines(content.splitlines()))
     if len(spans) != 1:
         return None  # ambiguous: cannot attribute the snippet to one location
     start, end = spans[0]

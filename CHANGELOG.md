@@ -12,6 +12,9 @@ constitution Principle VIII / FR-016.
 - Python source modules whose names start with test_ (e.g. test_index.py) are no
   longer treated as test files, so they are reviewed as application code and kept
   out of the test index.
+- Findings that quote a secret now verify (both sides are redacted before
+  comparison); prompts require verbatim contiguous snippets. Prompt version
+  **1.7.0**.
 
 ### Added
 - Report schema **1.4.0**: adds optional `CodeFinding.severity_adjusted_from`.

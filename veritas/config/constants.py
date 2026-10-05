@@ -12,7 +12,7 @@ SCHEMA_VERSION = "1.4.0"
 # Prompt set version, recorded in ReviewRun.prompt_version (FR-024). Prompt
 # files in review/prompts/ carry a `prompt_version:` header; this constant is
 # the fallback when the header is missing.
-PROMPT_VERSION = "1.6.0"
+PROMPT_VERSION = "1.7.0"
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "openai:openai/gpt-4o-mini"

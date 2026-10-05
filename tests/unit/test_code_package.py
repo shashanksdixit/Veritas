@@ -149,6 +149,15 @@ _PROSE_RUBRIC_INFO = (
 # spends its budget on what a warning-severity test finding should say.
 _NEVER_ERROR = "Test-coverage findings are warning or info, never error."
 
+# FR-014: verification only confirms a citation it can find verbatim, so the four
+# prompts that quote code must say what a verbatim quote is. requirements.md is
+# exempt: it returns "file:line" evidence refs and no cited_snippet to copy.
+_CONTIGUOUS_SNIPPET_RULE = (
+    "Copy cited_snippet as one contiguous block of the file, exactly as written, "
+    "at most 8 lines, including every line in between. Never skip lines, insert "
+    '"..." or comments, join strings, or reformat code.'
+)
+
 
 def _prompt(name: str) -> str:
     return (_PROMPT_DIR / f"{name}.md").read_text(encoding="utf-8")
@@ -157,6 +166,16 @@ def _prompt(name: str) -> str:
 def _normalized(text: str) -> str:
     """Collapse the prompt's hard line wrapping so assertions can use one line."""
     return " ".join(text.split())
+
+
+def _plain(text: str) -> str:
+    """Collapse hard wrapping and drop `backtick` styling around field names.
+
+    The rule is written as `Copy `cited_snippet` as ...` in the prompts that mark
+    field names as code and as plain `cited_snippet` in security.md, which is
+    prose throughout; the requirement is on the words, not the markup.
+    """
+    return _normalized(text).replace("`", "")
 
 
 def _rubric_text(text: str) -> str:
@@ -337,8 +356,8 @@ def test_requirements_prompt_uses_the_evidence_rule_not_cited_snippet():
 
 
 def test_prompt_version_is_current():
-    assert PROMPT_VERSION == "1.6.0"
-    assert current_prompt_version() == "1.6.0"
+    assert PROMPT_VERSION == "1.7.0"
+    assert current_prompt_version() == "1.7.0"
 
 
 def test_every_prompt_with_line_numbers_also_states_the_line_range_rule():
@@ -477,3 +496,33 @@ def test_only_the_test_coverage_prompt_is_told_never_error():
 def test_the_never_error_rule_sits_before_the_rubric_it_constrains():
     text = _normalized(_prompt("test_coverage"))
     assert text.index(_NEVER_ERROR) < text.index(_RUBRIC_HEADER)
+
+
+# --- FR-014: quoted code must be verbatim and contiguous ---
+
+
+def test_the_contiguous_snippet_rule_is_in_the_four_line_range_prompts():
+    for name in _LINE_RANGE_PROMPTS:
+        assert _CONTIGUOUS_SNIPPET_RULE in _plain(_prompt(name)), name
+
+
+def test_the_requirements_prompt_is_not_asked_to_copy_a_snippet():
+    # Its output schema has no cited_snippet; asking for one would describe a field
+    # the requirements review never returns.
+    assert _CONTIGUOUS_SNIPPET_RULE not in _plain(_prompt("requirements"))
+
+
+def test_the_contiguous_snippet_rule_appears_once_per_prompt():
+    for name in _LINE_RANGE_PROMPTS:
+        assert _plain(_prompt(name)).count(_CONTIGUOUS_SNIPPET_RULE) == 1, name
+
+
+def test_the_contiguous_snippet_rule_follows_the_citation_instructions():
+    # It refines how to copy the snippet, so it belongs with the other citation
+    # rules: after the line-range rule, before the JSON schema.
+    for name in _LINE_RANGE_PROMPTS:
+        text = _plain(_prompt(name))
+        assert text.index(_LINE_RANGE_SENTENCE) < text.index(_CONTIGUOUS_SNIPPET_RULE), name
+        assert text.index(_CONTIGUOUS_SNIPPET_RULE) < text.index(
+            "Respond with a single JSON array"
+        ), name
