@@ -3,11 +3,32 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 from veritas.config.settings import Settings
+
+ENV_PREFIX = "VERITAS_"
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_veritas_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test with no VERITAS_* variable in the environment.
+
+    `Settings` reads `VERITAS_*` with `env_prefix="VERITAS_"`, so a value in the
+    developer's shell or in CI would otherwise leak into tests that assert
+    defaults and precedence — and the leak is invisible, because the suite still
+    passes on a clean machine. Deleting every matching name (rather than a fixed
+    list of the fields that exist today) also covers a variable added later.
+
+    A test that needs one sets it with `monkeypatch.setenv` in its own body or in
+    a fixture, both of which run after this one; monkeypatch undoes the deletion
+    at teardown, so the shell is left exactly as it was found.
+    """
+    for name in [n for n in os.environ if n.startswith(ENV_PREFIX)]:
+        monkeypatch.delenv(name, raising=False)
 
 APP_CONTENT = (
     "import os\n"
