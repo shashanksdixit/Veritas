@@ -19,7 +19,7 @@ def test_project_review_succeeds_and_writes_report(sample_project, settings):
     report_path = Path(str(outcome.report_path))
     assert report_path.is_file()
     md = report_path.read_text(encoding="utf-8")
-    assert md.startswith("<!-- veritas-report-schema: 1.3.0 -->")
+    assert md.startswith("<!-- veritas-report-schema: 1.4.0 -->")
     assert "# Veritas Code Review" in md
     assert "## Code Findings" in md
     assert "Unused import os" in md

@@ -80,7 +80,7 @@ def _report(**overrides) -> Report:
 
 def test_schema_version_comment_top():
     md = render_markdown(_report())
-    assert md.startswith("<!-- veritas-report-schema: 1.3.0 -->")
+    assert md.startswith("<!-- veritas-report-schema: 1.4.0 -->")
 
 
 def test_sections_present():
@@ -458,6 +458,65 @@ def test_citation_adjusted_value_spans_multiple_lines():
     )
     md = render_markdown(_report(code_findings=[finding]))
     assert "| Citation adjusted | from 19-19 to 19-23 |" in md
+
+
+# --- FR-004: the capped severity is shown, not just applied ---
+
+
+def _capped(**overrides) -> CodeFinding:
+    """A test-coverage finding the node lowered from error to warning."""
+    base = {
+        "id": "f-7",
+        "file": "src/app.py",
+        "line_range": LineRange(start_line=2, start_col=1, end_line=2, end_col=18),
+        "severity": Severity.WARNING,
+        "severity_adjusted_from": Severity.ERROR,
+        "category": Category.TEST_COVERAGE,
+        "title": "No test found for the retry path",
+        "description": "The retry branch is untested.",
+        "recommendation": "Add a test for the retry path.",
+        "confidence": 0.7,
+        "cited_snippet": "import os",
+    }
+    base.update(overrides)
+    return CodeFinding(**base)
+
+
+def test_capped_finding_renders_severity_adjusted_row():
+    md = render_markdown(_report(code_findings=[_capped()]))
+    assert (
+        "| Severity adjusted | from \N{LARGE RED CIRCLE} error to "
+        "\N{LARGE ORANGE CIRCLE} warning (test-coverage findings are capped at warning) |"
+    ) in md
+
+
+def test_severity_adjusted_row_sits_directly_after_severity():
+    rows = _field_rows(render_markdown(_report(code_findings=[_capped()])))
+    labels = [row.split("|")[1].strip() for row in rows]
+    assert labels[0] == "Severity"
+    assert labels[1] == "Severity adjusted"
+    assert labels[2] == "Category"
+    assert len(rows) == 8, "the 7 standard field rows plus the cap row"
+
+
+def test_uncapped_finding_has_no_severity_adjusted_row():
+    rows = _field_rows(render_markdown(_report()))
+    assert len(rows) == 7
+    assert not [row for row in rows if row.startswith("| Severity adjusted |")]
+    assert "test-coverage findings are capped at warning" not in render_markdown(_report())
+
+
+def test_the_severity_row_still_shows_the_severity_the_finding_carries():
+    rows = _field_rows(render_markdown(_report(code_findings=[_capped()])))
+    assert rows[0] == "| Severity | \N{LARGE ORANGE CIRCLE} warning |"
+
+
+def test_an_uncapped_warning_gets_no_row_because_nothing_was_lowered():
+    # Same severity, no cap: the row must not appear, or every warning in the report
+    # would claim to have been capped.
+    rows = _field_rows(render_markdown(_report(code_findings=[_capped(severity_adjusted_from=None)])))
+    assert len(rows) == 7
+    assert not [row for row in rows if row.startswith("| Severity adjusted |")]
 
 
 # --- Coverage subsection (T077, FR-029) ---

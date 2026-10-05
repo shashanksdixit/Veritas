@@ -134,6 +134,15 @@ class CodeFinding(BaseModel):
                                       # reviewer, kept when verification
                                       # corrected the citation (FR-013);
                                       # None when the citation verified as cited
+    # FR-004 test-coverage severity cap. Backward-compatible addition introduced
+    # in Report.schema_version 1.4.0: defaults to None, so a pre-1.4.0-shaped
+    # finding deserializes unchanged and still renders.
+    severity_adjusted_from: "Severity | None" = None
+                                      # the severity the reviewer assigned
+                                      # before a policy cap lowered it (test-
+                                      # coverage findings are capped at
+                                      # warning); None when the finding kept
+                                      # the severity it was given
     # Suppression
     is_suppressed: bool = False
     suppression_entry: "SuppressionEntry | None" = None
@@ -235,7 +244,7 @@ class Coverage(BaseModel):
 
 class Report(BaseModel):
     """The full review deliverable (FR-016)."""
-    schema_version: str = "1.3.0"    # semver; bump on any breaking change to
+    schema_version: str = "1.4.0"    # semver; bump on any breaking change to
                                       # Report/CodeFinding/RequirementFinding shape,
                                       # per CHANGELOG.md (constitution Principle VIII)
     run: ReviewRun

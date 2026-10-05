@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from veritas.config.constants import PROMPT_VERSION
 from veritas.review.nodes.common import code_package, current_prompt_version
 
@@ -95,6 +97,58 @@ _TRUNCATED_INDEX_RULE = (
     "from the index is not evidence that the test does not exist."
 )
 
+# FR-014: the four prompts that grade code are told what each severity means, where
+# its ceiling is, and what is not a finding at all. requirements.md is exempt: its
+# output has no severity field, so a rubric would grade something it never emits.
+_RUBRIC_PROMPTS = ("code_quality", "performance", "security", "test_coverage")
+_RUBRIC_HEADER = "Severity rubric (apply strictly):"
+_RUBRIC_ERROR = (
+    "error: a likely defect in production code that causes incorrect results, a "
+    "crash, data loss, or an exploitable security vulnerability with a plausible "
+    "path for attacker-controlled input."
+)
+_RUBRIC_WARNING = (
+    "warning: a real risk or maintainability problem worth fixing that is not "
+    "shown to be broken."
+)
+_RUBRIC_INFO = (
+    "info: a minor improvement, such as style, naming, docstrings, or type-hint "
+    "conventions."
+)
+_RUBRIC_LIMITS = (
+    "A finding in a test file (a test, fixture, or fake) is info, unless it makes "
+    "a test incorrect, such as an assertion that can never fail; then it is "
+    "warning. A performance finding is error only for a complexity problem on a "
+    "code path whose input can realistically be large; otherwise it is warning or "
+    "info."
+)
+_RUBRIC_DO_NOT_REPORT = (
+    "Do not report: that code is acceptable or needs no change; a preference for "
+    "an older idiom over a valid modern one (for example Optional[str] instead "
+    "of str | None); a security issue with no plausible attack path (for example "
+    "authorization checks in a single-user command-line tool, or placeholder keys "
+    "in test fixtures)."
+)
+# The security prompt states the same rubric as prose rather than bullets, so its
+# definitions are named without the "- severity:" lead-in the others use.
+_PROSE_RUBRIC_ERROR = (
+    "Severity rubric (apply strictly): error is a likely defect in production "
+    "code that causes incorrect results, a crash, data loss, or an exploitable "
+    "security vulnerability with a plausible path for attacker-controlled input."
+)
+_PROSE_RUBRIC_WARNING = (
+    "warning is a real risk or maintainability problem worth fixing that is not "
+    "shown to be broken."
+)
+_PROSE_RUBRIC_INFO = (
+    "info is a minor improvement, such as style, naming, docstrings, or type-hint "
+    "conventions."
+)
+
+# FR-004: the cap is enforced in code, but the prompt says so too, so the reviewer
+# spends its budget on what a warning-severity test finding should say.
+_NEVER_ERROR = "Test-coverage findings are warning or info, never error."
+
 
 def _prompt(name: str) -> str:
     return (_PROMPT_DIR / f"{name}.md").read_text(encoding="utf-8")
@@ -103,6 +157,16 @@ def _prompt(name: str) -> str:
 def _normalized(text: str) -> str:
     """Collapse the prompt's hard line wrapping so assertions can use one line."""
     return " ".join(text.split())
+
+
+def _rubric_text(text: str) -> str:
+    """Flatten wrapping, list markers and case for rubric assertions.
+
+    Three prompts state the rubric as bullets and security.md states the same
+    content as prose, so a fragment has to be compared without the bullets, the
+    wrapping, or the sentence-initial capital that the two styles differ on.
+    """
+    return " ".join(_normalized(text).lower().replace("- ", " ").split())
 
 
 def test_line_one_is_numbered_with_one_based_prefix():
@@ -273,8 +337,8 @@ def test_requirements_prompt_uses_the_evidence_rule_not_cited_snippet():
 
 
 def test_prompt_version_is_current():
-    assert PROMPT_VERSION == "1.5.0"
-    assert current_prompt_version() == "1.5.0"
+    assert PROMPT_VERSION == "1.6.0"
+    assert current_prompt_version() == "1.6.0"
 
 
 def test_every_prompt_with_line_numbers_also_states_the_line_range_rule():
@@ -357,3 +421,59 @@ def test_truncated_index_rule_is_in_the_test_coverage_prompt_only():
         if name == "test_coverage":
             continue
         assert _TRUNCATED_INDEX_RULE not in _normalized(_prompt(name)), name
+
+
+# --- FR-014 severity rubric, and the FR-004 cap it is read with ---
+
+
+@pytest.mark.parametrize(
+    ("name", "error", "warning", "info"),
+    [
+        ("code_quality", _RUBRIC_ERROR, _RUBRIC_WARNING, _RUBRIC_INFO),
+        ("performance", _RUBRIC_ERROR, _RUBRIC_WARNING, _RUBRIC_INFO),
+        ("test_coverage", _RUBRIC_ERROR, _RUBRIC_WARNING, _RUBRIC_INFO),
+        ("security", _PROSE_RUBRIC_ERROR, _PROSE_RUBRIC_WARNING, _PROSE_RUBRIC_INFO),
+    ],
+)
+def test_every_code_prompt_defines_all_three_severities(name, error, warning, info):
+    # Each severity is defined, not merely listed: "error" and "warning" are the
+    # two that decide the run's verdict, so the model has to know what earns them.
+    text = _rubric_text(_prompt(name))
+    assert _rubric_text(_RUBRIC_HEADER) in text, name
+    for fragment in (
+        error,
+        warning,
+        info,
+        _RUBRIC_LIMITS,
+        _RUBRIC_DO_NOT_REPORT,
+    ):
+        assert _rubric_text(fragment) in text, f"{name}: {fragment[:40]}"
+
+
+def test_the_severity_rubric_is_in_the_four_code_prompts_only():
+    # requirements.md has no severity in its output, so a rubric there would grade
+    # a field the review never returns.
+    assert set(_RUBRIC_PROMPTS) == set(_CODE_PROMPTS) - {"requirements"}
+    for name in _CODE_PROMPTS:
+        present = _RUBRIC_HEADER in _normalized(_prompt(name))
+        assert present is (name != "requirements"), name
+
+
+def test_the_rubric_follows_the_instructions_it_qualifies():
+    # It grades the instructions above it, so it has to come after them and before
+    # the JSON schema that follows it.
+    for name in _RUBRIC_PROMPTS:
+        text = _normalized(_prompt(name))
+        assert text.index(_PARTIAL_FILE_RULE) < text.index(_RUBRIC_HEADER), name
+        assert text.index(_RUBRIC_HEADER) < text.index("Respond with a single JSON array"), name
+
+
+def test_only_the_test_coverage_prompt_is_told_never_error():
+    for name in _CODE_PROMPTS:
+        present = _NEVER_ERROR in _normalized(_prompt(name))
+        assert present is (name == "test_coverage"), name
+
+
+def test_the_never_error_rule_sits_before_the_rubric_it_constrains():
+    text = _normalized(_prompt("test_coverage"))
+    assert text.index(_NEVER_ERROR) < text.index(_RUBRIC_HEADER)

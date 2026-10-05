@@ -14,6 +14,11 @@ constitution Principle VIII / FR-016.
   out of the test index.
 
 ### Added
+- Report schema **1.4.0**: adds optional `CodeFinding.severity_adjusted_from`.
+  Migration: earlier reports remain valid; the field defaults to null.
+- Prompt version **1.6.0**: code review prompts carry a severity rubric with
+  category limits and a do-not-report list; test-coverage findings are capped at
+  warning.
 - Batching reviews application code before test files, so when the batch limit is
   reached it is tests, not application code, that go unreviewed.
 - The test index is ordered by relevance per batch (name match, then Python

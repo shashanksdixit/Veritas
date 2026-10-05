@@ -346,13 +346,29 @@ def render_markdown(report: Report) -> str:
         out.append("")
         field_rows = [
             ("Severity", _severity_label(finding.severity)),
-            ("Category", _category_label(finding.category)),
-            ("Confidence", f"{finding.confidence:.2f}"),
-            ("OWASP", finding.owasp_id or "—"),
-            ("CWE", finding.cwe_id or "—"),
-            ("Source", finding.source.value if finding.source else "—"),
-            ("Suppressed", "yes" if finding.is_suppressed else "no"),
         ]
+        # FR-004: a severity lowered by a policy cap must be visible, in the same
+        # table and next to the severity it now carries - a reader who only sees
+        # "warning" cannot tell a capped finding from a reviewer's own warning.
+        if finding.severity_adjusted_from is not None:
+            field_rows.append(
+                (
+                    "Severity adjusted",
+                    f"from {_severity_label(finding.severity_adjusted_from)}"
+                    f" to {_severity_label(finding.severity)}"
+                    " (test-coverage findings are capped at warning)",
+                )
+            )
+        field_rows.extend(
+            [
+                ("Category", _category_label(finding.category)),
+                ("Confidence", f"{finding.confidence:.2f}"),
+                ("OWASP", finding.owasp_id or "—"),
+                ("CWE", finding.cwe_id or "—"),
+                ("Source", finding.source.value if finding.source else "—"),
+                ("Suppressed", "yes" if finding.is_suppressed else "no"),
+            ]
+        )
         # FR-013: a corrected citation must be visible, never a silent adjustment.
         # This table has no location rows — the finding's location is its heading —
         # so the correction row goes last, next to the other provenance fields.

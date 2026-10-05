@@ -18,6 +18,8 @@ tests pin the fix and its boundaries:
 
 from __future__ import annotations
 
+import json
+import inspect
 import re
 from datetime import datetime
 from functools import partial
@@ -26,8 +28,17 @@ from threading import Lock
 
 import pytest
 
+from veritas.config.constants import LAST_REPORT_JSON
 from veritas.config.settings import Settings
-from veritas.models.entities import Category, ReviewRun, ReviewScope
+from veritas.models.entities import (
+    Category,
+    Report,
+    ReviewRun,
+    ReviewScope,
+    Severity,
+    Verdict,
+)
+from veritas.models.entities import compute_fingerprint
 from veritas.review.graph import Runtime, run_review
 from veritas.review.nodes import scope as scope_module
 from veritas.review.nodes.code_quality import make_code_quality_node
@@ -35,7 +46,7 @@ from veritas.review.nodes.common import load_prompt, llm_findings
 from veritas.review.nodes.performance import make_performance_node
 from veritas.review.nodes.scope import make_scope_node
 from veritas.review.nodes.security import make_security_node
-from veritas.review.nodes.test_coverage import make_test_coverage_node
+from veritas.review.nodes.test_coverage import _cap_severity, make_test_coverage_node
 from veritas.review.test_index import (
     INDEX_HEADER,
     NO_TEST_FILES_NOTICE,
@@ -475,6 +486,230 @@ def test_the_indexes_survive_a_node_that_finds_nothing(project_tree, monkeypatch
 
     assert result == {"code_findings": [], "errors": []}
     assert set(state["test_indexes"]) == {1, 2}, "the node must not clear shared state"
+
+
+# --- the severity cap: warning is the ceiling for test coverage (T085, FR-004) ---
+
+
+_CITED = "src/app.py"
+
+
+def _finding_payload(severity: str, line: int = 2, finding_id: str = "cf-1") -> str:
+    """One code finding, grounded in a line of the project's src/app.py."""
+    return json.dumps(
+        [
+            {
+                "id": finding_id,
+                "file": _CITED,
+                "start_line": line,
+                "start_col": 1,
+                "end_line": line,
+                "end_col": 1,
+                "severity": severity,
+                "title": f"Gap at {_CITED}:{line}",
+                "description": "Something the reviewer wants to raise.",
+                "recommendation": "Add a test.",
+                "confidence": 0.8,
+                "cited_snippet": f"app_{line:06d} = {line}",
+            }
+        ]
+    )
+
+
+class SeveritiesLLM:
+    """Answers the test-coverage review with one finding per severity asked for.
+
+    The severities are handed out one per batch, in order; a batch past the end of
+    the list repeats the last one. The other four review types get "[]", so a test
+    can say "the only findings in this run are these test-coverage ones" and mean it.
+    """
+
+    model_name = "severities"
+
+    def __init__(self, severities: tuple[str, ...]) -> None:
+        self.severities = severities
+        self.calls: list[tuple[str, str]] = []
+        self._lock = Lock()
+        self._test_coverage_prompt = load_prompt("test_coverage")
+        self._served = 0
+
+    def complete(self, system: str, user: str) -> str:
+        with self._lock:
+            self.calls.append((system, user))
+            if system != self._test_coverage_prompt:
+                return "[]"
+            self._served += 1
+            batch = self._served
+        severity = self.severities[min(batch, len(self.severities)) - 1]
+        return _finding_payload(severity, finding_id=f"cf-{batch}")
+
+
+def _capped_run(project_tree, monkeypatch, severities, *, log=None) -> tuple[list, list[str]]:
+    """Run the test-coverage node over the project with these severities.
+
+    ``log`` collects the node's info lines, so a test can assert on what it said.
+    """
+    state = _scoped(project_tree, monkeypatch)
+    runtime = _runtime(SeveritiesLLM(severities), batch_chars=_BATCH_CHARS)
+    lines: list[str] = log if log is not None else []
+    runtime.log.info = lambda message, **_kw: lines.append(message)  # type: ignore[method-assign]
+    findings = make_test_coverage_node(runtime)(state)["code_findings"]
+    return findings, lines
+
+
+def test_a_test_coverage_error_is_lowered_to_warning(project_tree, monkeypatch):
+    findings, _lines = _capped_run(project_tree, monkeypatch, ("error", "error"))
+
+    assert [f.severity for f in findings] == [Severity.WARNING, Severity.WARNING]
+    # The reviewer's own severity is recorded, not discarded: without it the report
+    # cannot distinguish a capped finding from a reviewer's own warning.
+    assert [f.severity_adjusted_from for f in findings] == [Severity.ERROR, Severity.ERROR]
+
+
+def test_a_capped_finding_is_a_new_object_and_leaves_the_original_alone(project_tree, monkeypatch):
+    """A finding is shared state; the cap must not rewrite the one the node got."""
+    state = _scoped(project_tree, monkeypatch)
+    llm = SeveritiesLLM(("error",))
+    original, _errors = llm_findings(
+        llm,
+        state["batch_plan"],
+        "test_coverage",
+        None,
+        category=Category.TEST_COVERAGE,
+        log=None,
+    )
+
+    capped, lowered = _cap_severity(original, None)
+
+    assert lowered == 2
+    assert capped is not original
+    assert [f.severity for f in original] == [Severity.ERROR, Severity.ERROR]
+    assert all(f.severity_adjusted_from is None for f in original)
+    assert [f.severity for f in capped] == [Severity.WARNING, Severity.WARNING]
+    assert [f.id for f in capped] == [f.id for f in original], "identity must survive the cap"
+
+
+@pytest.mark.parametrize("severity", ["warning", "info"])
+def test_other_test_coverage_severities_are_left_alone(project_tree, monkeypatch, severity):
+    findings, _lines = _capped_run(project_tree, monkeypatch, (severity,))
+
+    assert findings, "the node should still have produced a finding per batch"
+    assert {f.severity for f in findings} == {Severity(severity)}
+    assert all(f.severity_adjusted_from is None for f in findings)
+
+
+@pytest.mark.parametrize(
+    ("name", "factory"),
+    [
+        ("code_quality", make_code_quality_node),
+        ("security", make_security_node),
+        ("performance", make_performance_node),
+    ],
+)
+def test_an_error_from_another_review_type_is_not_capped(project_tree, monkeypatch, name, factory):
+    # The cap is a statement about test coverage, not about severity in general:
+    # a real defect in production code must still be able to be an error.
+
+    class OneError:
+        model_name = "one-error"
+
+        def complete(self, system: str, user: str) -> str:
+            return _finding_payload("error")
+
+    findings = factory(_runtime(OneError(), batch_chars=_BATCH_CHARS))(
+        _scoped(project_tree, monkeypatch)
+    )["code_findings"]
+
+    assert findings, f"{name} should have produced a finding per batch"
+    assert {f.severity for f in findings} == {Severity.ERROR}
+    assert all(f.severity_adjusted_from is None for f in findings), name
+
+
+def test_the_cap_logs_how_many_findings_it_lowered(project_tree, monkeypatch):
+    lines: list[str] = []
+
+    _capped_run(project_tree, monkeypatch, ("error", "error"), log=lines)
+
+    assert "test-coverage: lowered 2 finding(s) from error to warning (FR-004)" in lines, lines
+
+
+def test_one_lowered_finding_is_logged_as_one(project_tree, monkeypatch):
+    lines: list[str] = []
+
+    _capped_run(project_tree, monkeypatch, ("error", "warning"), log=lines)
+
+    assert "test-coverage: lowered 1 finding(s) from error to warning (FR-004)" in lines, lines
+
+
+def test_nothing_logged_when_nothing_was_lowered(project_tree, monkeypatch):
+    lines: list[str] = []
+
+    _capped_run(project_tree, monkeypatch, ("warning", "info"), log=lines)
+
+    assert not [line for line in lines if "lowered" in line], lines
+    assert "test-coverage: 2 findings" in lines, "the usual count line is still logged"
+
+
+def test_the_cap_does_not_change_the_suppression_fingerprint(project_tree, monkeypatch):
+    """A suppressed test-coverage finding must suppress the same way either way.
+
+    The fingerprint is keyed by file, category and snippet, so there is no input a
+    severity cap could change: a finding a user silenced stays silenced, and the
+    cap cannot silence one they did not.
+    """
+    findings, _lines = _capped_run(project_tree, monkeypatch, ("error",))
+    capped = findings[0]
+    uncapped = capped.model_copy(
+        update={"severity": Severity.ERROR, "severity_adjusted_from": None}
+    )
+    assert capped.severity is Severity.WARNING
+
+    assert "severity" not in inspect.signature(compute_fingerprint).parameters
+    assert compute_fingerprint(
+        capped.file, capped.category.value, capped.cited_snippet
+    ) == compute_fingerprint(uncapped.file, uncapped.category.value, uncapped.cited_snippet)
+
+
+def test_a_run_whose_only_errors_are_test_coverage_is_not_requires_modification(tmp_path, monkeypatch):
+    """End to end (FR-004, FR-015): the cap must reach the run's verdict.
+
+    The reviewer grades the missing test an error, exactly as it would have before
+    the cap; nothing else in the run produces a finding. Without the cap this run
+    would be RequiresModification for a test that was never shown to be broken.
+    """
+    _stub_sast(monkeypatch)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "app.py").write_text(_lines(25, "app"), encoding="utf-8")
+    (tmp_path / "tests" / "test_app.py").write_text("def test_app():\n    pass\n", encoding="utf-8")
+
+    class OnlyTestCoverageErrors:
+        model_name = "only-test-coverage-errors"
+
+        def complete(self, system: str, user: str) -> str:
+            if system != load_prompt("test_coverage"):
+                return "[]"
+            if "requirements-traceability" in system.lower():
+                return "[]"
+            return _finding_payload("error")
+
+    outcome = run_review(
+        Settings(api_key="test-key", batch_chars=_BATCH_CHARS, max_batches=8),
+        ReviewScope.PROJECT,
+        str(tmp_path),
+        llm=OnlyTestCoverageErrors(),
+    )
+    assert outcome.exit_code == 0
+
+    report = Report.model_validate_json(Path(LAST_REPORT_JSON).read_text(encoding="utf-8"))
+    assert [f.category for f in report.code_findings] == [Category.TEST_COVERAGE]
+    assert [f.severity for f in report.code_findings] == [Severity.WARNING]
+    assert Severity.ERROR not in report.summary.severity_counts
+    assert report.summary.verdict is not Verdict.REQUIRES_MODIFICATION
+    assert report.summary.verdict is Verdict.REQUIRES_REVIEW
+    markdown = report.markdown_content or ""
+    assert "**Verdict**: `RequiresReview`" in markdown
+    assert "test-coverage findings are capped at warning" in markdown
 
 
 # --- end to end: the regression a single alphabetical index caused ---

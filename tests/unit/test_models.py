@@ -1,5 +1,7 @@
 """Unit tests — Pydantic model validation (T005)."""
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -98,7 +100,7 @@ def test_report_roundtrip_json():
             verdict=V.CLEAN,
         ),
     )
-    assert report.schema_version == "1.3.0"
+    assert report.schema_version == "1.4.0"
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.run.id == report.run.id
 
@@ -165,3 +167,66 @@ def test_report_coverage_roundtrip_json():
     assert restored.coverage == report.coverage
     assert restored.model_dump_json() == payload
     assert restored.coverage.excluded_files[0].pattern == ".specify/"
+
+
+def test_severity_adjusted_from_roundtrip_json():
+    """FR-004: a capped finding keeps the reviewer's own severity through JSON."""
+    from veritas.models.entities import Category, CodeFinding, Severity as Sev
+
+    finding = CodeFinding(
+        file="src/app.py",
+        line_range=LineRange(start_line=4, start_col=1, end_line=6, end_col=1),
+        severity=Sev.WARNING,
+        severity_adjusted_from=Sev.ERROR,
+        category=Category.TEST_COVERAGE,
+        title="No test found for the retry path",
+        description="d",
+        recommendation="r",
+    )
+
+    restored = CodeFinding.model_validate_json(finding.model_dump_json())
+
+    assert restored.severity is Sev.WARNING
+    assert restored.severity_adjusted_from is Sev.ERROR
+
+
+def test_a_finding_without_severity_adjusted_from_still_validates():
+    """Schema 1.4.0 is additive: a 1.3.0-shaped finding deserializes unchanged."""
+    from veritas.models.entities import Category, CodeFinding, Severity as Sev
+
+    # The shape a 1.3.0 report on disk actually has: the key is absent, not null.
+    payload = json.dumps(
+        {
+            "id": "abc123",
+            "file": "src/app.py",
+            "line_range": {"start_line": 1, "start_col": 1, "end_line": 1, "end_col": 1},
+            "severity": "error",
+            "category": "code_quality",
+            "title": "t",
+            "description": "d",
+            "recommendation": "r",
+        }
+    )
+    assert "severity_adjusted_from" not in payload
+
+    restored = CodeFinding.model_validate_json(payload)
+
+    assert restored.severity_adjusted_from is None
+    assert restored.severity is Sev.ERROR
+    assert restored.category is Category.CODE_QUALITY
+
+
+def test_severity_adjusted_from_defaults_to_none():
+    from veritas.models.entities import Category, CodeFinding, Severity as Sev
+
+    finding = CodeFinding(
+        file="src/app.py",
+        line_range=LineRange(start_line=1, start_col=1, end_line=1, end_col=1),
+        severity=Sev.WARNING,
+        category=Category.TEST_COVERAGE,
+        title="t",
+        description="d",
+        recommendation="r",
+    )
+
+    assert finding.severity_adjusted_from is None

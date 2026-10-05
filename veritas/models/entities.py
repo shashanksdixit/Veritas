@@ -139,6 +139,10 @@ class CodeFinding(BaseModel):
     # None when the citation verified as cited. Defaults to None, so a
     # 1.0.0/1.1.0-shaped finding still validates and renders.
     citation_adjusted_from: LineRange | None = None
+    # FR-004 test-coverage severity cap - backward-compatible addition in schema
+    # 1.4.0. The severity the reviewer assigned before the policy cap lowered it;
+    # None when no cap applied, so a finding keeps the severity it was given.
+    severity_adjusted_from: Severity | None = None
     is_suppressed: bool = False
     suppression_entry: SuppressionEntry | None = None
 
