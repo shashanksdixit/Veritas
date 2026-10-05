@@ -70,14 +70,20 @@ def merge_answers(
 
     * any ``implemented`` -> satisfied
     * else any ``partially_implemented`` -> partial
+    * else a failed batch -> unclear, naming the failed batch, whether or not the
+      batches that did answer covered the whole plan
     * else gap **only** when every batch answered ``not_in_this_batch`` and no
-      in-scope file went unreviewed and no batch failed
+      in-scope file went unreviewed
     * else unclear
 
     That gap clause is why the question is asked per batch. One batch saying "not in
     here" proves nothing about the others, and neither does a file the planner never
     reached or a batch whose call failed - so those are unclear with the reason
-    named, rather than a gap a reader would act on.
+    named, rather than a gap a reader would act on. A failed batch is checked before
+    the unreviewed-files reason because its answer is missing outright, while an
+    unreviewed file is one whose answer was never asked for; naming the failure is
+    the more specific of the two, and it is the one that means the run was
+    incomplete rather than merely the coverage.
 
     Evidence is the union of the references cited by ``implemented`` and
     ``partially_implemented`` answers, in batch order, capped at
@@ -112,13 +118,16 @@ def merge_answers(
         elif "partially_implemented" in kinds:
             status = RequirementStatus.PARTIAL
             explanation = _deciding_explanation(given, "partially_implemented")
+        elif batch_failed:
+            # A batch that failed is a batch whose "not in here" was never heard, so
+            # its silence decides nothing — whichever answer the surviving batches
+            # gave (FR-007).
+            status = RequirementStatus.UNCLEAR
+            explanation = _FAILED_BATCH_REASON
         elif complete and not_reviewed_files:
             # Every batch said no, but there was code nobody was shown.
             status = RequirementStatus.UNCLEAR
             explanation = _UNREVIEWED_REASON
-        elif complete and batch_failed:
-            status = RequirementStatus.UNCLEAR
-            explanation = _FAILED_BATCH_REASON
         elif complete:
             status = RequirementStatus.GAP
             explanation = _GAP_EXPLANATION

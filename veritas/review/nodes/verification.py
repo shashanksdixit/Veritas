@@ -2,9 +2,20 @@
 
 Re-reads every non-SAST finding's cited file/line — including LLM-identified
 security findings and RequirementFinding evidence citations — to confirm the
-citation is real and matches the claim. Confirmed → kept; unconfirmed →
-excluded + VerificationFailure recorded (never dropped silently). SAST findings
-are ground truth and exempt per-finding by actual source.
+citation is real and matches the claim. SAST findings are ground truth and exempt
+per-finding by actual source.
+
+The two finding shapes are treated differently on failure (FR-013), because they
+mean different things when a citation is wrong:
+
+* a code finding that cannot be confirmed is excluded and its failure recorded —
+  an unlocatable claim is not a claim;
+* a requirement finding is kept with its unconfirmable references removed and the
+  failure recorded. A requirement is extracted from the spec, not proposed by the
+  reviewer, so dropping it would let a bad citation silently delete a requirement
+  from the report. When that leaves a satisfied or partial requirement with no
+  evidence at all, its status becomes unclear — the requirement is still reported,
+  but the claim that it is met is no longer one the code supports.
 
 Each recorded failure carries a structured cause (`reason_code`) plus the
 redacted, truncated snippets and off-window line numbers that explain it (T066),
@@ -313,28 +324,58 @@ def correct_citation(finding: CodeFinding, files: dict[str, str]) -> CodeFinding
     )
 
 
-def verify_requirement_finding(rf: RequirementFinding, files: dict[str, str]) -> list[str]:
-    """Return evidence refs that fail to verify (FR-013 / SC-005).
+# Explanation a satisfied or partial requirement falls back to once its every
+# cited reference has been removed as unconfirmable (FR-013). The requirement stays
+# in the report; only the claim that the code satisfies it is withdrawn.
+EVIDENCE_UNCONFIRMED_EXPLANATION = "Its cited evidence could not be confirmed against the reviewed files."
 
-    ``unclear`` status requires no evidence and always passes.
+
+def partition_requirement_evidence(
+    rf: RequirementFinding, files: dict[str, str]
+) -> tuple[list[str], list[str]]:
+    """Split a requirement's evidence into ``(confirmed, unconfirmed)`` (FR-013).
+
+    The checks are the ones this node has always made on a ``file:line`` reference
+    — the file must be in the reviewed set and the line must exist in it — and a
+    bare filename must name a reviewed file. Each unconfirmed entry carries the
+    cause as today (``"src/missing.py (file not in scope)"``) so the recorded
+    VerificationFailure still names the specific reference that failed.
+
+    An ``unclear`` requirement needs no evidence and always passes, unchanged.
     """
-    failures: list[str] = []
+    confirmed: list[str] = []
+    unconfirmed: list[str] = []
     if rf.status == RequirementStatus.UNCLEAR:
-        return failures
+        return (list(rf.evidence), unconfirmed)
     for ref in rf.evidence:
         match = _REF_LINE.match(ref.strip())
         if match:
             path, line = match.group(1), int(match.group(2))
             content = files.get(path)
             if content is None:
-                failures.append(f"{ref} (file not in scope)")
+                unconfirmed.append(f"{ref} (file not in scope)")
             elif line > len(content.splitlines()):
-                failures.append(f"{ref} (line out of range)")
+                unconfirmed.append(f"{ref} (line out of range)")
+            else:
+                confirmed.append(ref)
         elif ref.strip():
             content = files.get(ref.strip())
             if content is None:
-                failures.append(f"{ref} (file not in scope)")
-    return failures
+                unconfirmed.append(f"{ref} (file not in scope)")
+            else:
+                confirmed.append(ref)
+        else:
+            confirmed.append(ref)
+    return (confirmed, unconfirmed)
+
+
+def verify_requirement_finding(rf: RequirementFinding, files: dict[str, str]) -> list[str]:
+    """Return evidence refs that fail to verify (FR-013 / SC-005).
+
+    Kept as the "which references failed" view of
+    :func:`partition_requirement_evidence`, which is what the node consumes.
+    """
+    return partition_requirement_evidence(rf, files)[1]
 
 
 def make_verify_node(runtime) -> Callable[[ReviewState], dict]:
@@ -378,27 +419,47 @@ def make_verify_node(runtime) -> Callable[[ReviewState], dict]:
             _warn(f"verification failed: {finding.id} {finding.file} — {failure.reason}")
 
         req_kept: list[RequirementFinding] = []
+        stripped = 0
+        demoted = 0
         for rf in state["requirement_findings"]:
-            bad_refs = verify_requirement_finding(rf, files)
-            if bad_refs:
-                failures.append(
-                    VerificationFailure(
-                        finding_id=rf.id,
-                        file="",
-                        line_range=LineRange(start_line=0, start_col=0, end_line=0, end_col=0),
-                        reason="evidence not confirmed: " + "; ".join(bad_refs),
-                        reason_code=VerificationReasonCode.EVIDENCE_NOT_CONFIRMED,
-                    )
-                )
-                _warn(f"verification failed: {rf.id} {rf.requirement_ref} — {'; '.join(bad_refs)}")
-            else:
+            confirmed, bad_refs = partition_requirement_evidence(rf, files)
+            if not bad_refs:
                 req_kept.append(rf)
+                continue
+            # The requirement came out of the spec, so it stays in the report; only
+            # the references the reviewed files cannot back are removed (FR-013).
+            failures.append(
+                VerificationFailure(
+                    finding_id=rf.id,
+                    file="",
+                    line_range=LineRange(start_line=0, start_col=0, end_line=0, end_col=0),
+                    reason="evidence not confirmed: " + "; ".join(bad_refs),
+                    reason_code=VerificationReasonCode.EVIDENCE_NOT_CONFIRMED,
+                )
+            )
+            _warn(f"verification failed: {rf.id} {rf.requirement_ref} — {'; '.join(bad_refs)}")
+            kept_finding = rf.model_copy(update={"evidence": confirmed})
+            if confirmed != rf.evidence:
+                stripped += 1
+            if not confirmed and rf.status in (RequirementStatus.SATISFIED, RequirementStatus.PARTIAL):
+                # "Satisfied" with nothing left to point at is not a claim the
+                # reviewed files support, so the requirement is reported as
+                # unclear instead of dropped or left confidently green (FR-013).
+                kept_finding = kept_finding.model_copy(
+                    update={
+                        "status": RequirementStatus.UNCLEAR,
+                        "explanation": EVIDENCE_UNCONFIRMED_EXPLANATION,
+                    }
+                )
+                demoted += 1
+            req_kept.append(kept_finding)
 
         if log is not None:
             log.info(
                 f"verification: {len(kept)}/{len(state['code_findings'])} code findings kept "
                 f"({corrections} citation(s) corrected), "
-                f"{len(req_kept)}/{len(state['requirement_findings'])} requirement findings kept"
+                f"{len(req_kept)}/{len(state['requirement_findings'])} requirement findings kept "
+                f"({stripped} with evidence removed, {demoted} demoted to unclear)"
             )
         return {
             "verified_code_findings": kept,

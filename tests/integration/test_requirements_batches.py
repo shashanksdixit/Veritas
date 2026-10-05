@@ -221,8 +221,8 @@ def test_a_failed_batch_prevents_a_gap_even_when_the_other_batches_say_not_here(
     """The batch that failed never answered, so its silence is a cannot_judge.
 
     The other batch said "not in here" twice over, which is the strongest negative
-    answer available; it still cannot support a gap, because one batch's silence is
-    not the whole repository's silence.
+    answer available; it still cannot support a gap, and the explanation names the
+    failed batch rather than leaving the reader to infer it (FR-007).
     """
     state, plan = _state(_project(tmp_path))
     llm = AnswerLLM(
@@ -236,10 +236,58 @@ def test_a_failed_batch_prevents_a_gap_even_when_the_other_batches_say_not_here(
     assert all(f.status is RequirementStatus.UNCLEAR for f in result["requirement_findings"])
     assert all(f.evidence == [] for f in result["requirement_findings"])
     assert all(
-        "Not every reviewed batch answered" in f.explanation
+        "a requirements batch failed" in f.explanation
         for f in result["requirement_findings"]
     )
     assert len(result["errors"]) == 1
+
+
+def test_a_failed_batch_is_named_however_thoroughly_the_other_batches_answered(tmp_path):
+    """Three batches, the middle one fails, the other two both say not_in_this_batch.
+
+    Whether the surviving batches answered cannot be the deciding fact — the failed
+    one never did, so that is what the explanation has to say (FR-007).
+    """
+    (tmp_path / "src").mkdir()
+    files = {}
+    for name in ("app", "cli", "web"):
+        files[f"src/{name}.py"] = _lines(60, name)
+        (tmp_path / "src" / f"{name}.py").write_text(files[f"src/{name}.py"], encoding="utf-8")
+    state, plan = _state(files)
+    assert len(plan.batches) == 3
+
+    negative = {"FR-001": "not_in_this_batch", "FR-002": "not_in_this_batch"}
+    llm = AnswerLLM([negative, negative, negative], fail_on=2)
+    result = make_requirements_node(_runtime(llm))(state)
+
+    assert [f.status for f in result["requirement_findings"]] == [
+        RequirementStatus.UNCLEAR,
+        RequirementStatus.UNCLEAR,
+    ]
+    assert all(
+        "a requirements batch failed" in f.explanation
+        for f in result["requirement_findings"]
+    )
+    assert len(result["errors"]) == 1
+
+
+def test_a_failed_batch_still_lets_an_implemented_answer_win(tmp_path):
+    """The failure only decides a requirement nothing claimed to implement."""
+    state, plan = _state(_project(tmp_path))
+    llm = AnswerLLM(
+        [
+            {"FR-001": "implemented", "FR-002": "not_in_this_batch"},
+            {"FR-001": "implemented", "FR-002": "not_in_this_batch"},
+        ],
+        fail_on=2,
+    )
+    result = make_requirements_node(_runtime(llm))(state)
+    statuses = {f.requirement_ref: f.status for f in result["requirement_findings"]}
+    assert statuses["FR-001"] is RequirementStatus.SATISFIED
+    assert statuses["FR-002"] is RequirementStatus.UNCLEAR
+    assert "a requirements batch failed" in next(
+        f.explanation for f in result["requirement_findings"] if f.requirement_ref == "FR-002"
+    )
 
 
 # --- the free-text path ---

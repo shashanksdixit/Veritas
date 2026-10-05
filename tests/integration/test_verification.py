@@ -4,7 +4,10 @@ Covers the structured failure detail added in T066: `reason_code`, redacted +
 truncated `claimed_snippet` / `actual_snippet`, and `found_at_lines`.
 """
 
+import json
+import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from veritas.models.entities import (
     Category,
@@ -25,6 +28,7 @@ from veritas.review.nodes.verification import (
     _find_snippet_spans,
     correct_citation,
     make_verify_node,
+    partition_requirement_evidence,
     verify_code_finding,
     verify_requirement_finding,
 )
@@ -144,6 +148,170 @@ def test_requirement_good_evidence_passes():
         explanation="e",
     )
     assert verify_requirement_finding(rf, FILES) == []
+
+
+# ---------------------------------------------------------------------------
+# T089 — a bad reference must not delete the requirement (FR-013)
+# ---------------------------------------------------------------------------
+
+
+def _requirement(status, evidence, ref="FR-001", id="rf-1"):
+    return RequirementFinding(
+        id=id,
+        requirement_ref=ref,
+        requirement_text="the system must log to stdout",
+        status=status,
+        evidence=list(evidence),
+        explanation="the logger writes to stdout in every entry point",
+    )
+
+
+def test_partition_keeps_the_good_reference_and_names_the_bad_one():
+    rf = _requirement(RequirementStatus.SATISFIED, ["src/app.py:2", "src/missing.py:1"])
+    confirmed, unconfirmed = partition_requirement_evidence(rf, FILES)
+    assert confirmed == ["src/app.py:2"]
+    assert unconfirmed == ["src/missing.py:1 (file not in scope)"]
+
+
+def test_one_bad_reference_keeps_the_requirement_satisfied_with_the_good_one():
+    log = _RecordingLog()
+    rf = _requirement(RequirementStatus.SATISFIED, ["src/app.py:2", "src/app.py:99"])
+    out = make_verify_node(_NodeRuntime(log))(
+        {"files": FILES, "code_findings": [], "requirement_findings": [rf]}
+    )
+    kept = out["verified_requirement_findings"]
+    assert len(kept) == 1
+    assert kept[0].status is RequirementStatus.SATISFIED
+    assert kept[0].evidence == ["src/app.py:2"]
+    assert kept[0].explanation == rf.explanation
+    assert len(out["verification_failures"]) == 1
+    failure = out["verification_failures"][0]
+    assert failure.reason_code is VerificationReasonCode.EVIDENCE_NOT_CONFIRMED
+    assert failure.finding_id == rf.id
+    assert "src/app.py:99 (line out of range)" in failure.reason
+    assert any("1 with evidence removed" in line for line in log.info_lines)
+
+
+def test_every_reference_bad_keeps_the_requirement_as_unclear():
+    rf = _requirement(
+        RequirementStatus.SATISFIED, ["src/missing.py:1", "src/other.py:4"], id="rf-all-bad"
+    )
+    out = make_verify_node(_NodeRuntime(_RecordingLog()))(
+        {"files": FILES, "code_findings": [], "requirement_findings": [rf]}
+    )
+    kept = out["verified_requirement_findings"]
+    assert len(kept) == 1
+    assert kept[0].status is RequirementStatus.UNCLEAR
+    assert kept[0].evidence == []
+    assert kept[0].explanation == "Its cited evidence could not be confirmed against the reviewed files."
+    assert len(out["verification_failures"]) == 1
+
+
+def test_a_partial_requirement_left_with_no_evidence_is_demoted_too():
+    rf = _requirement(RequirementStatus.PARTIAL, ["src/missing.py:1"], ref="FR-002", id="rf-partial")
+    out = make_verify_node(_NodeRuntime(_RecordingLog()))(
+        {"files": FILES, "code_findings": [], "requirement_findings": [rf]}
+    )
+    kept = out["verified_requirement_findings"][0]
+    assert kept.status is RequirementStatus.UNCLEAR
+    assert kept.evidence == []
+
+
+def test_a_gap_or_unclear_finding_is_left_alone():
+    gap = _requirement(RequirementStatus.GAP, [], ref="FR-003", id="rf-gap")
+    gap.explanation = "No code implementing this requirement was found in any reviewed batch."
+    unclear = _requirement(RequirementStatus.UNCLEAR, ["src/missing.py:1"], ref="FR-004", id="rf-unc")
+    out = make_verify_node(_NodeRuntime(_RecordingLog()))(
+        {"files": FILES, "code_findings": [], "requirement_findings": [gap, unclear]}
+    )
+    assert out["verified_requirement_findings"] == [gap, unclear]
+    assert out["verification_failures"] == []
+
+
+def test_every_requirement_reaches_the_report_even_with_bad_evidence():
+    findings = [
+        _requirement(RequirementStatus.SATISFIED, ["src/app.py:2", "src/missing.py:1"], ref="FR-001", id="rf-a"),
+        _requirement(RequirementStatus.SATISFIED, ["src/missing.py:1"], ref="FR-002", id="rf-b"),
+        _requirement(RequirementStatus.GAP, [], ref="FR-003", id="rf-c"),
+        _requirement(RequirementStatus.UNCLEAR, [], ref="FR-004", id="rf-d"),
+    ]
+    out = make_verify_node(_NodeRuntime(_RecordingLog()))(
+        {"files": FILES, "code_findings": [], "requirement_findings": findings}
+    )
+    kept = out["verified_requirement_findings"]
+    assert [f.requirement_ref for f in kept] == ["FR-001", "FR-002", "FR-003", "FR-004"]
+    assert len(out["verification_failures"]) == 2
+
+
+def test_the_rendered_report_has_one_heading_per_extracted_requirement(tmp_path, settings):
+    """End to end, through run_review: what FR-013 protects is what a reader sees.
+
+    The node-level tests above can only see what the verify node returns. Here a
+    fake LLM answers three extracted requirements — one with a good and a bad
+    reference, one whose only reference is bad, one with no evidence at all — and
+    the written Markdown must still carry exactly one heading per requirement the
+    scope node extracted.
+    """
+    from tests.conftest import FakeLLM
+
+    from veritas.models.entities import ReviewScope
+    from veritas.review.graph import run_review
+    from veritas.review.requirements_source import extract_requirements
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text(
+        'import os\nprint("hello")\n', encoding="utf-8"
+    )
+    feature = tmp_path / "specs" / "001-demo"
+    feature.mkdir(parents=True)
+    spec_text = (
+        "# Feature\n"
+        "\n"
+        "- **FR-001**: The system MUST log to stdout.\n"
+        "- **FR-002**: The system MUST log to stderr.\n"
+        "- **FR-003**: The system MUST exit cleanly.\n"
+    )
+    (feature / "spec.md").write_text(spec_text, encoding="utf-8")
+    extracted, _ = extract_requirements("specs/001-demo/spec.md", spec_text)
+    assert [r.id for r in extracted] == ["FR-001", "FR-002", "FR-003"]
+
+    def _answer(identifier, evidence):
+        return {
+            "id": identifier,
+            "answer": "implemented" if evidence else "not_in_this_batch",
+            "evidence": evidence,
+            "explanation": "the code shows it",
+        }
+
+    llm = FakeLLM(
+        {
+            "extracted from the project's spec": json.dumps(
+                [
+                    _answer("FR-001", ["src/app.py:2", "src/gone.py:1"]),
+                    _answer("FR-002", ["src/gone.py:1"]),
+                    _answer("FR-003", []),
+                ]
+            )
+        }
+    )
+    outcome = run_review(settings, ReviewScope.PROJECT, str(tmp_path), llm=llm)
+    assert outcome.exit_code == 0
+
+    md = Path(str(outcome.report_path)).read_text(encoding="utf-8")
+    assert re.findall(r"^### (FR-\d+) — ", md, flags=re.MULTILINE) == [
+        r.id for r in extracted
+    ]
+    # The good reference is kept and the bad one is gone from the finding...
+    assert "### FR-001 — *satisfied*" in md
+    assert "- `src/app.py:2`" in md
+    # ...while the requirement left with nothing is reported as unclear, not dropped.
+    assert "### FR-002 — *unclear*" in md
+    assert (
+        "Its cited evidence could not be confirmed against the reviewed files." in md
+    )
+    # Both bad references are named in the verification-failure notes instead.
+    assert md.count("src/gone.py:1 (file not in scope)") == 2
+    assert "### FR-003 — *gap*" in md
 
 
 # ---------------------------------------------------------------------------
@@ -553,7 +721,8 @@ def test_verify_node_corrects_citation_and_reports_it():
 
     assert log.info_lines == [
         "citation corrected: f-correctable src/app.py 19-19 -> 19-23",
-        "verification: 2/3 code findings kept (1 citation(s) corrected), 0/0 requirement findings kept",
+        "verification: 2/3 code findings kept (1 citation(s) corrected), 0/0 requirement findings kept "
+        "(0 with evidence removed, 0 demoted to unclear)",
     ]
 
 
@@ -599,5 +768,6 @@ def test_verification_summary_reports_zero_corrections_when_none_needed():
     )
     assert len(out["verified_code_findings"]) == 1
     assert log.info_lines == [
-        "verification: 1/1 code findings kept (0 citation(s) corrected), 0/0 requirement findings kept"
+        "verification: 1/1 code findings kept (0 citation(s) corrected), 0/0 requirement findings kept "
+        "(0 with evidence removed, 0 demoted to unclear)"
     ]

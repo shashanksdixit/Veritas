@@ -9,6 +9,10 @@ constitution Principle VIII / FR-016.
 ## [Unreleased]
 
 ### Fixed
+- A requirement with an unconfirmable evidence reference is no longer dropped from
+  the report: the bad reference is removed (and recorded), and the requirement
+  becomes unclear only if no evidence remains. A failed requirements batch is named
+  in the explanation.
 - Python source modules whose names start with test_ (e.g. test_index.py) are no
   longer treated as test files, so they are reviewed as application code and kept
   out of the test index.
