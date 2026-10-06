@@ -87,6 +87,10 @@ _VERDICT_LEGEND: tuple[tuple[str, str], ...] = (
     ),
 )
 
+# How much of a not_addressed requirement's text the compact list shows (FR-007).
+# Enough to recognise the requirement by; the full text is in the spec.
+NOT_ADDRESSED_TEXT_CHARS = 100
+
 _REASON_CODE_MEANINGS: dict[VerificationReasonCode, str] = {
     VerificationReasonCode.FILE_NOT_IN_SCOPE: "The cited file was not among the files reviewed.",
     VerificationReasonCode.LINE_OUT_OF_RANGE: "The cited line is past the end of the file.",
@@ -402,7 +406,18 @@ def render_markdown(report: Report) -> str:
     if not report.requirement_findings:
         out.append("No requirement findings.")
         out.append("")
+    # not_addressed requirements get one compact block, not a section each: a spec
+    # can hold dozens of them and a PR normally touches a handful, so rendering one
+    # heading, requirement text, status and explanation per untouched requirement
+    # would bury the requirements the PR actually has something to say about. They
+    # are still listed by id, so every extracted requirement appears exactly once
+    # (FR-007, FR-013).
+    not_addressed = [
+        rf for rf in report.requirement_findings if rf.status is RequirementStatus.NOT_ADDRESSED
+    ]
     for rf in report.requirement_findings:
+        if rf.status is RequirementStatus.NOT_ADDRESSED:
+            continue
         out.append(f"### {rf.requirement_ref} — *{rf.status.value}*")
         out.append("")
         out.append(f"**Requirement**: {rf.requirement_text}")
@@ -419,6 +434,16 @@ def render_markdown(report: Report) -> str:
             for ref in rf.evidence:
                 out.append(f"- `{ref}`")
             out.append("")
+    if not_addressed:
+        out.append(f"{len(not_addressed)} requirement(s) are not addressed by this PR:")
+        out.append("")
+        out.append("<details>")
+        out.append("")
+        for rf in not_addressed:
+            out.append(f"- {rf.requirement_ref}: {rf.requirement_text[:NOT_ADDRESSED_TEXT_CHARS]}")
+        out.append("")
+        out.append("</details>")
+        out.append("")
 
     result = "\n".join(out)
     report.markdown_content = result

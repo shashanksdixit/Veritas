@@ -65,6 +65,10 @@ class RequirementStatus(str, Enum):
     PARTIAL = "partial"
     GAP = "gap"
     UNCLEAR = "unclear"
+    # PR scope only (FR-007): nothing in this PR implements the requirement. Not a
+    # verdict input — a requirement the PR does not touch is not a reason to hold
+    # the PR back, so it never reaches RequiresModification or RequiresReview.
+    NOT_ADDRESSED = "not_addressed"
 
 
 class ReportStatus(str, Enum):

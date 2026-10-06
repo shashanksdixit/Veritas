@@ -7,12 +7,12 @@ VERSION = "0.1.0"
 
 # Report output schema version (FR-016). Bump (and update CHANGELOG.md) on any
 # breaking change to Report/CodeFinding/RequirementFinding shape.
-SCHEMA_VERSION = "1.4.0"
+SCHEMA_VERSION = "1.5.0"
 
 # Prompt set version, recorded in ReviewRun.prompt_version (FR-024). Prompt
 # files in review/prompts/ carry a `prompt_version:` header; this constant is
 # the fallback when the header is missing.
-PROMPT_VERSION = "1.8.0"
+PROMPT_VERSION = "1.9.0"
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "openai:openai/gpt-4o-mini"

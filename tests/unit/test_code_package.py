@@ -359,8 +359,8 @@ def test_requirements_prompt_uses_the_evidence_rule_not_cited_snippet():
 
 
 def test_prompt_version_is_current():
-    assert PROMPT_VERSION == "1.8.0"
-    assert current_prompt_version() == "1.8.0"
+    assert PROMPT_VERSION == "1.9.0"
+    assert current_prompt_version() == "1.9.0"
 
 
 def test_every_prompt_with_line_numbers_also_states_the_line_range_rule():
@@ -532,3 +532,55 @@ def test_the_contiguous_snippet_rule_follows_the_citation_instructions():
         assert text.index(_CONTIGUOUS_SNIPPET_RULE) < text.index(
             "Respond with a single JSON array"
         ), name
+
+
+# --- FR-007: the structured reviewer must be told how to answer cross-cutting
+# requirements, or a requirement implemented outside this batch reads as absent ---
+
+
+_CROSS_CUTTING_HEADER = "Cross-cutting requirements:"
+_CROSS_CUTTING_RULE = (
+    "Some requirements describe an overall behaviour that several files contribute to, such "
+    "as what a report contains or how the tool is configured. If code in this batch "
+    "contributes to that behaviour, answer implemented or partially_implemented and cite it."
+)
+_CANNOT_JUDGE_RULE = (
+    "Use cannot_judge for properties that reading code cannot establish, such as "
+    "reproducibility, performance, or determinism."
+)
+_NOT_IN_BATCH_RULE = (
+    "Use not_in_this_batch only when the requirement names specific functionality and the "
+    "files in this batch clearly do not contain it."
+)
+
+
+def test_the_structured_requirements_prompt_carries_the_cross_cutting_guidance():
+    text = _plain(_prompt("requirements_structured"))
+    for rule in (_CROSS_CUTTING_RULE, _CANNOT_JUDGE_RULE, _NOT_IN_BATCH_RULE):
+        assert rule in text, rule[:40]
+
+
+def test_the_cross_cutting_guidance_only_needs_the_structured_prompt():
+    # requirements.md returns a status directly, so the three-way answering rule
+    # would describe a field it never emits.
+    for name in _CODE_PROMPTS:
+        present = _CROSS_CUTTING_HEADER in _normalized(_prompt(name))
+        assert present is (name == "requirements_structured"), name
+
+
+def test_the_cross_cutting_guidance_comes_before_the_answer_schema():
+    # It qualifies how each answer value is chosen, so it must precede the schema
+    # that lists the values.
+    text = _normalized(_prompt("requirements_structured"))
+    assert text.index(_CROSS_CUTTING_HEADER) < text.index("Respond with a single JSON array")
+
+
+def test_the_cross_cutting_guidance_does_not_invent_a_fifth_answer():
+    # not_addressed is decided from the batch answers in code, so the model must not
+    # be asked to return it: an answer it never returns is not a status it can pick.
+    text = _plain(_prompt("requirements_structured"))
+    assert "not_addressed" not in text
+    assert (
+        '"answer": "implemented" | "partially_implemented" | "not_in_this_batch" | "cannot_judge"'
+        in text
+    )

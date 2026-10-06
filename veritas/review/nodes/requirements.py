@@ -9,14 +9,21 @@ Two paths, chosen by whether the scope node extracted structured requirements
   before (T038), for a project whose documentation has no parseable FR lines.
 
 Both paths produce RequirementFinding with status + evidence; explanations are
-redacted on the way in (constitution Privacy & Data Handling).
+redacted on the way in (constitution Privacy & Data Handling). Both also answer a
+scope-dependent question: in PR scope a requirement the pull request carries no code
+for is ``not_addressed`` rather than a ``gap``, because the PR review is asking
+whether this change implements it, not whether the project does (FR-007).
 """
 
 from __future__ import annotations
 
 from typing import Callable
 
-from veritas.models.entities import RequirementFinding, RequirementStatus
+from veritas.models.entities import (
+    RequirementFinding,
+    RequirementStatus,
+    ReviewScope,
+)
 from veritas.review.nodes.common import (
     build_requirement_finding,
     find_requirements_source,
@@ -48,6 +55,7 @@ _FAILED_BATCH_REASON = (
     "Coverage was incomplete: a requirements batch failed, so a gap could not be "
     "concluded."
 )
+_NOT_ADDRESSED_REASON = "No code for this requirement is part of this PR."
 
 
 def merge_answers(
@@ -57,6 +65,7 @@ def merge_answers(
     total_batches: int,
     not_reviewed_files: tuple[str, ...] = (),
     batch_failed: bool = False,
+    pr_scope: bool = False,
 ) -> list[RequirementFinding]:
     """Collapse every batch's answers into one finding per requirement (FR-007).
 
@@ -72,9 +81,28 @@ def merge_answers(
     * else any ``partially_implemented`` -> partial
     * else a failed batch -> unclear, naming the failed batch, whether or not the
       batches that did answer covered the whole plan
+    * else in PR scope -> not_addressed, unless an in-scope file went unreviewed,
+      which is still unclear
     * else gap **only** when every batch answered ``not_in_this_batch`` and no
       in-scope file went unreviewed
     * else unclear
+
+    ``pr_scope`` is what separates the two questions a requirement answer can raise.
+    A project review asks "does this codebase implement it?" and a "no" from every
+    batch is a gap worth acting on. A PR review asks the narrower "does *this
+    change* carry any code for it?" and a "no" means the pull request simply is not
+    the place that requirement lives - not that the PR is deficient. Reporting that
+    as a gap would make every PR touching a subset of a spec require the other 20
+    requirements first, so the same evidence yields not_addressed instead (FR-007).
+    The narrowness is why the status is scope-specific: it would be a lie about a
+    project review, where the whole codebase was in scope and nothing was found.
+
+    Not addressed is decided by *absence of a positive answer*, not by every batch
+    saying "not in this batch": in PR scope a batch that answered cannot_judge has
+    still shown no code for the requirement, and the PR still does not carry it. The
+    coverage exceptions are kept, because both mean the tool did not look at
+    everything the PR contains - an unreviewed file or a failed batch could hold the
+    evidence, and that is unclear to chase rather than a confident not_addressed.
 
     That gap clause is why the question is asked per batch. One batch saying "not in
     here" proves nothing about the others, and neither does a file the planner never
@@ -124,6 +152,17 @@ def merge_answers(
             # gave (FR-007).
             status = RequirementStatus.UNCLEAR
             explanation = _FAILED_BATCH_REASON
+        elif pr_scope:
+            # Nothing in this PR implements it and nothing was left unreviewed, so
+            # the PR does not address it. An unreviewed file could still hold the
+            # code, so that row stays unclear (FR-007).
+            if not_reviewed_files:
+                status = RequirementStatus.UNCLEAR
+                explanation = _UNREVIEWED_REASON
+            else:
+                status = RequirementStatus.NOT_ADDRESSED
+                explanation = _NOT_ADDRESSED_REASON
+                evidence = []
         elif complete and not_reviewed_files:
             # Every batch said no, but there was code nobody was shown.
             status = RequirementStatus.UNCLEAR
@@ -204,6 +243,16 @@ def make_requirements_node(runtime) -> Callable[[ReviewState], dict]:
     return requirements_node
 
 
+def _is_pr_scope(state: ReviewState) -> bool:
+    """Whether this run reviews a pull request (FR-007).
+
+    Read from state rather than configured on the node: the scope is the scope
+    node's to resolve (it is what decides which files exist at all), and a run
+    must not have two sources of truth for which question it is answering.
+    """
+    return state.get("scope") is ReviewScope.PR
+
+
 def _structured_node(
     runtime, state: ReviewState, requirements: list[Requirement]
 ) -> dict:
@@ -229,6 +278,7 @@ def _structured_node(
         total_batches=total_batches,
         not_reviewed_files=tuple(plan.not_reviewed_files) if plan is not None else (),
         batch_failed=bool(errors),
+        pr_scope=_is_pr_scope(state),
     )
     counts = {status: 0 for status in RequirementStatus}
     for finding in findings:
@@ -238,7 +288,8 @@ def _structured_node(
         f"{counts[RequirementStatus.SATISFIED]} satisfied, "
         f"{counts[RequirementStatus.PARTIAL]} partial, "
         f"{counts[RequirementStatus.GAP]} gap, "
-        f"{counts[RequirementStatus.UNCLEAR]} unclear"
+        f"{counts[RequirementStatus.UNCLEAR]} unclear, "
+        f"{counts[RequirementStatus.NOT_ADDRESSED]} not addressed"
     )
     # errors rides the shared FR-027 channel and also holds back every gap (FR-007):
     # a batch that failed is a batch whose "not in here" we never heard.
@@ -262,5 +313,38 @@ def _free_text_node(runtime, state: ReviewState) -> dict:
     )
     if not findings and not req_source:
         findings = [_no_documentation_finding()]
+    findings = _map_gap_in_pr_scope(findings, _is_pr_scope(state))
     runtime.log.info(f"requirements: {len(findings)} findings")
     return {"requirement_findings": findings}
+
+
+def _map_gap_in_pr_scope(
+    findings: list[RequirementFinding], pr_scope: bool
+) -> list[RequirementFinding]:
+    """Report a free-text gap as not_addressed in PR scope only (FR-007).
+
+    The reviewer answered about the files it was shown, which in PR scope are the
+    PR's files. A gap there means this PR carries no code for the requirement, not
+    that the project lacks it, so the status is restated and the explanation is
+    replaced — the LLM's gap wording says "no code implementing this requirement",
+    which a PR reader would rightly object to. Project and module reviews keep the
+    gap, because there the whole codebase was in scope.
+
+    Findings are copied, not mutated: the caller may hold the same objects.
+    """
+    if not pr_scope:
+        return findings
+    mapped: list[RequirementFinding] = []
+    for finding in findings:
+        if finding.status is not RequirementStatus.GAP:
+            mapped.append(finding)
+            continue
+        mapped.append(
+            finding.model_copy(
+                update={
+                    "status": RequirementStatus.NOT_ADDRESSED,
+                    "explanation": _NOT_ADDRESSED_REASON,
+                }
+            )
+        )
+    return mapped

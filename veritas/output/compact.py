@@ -17,6 +17,18 @@ from veritas.models.entities import (
 
 _HEADLINE_CAP = 10
 
+# The statuses the one-line requirement count walks, in report order, with the
+# label each is shown under. not_addressed is last and reads as two words: the
+# other four are single words, and "23 not_addressed" reads like a code fragment in
+# a line a human is scanning (FR-007, FR-015).
+_REQUIREMENT_STATUS_LABELS: tuple[tuple[RequirementStatus, str], ...] = (
+    (RequirementStatus.SATISFIED, "satisfied"),
+    (RequirementStatus.PARTIAL, "partial"),
+    (RequirementStatus.GAP, "gap"),
+    (RequirementStatus.UNCLEAR, "unclear"),
+    (RequirementStatus.NOT_ADDRESSED, "not addressed"),
+)
+
 
 def _coverage_line(coverage: Coverage) -> str:
     """One ASCII-only line describing what the run reviewed and withheld (FR-029)."""
@@ -72,13 +84,8 @@ def render_compact(report: Report, report_path: str | None = None) -> str:
         )
 
     req_snippet = ", ".join(
-        f"{summary.requirement_status_counts.get(s, 0)} {s.value}"
-        for s in (
-            RequirementStatus.SATISFIED,
-            RequirementStatus.PARTIAL,
-            RequirementStatus.GAP,
-            RequirementStatus.UNCLEAR,
-        )
+        f"{summary.requirement_status_counts.get(status, 0)} {label}"
+        for status, label in _REQUIREMENT_STATUS_LABELS
     )
     lines.append(f"Requirements: {req_snippet}")
 

@@ -13,6 +13,14 @@ from veritas.models.entities import (
     Verdict,
 )
 
+# The requirement statuses that force each verdict (FR-015), stated as sets so the
+# statuses that deliberately do NOT appear are as visible as the ones that do.
+# RequirementStatus.NOT_ADDRESSED is in neither: a requirement the PR carries no
+# code for is not a reason to hold that PR back, so it is counted in the report but
+# never reaches a verdict. Adding a status therefore forces a decision here.
+_MODIFICATION_STATUSES = frozenset({RequirementStatus.GAP})
+_REVIEW_STATUSES = frozenset({RequirementStatus.PARTIAL, RequirementStatus.UNCLEAR})
+
 
 def compute_summary(
     code_findings: list[CodeFinding],
@@ -27,6 +35,9 @@ def compute_summary(
       RequiresReview — none of the above, but any warning-severity CodeFinding,
         or any RequirementFinding with status in {partial, unclear}.
       Clean — otherwise.
+
+    not_addressed is counted in ``requirement_status_counts`` and reaches neither
+    verdict (FR-015).
     """
     failures = verification_failures or []
     severity_counts: dict[Severity, int] = {}
@@ -60,12 +71,12 @@ def _derive_verdict(
         if finding.severity == Severity.ERROR:
             return Verdict.REQUIRES_MODIFICATION
     for rf in requirement_findings:
-        if rf.status == RequirementStatus.GAP:
+        if rf.status in _MODIFICATION_STATUSES:
             return Verdict.REQUIRES_MODIFICATION
     for finding in code_findings:
         if finding.severity == Severity.WARNING:
             return Verdict.REQUIRES_REVIEW
     for rf in requirement_findings:
-        if rf.status in (RequirementStatus.PARTIAL, RequirementStatus.UNCLEAR):
+        if rf.status in _REVIEW_STATUSES:
             return Verdict.REQUIRES_REVIEW
     return Verdict.CLEAN

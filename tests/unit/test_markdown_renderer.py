@@ -80,7 +80,7 @@ def _report(**overrides) -> Report:
 
 def test_schema_version_comment_top():
     md = render_markdown(_report())
-    assert md.startswith("<!-- veritas-report-schema: 1.4.0 -->")
+    assert md.startswith("<!-- veritas-report-schema: 1.5.0 -->")
 
 
 def test_sections_present():
@@ -212,6 +212,102 @@ def test_no_findings_path():
     md = render_markdown(report)
     assert "No code findings." in md
     assert "No requirement findings." in md
+
+
+# --- not_addressed is listed compactly, not as a section each (FR-007) ---
+
+
+def _not_addressed(ref: str, text: str = "The system MUST log to stdout.") -> RequirementFinding:
+    return RequirementFinding(
+        id=f"r-{ref}",
+        requirement_ref=ref,
+        requirement_text=text,
+        status=RequirementStatus.NOT_ADDRESSED,
+        evidence=[],
+        explanation="No code for this requirement is part of this PR.",
+    )
+
+
+def _requirement_section(md: str) -> str:
+    """The body of the ``## Requirement Findings`` section, up to the next ``## ``."""
+    start = md.index("## Requirement Findings")
+    rest = md[start + len("## Requirement Findings") :]
+    end = rest.find("\n## ")
+    return rest if end == -1 else rest[:end]
+
+
+def test_not_addressed_gets_one_compact_block_after_the_other_requirements():
+    md = render_markdown(
+        _report(requirement_findings=[_report_requirement(), _not_addressed("FR-002")])
+    )
+    section = _requirement_section(md)
+    assert "1 requirement(s) are not addressed by this PR:" in section
+    # The compact list carries the id and the text, not a heading per requirement.
+    assert "- FR-002: The system MUST log to stdout." in section
+    assert "### FR-002" not in section
+    # The full section for the requirement the PR does address is untouched.
+    assert "### REQ-1" in section
+
+
+def test_the_compact_block_is_collapsible_with_blank_lines_inside():
+    md = render_markdown(_report(requirement_findings=[_not_addressed("FR-002")]))
+    section = _requirement_section(md)
+    assert "<details>\n\n- FR-002: The system MUST log to stdout.\n\n</details>" in section
+
+
+def test_a_not_addressed_requirement_text_is_cut_to_100_characters():
+    long_text = "MUST " + "x" * 300
+    md = render_markdown(
+        _report(requirement_findings=[_not_addressed("FR-002", text=long_text)])
+    )
+    assert "- FR-002: " + long_text[:100] in md
+    assert long_text not in md
+
+
+def test_the_compact_block_says_nothing_when_nothing_is_not_addressed():
+    md = render_markdown(_report(requirement_findings=[_report_requirement()]))
+    assert "not addressed by this PR" not in md
+    assert "<details>" not in md
+
+
+def test_every_requirement_appears_exactly_once_with_mixed_statuses():
+    findings = [
+        _report_requirement(),
+        _not_addressed("FR-002"),
+        _not_addressed("FR-003"),
+    ]
+    md = render_markdown(_report(requirement_findings=findings))
+    section = _requirement_section(md)
+    assert "2 requirement(s) are not addressed by this PR:" in section
+    # One heading for the addressed requirement, one list entry for each other, so
+    # every requirement is present exactly once and none is in both places.
+    assert section.count("### REQ-1") == 1
+    assert section.count("- FR-002:") == 1
+    assert section.count("- FR-003:") == 1
+    # The compact list is id and text only: the per-finding explanation is not
+    # repeated once per untouched requirement.
+    assert section.count("No code for this requirement is part of this PR.") == 0
+
+
+def test_the_status_counts_table_lists_not_addressed():
+    report = _report(requirement_findings=[_report_requirement(), _not_addressed("FR-002")])
+    report.summary.requirement_status_counts = {
+        RequirementStatus.PARTIAL: 1,
+        RequirementStatus.NOT_ADDRESSED: 1,
+    }
+    md = render_markdown(report)
+    assert "| Requirement status: not_addressed | 1 |" in md
+
+
+def _report_requirement() -> RequirementFinding:
+    return RequirementFinding(
+        id="r-1",
+        requirement_ref="REQ-1",
+        requirement_text="Supports project scope.",
+        status=RequirementStatus.PARTIAL,
+        evidence=["src/app.py:2"],
+        explanation="mostly there",
+    )
 
 
 def test_pipe_escaped_in_cells():

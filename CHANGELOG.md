@@ -21,6 +21,11 @@ constitution Principle VIII / FR-016.
   **1.7.0**.
 
 ### Added
+- Report schema **1.5.0**: adds the `not_addressed` requirement status. Migration:
+  earlier reports remain valid.
+- In PR scope, requirements with no evidence in the PR are reported as
+  not_addressed and do not affect the verdict; gap is reported only for project
+  and module reviews. Prompt version 1.9.0.
 - Structured requirements are evaluated against every batch and merged
   deterministically; a gap is reported only when every batch found no
   implementation and coverage was complete. Prompt version **1.8.0**.

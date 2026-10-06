@@ -47,6 +47,7 @@ class RequirementStatus(str, Enum):
     PARTIAL = "partial"
     GAP = "gap"
     UNCLEAR = "unclear"
+    NOT_ADDRESSED = "not_addressed"   # PR scope only (FR-007): no code for this requirement is part of this PR; never affects the verdict (FR-015)
 
 class ReportStatus(str, Enum):
     COMPLETE = "complete"
@@ -56,7 +57,7 @@ class Verdict(str, Enum):
     """Overall report verdict, derived per FR-015 from the collected findings."""
     REQUIRES_MODIFICATION = "RequiresModification"  # any error-severity CodeFinding, or any RequirementFinding with status=gap
     REQUIRES_REVIEW = "RequiresReview"                # (none of the above) and any warning-severity CodeFinding, or any RequirementFinding with status in {partial, unclear}
-    CLEAN = "Clean"                                    # none of the above
+    CLEAN = "Clean"                                    # none of the above. not_addressed is in neither list: a requirement the PR does not address never changes the verdict (FR-015)
 
 class VerificationReasonCode(str, Enum):
     """Why a VerificationFailure was raised (FR-013). The reason text names the
@@ -244,7 +245,7 @@ class Coverage(BaseModel):
 
 class Report(BaseModel):
     """The full review deliverable (FR-016)."""
-    schema_version: str = "1.4.0"    # semver; bump on any breaking change to
+    schema_version: str = "1.5.0"    # semver; bump on any breaking change to
                                       # Report/CodeFinding/RequirementFinding shape,
                                       # per CHANGELOG.md (constitution Principle VIII)
     run: ReviewRun

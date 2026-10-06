@@ -8,6 +8,7 @@ from veritas.models.entities import (
     LineRange,
     Report,
     ReportStatus,
+    RequirementStatus,
     ReviewRun,
     ReviewScope,
     Severity,
@@ -62,6 +63,42 @@ def test_count_line():
 
 def test_verdict_line():
     assert "Verdict: RequiresModification" in render_compact(_report())
+
+
+def _requirements_line(report: Report) -> str:
+    return next(
+        line for line in render_compact(report).splitlines() if line.startswith("Requirements: ")
+    )
+
+
+def test_the_requirements_line_counts_not_addressed_last():
+    report = _report()
+    report.summary.total_requirement_findings = 24
+    report.summary.requirement_status_counts = {
+        RequirementStatus.SATISFIED: 1,
+        RequirementStatus.PARTIAL: 0,
+        RequirementStatus.GAP: 0,
+        RequirementStatus.UNCLEAR: 0,
+        RequirementStatus.NOT_ADDRESSED: 23,
+    }
+    assert _requirements_line(report) == (
+        "Requirements: 1 satisfied, 0 partial, 0 gap, 0 unclear, 23 not addressed"
+    )
+
+
+def test_the_requirements_line_shows_zero_not_addressed_when_there_are_none():
+    report = _report()
+    report.summary.requirement_status_counts = {RequirementStatus.SATISFIED: 2}
+    assert _requirements_line(report) == (
+        "Requirements: 2 satisfied, 0 partial, 0 gap, 0 unclear, 0 not addressed"
+    )
+
+
+def test_the_requirements_line_never_prints_the_underscored_value():
+    # "23 not_addressed" reads like a leaked schema value in a line a human scans.
+    report = _report()
+    report.summary.requirement_status_counts = {RequirementStatus.NOT_ADDRESSED: 1}
+    assert "not_addressed" not in _requirements_line(report)
 
 
 def test_error_headline_capped_at_ten():

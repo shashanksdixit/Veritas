@@ -24,13 +24,14 @@ def _answer(answer: str, *evidence: str, explanation: str = "") -> dict:
     return payload
 
 
-def _merge(payloads, *, total_batches=2, not_reviewed=(), batch_failed=False):
+def _merge(payloads, *, total_batches=2, not_reviewed=(), batch_failed=False, pr_scope=False):
     findings = merge_answers(
         _ONE,
         payloads,
         total_batches=total_batches,
         not_reviewed_files=not_reviewed,
         batch_failed=batch_failed,
+        pr_scope=pr_scope,
     )
     assert len(findings) == 1
     return findings[0]
@@ -119,6 +120,101 @@ def test_an_unrecognised_answer_counts_as_an_omission():
 def test_no_batches_at_all_means_every_requirement_is_unclear():
     finding = _merge([], total_batches=0)
     assert finding.status is RequirementStatus.UNCLEAR
+
+
+# --- PR scope: not_addressed, never gap (FR-007) ---
+
+
+def test_pr_scope_reports_no_implementation_as_not_addressed_not_gap():
+    finding = _merge(
+        [_answer("not_in_this_batch"), _answer("not_in_this_batch")],
+        pr_scope=True,
+    )
+    assert finding.status is RequirementStatus.NOT_ADDRESSED
+    assert finding.evidence == []
+    assert finding.explanation == "No code for this requirement is part of this PR."
+
+
+def test_pr_scope_reports_cannot_judge_only_as_not_addressed():
+    # The whole codebase is not in a PR, so "the code shown could not be judged"
+    # says nothing about whether the PR implements the requirement — it says the PR
+    # showed no code for it, which is not_addressed.
+    finding = _merge([_answer("cannot_judge")], total_batches=1, pr_scope=True)
+    assert finding.status is RequirementStatus.NOT_ADDRESSED
+
+
+def test_pr_scope_reports_a_batch_that_never_answered_as_not_addressed():
+    finding = _merge([_answer("not_in_this_batch")], total_batches=5, pr_scope=True)
+    assert finding.status is RequirementStatus.NOT_ADDRESSED
+
+
+def test_pr_scope_is_still_unclear_when_a_batch_failed():
+    finding = _merge(
+        [_answer("not_in_this_batch"), _answer("not_in_this_batch")],
+        batch_failed=True,
+        pr_scope=True,
+    )
+    assert finding.status is RequirementStatus.UNCLEAR
+    assert "a requirements batch failed" in finding.explanation
+
+
+def test_pr_scope_is_still_unclear_when_a_file_was_not_reviewed():
+    # The unreviewed file may be where the requirement lives, so the PR review
+    # genuinely does not know — that is not a confident not_addressed.
+    finding = _merge(
+        [_answer("not_in_this_batch"), _answer("not_in_this_batch")],
+        not_reviewed=("src/big.py",),
+        pr_scope=True,
+    )
+    assert finding.status is RequirementStatus.UNCLEAR
+    assert "not every in-scope file was reviewed" in finding.explanation
+
+
+def test_pr_scope_still_reports_a_positive_answer_as_before():
+    satisfied = _merge(
+        [_answer("implemented", "src/app.py:2"), _answer("not_in_this_batch")],
+        pr_scope=True,
+    )
+    assert satisfied.status is RequirementStatus.SATISFIED
+    assert satisfied.evidence == ["src/app.py:2"]
+
+    partial = _merge(
+        [_answer("partially_implemented", "src/app.py:9"), _answer("not_in_this_batch")],
+        pr_scope=True,
+    )
+    assert partial.status is RequirementStatus.PARTIAL
+
+
+def test_project_scope_is_unaffected_by_the_pr_rule():
+    # Same answers, project scope: the whole codebase was in scope and nothing was
+    # found, which is a gap a reader can act on.
+    finding = _merge([_answer("not_in_this_batch"), _answer("not_in_this_batch")])
+    assert finding.status is RequirementStatus.GAP
+    assert finding.explanation == (
+        "No code implementing this requirement was found in any reviewed batch."
+    )
+
+
+def test_no_batches_at_all_in_pr_scope_is_not_addressed():
+    # A docs-only PR has no batch to review, and the PR question — "does this change
+    # carry code for it?" — is answerable without one: it does not. Project scope
+    # reads the same input as unclear (test_no_batches_at_all_means_every_requirement_is_unclear),
+    # because there the answer would be about the whole codebase and nothing was read.
+    finding = _merge([], total_batches=0, pr_scope=True)
+    assert finding.status is RequirementStatus.NOT_ADDRESSED
+
+
+def test_a_not_addressed_finding_cites_nothing_even_with_a_stray_reference():
+    finding = _merge(
+        [_answer("not_in_this_batch", "src/a.py:1")], total_batches=1, pr_scope=True
+    )
+    assert finding.status is RequirementStatus.NOT_ADDRESSED
+    assert finding.evidence == []
+
+
+def test_pr_scope_defaults_to_off_so_an_unpassed_scope_is_project_scope():
+    findings = merge_answers(_ONE, [_answer("not_in_this_batch")], total_batches=1)
+    assert findings[0].status is RequirementStatus.GAP
 
 
 # --- evidence ---

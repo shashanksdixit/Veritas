@@ -100,7 +100,7 @@ def test_report_roundtrip_json():
             verdict=V.CLEAN,
         ),
     )
-    assert report.schema_version == "1.4.0"
+    assert report.schema_version == "1.5.0"
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.run.id == report.run.id
 
@@ -230,3 +230,62 @@ def test_severity_adjusted_from_defaults_to_none():
     )
 
     assert finding.severity_adjusted_from is None
+
+
+# --- schema 1.5.0 adds not_addressed ---
+
+
+def _requirement(status: str) -> dict:
+    return {
+        "requirement_ref": "FR-002",
+        "requirement_text": "The system MUST log to stdout.",
+        "status": status,
+        "evidence": [],
+        "explanation": "No code for this requirement is part of this PR.",
+    }
+
+
+def test_not_addressed_round_trips_through_json():
+    from veritas.models.entities import RequirementFinding, RequirementStatus
+
+    restored = RequirementFinding.model_validate_json(
+        RequirementFinding(
+            requirement_ref="FR-002",
+            requirement_text="The system MUST log to stdout.",
+            status=RequirementStatus.NOT_ADDRESSED,
+            evidence=[],
+            explanation="No code for this requirement is part of this PR.",
+        ).model_dump_json()
+    )
+
+    assert restored.status is RequirementStatus.NOT_ADDRESSED
+    assert RequirementStatus.NOT_ADDRESSED.value == "not_addressed"
+
+
+def test_every_pre_1_5_requirement_status_still_validates():
+    """The changelog promises earlier reports remain valid, so the five values a
+    1.4.0 report could carry must all still parse."""
+    from veritas.models.entities import RequirementFinding
+
+    for status in ("satisfied", "partial", "gap", "unclear"):
+        assert RequirementFinding.model_validate(_requirement(status)).status.value == status
+
+
+def test_the_status_counts_table_of_an_older_report_still_validates():
+    """A 1.4.0 report has no not_addressed key in its counts; the new key is additive."""
+    from veritas.models.entities import RequirementStatus, Summary
+
+    restored = Summary.model_validate(
+        {
+            "total_code_findings": 0,
+            "severity_counts": {},
+            "category_counts": {},
+            "total_requirement_findings": 1,
+            "requirement_status_counts": {"gap": 1},
+            "verification_failure_count": 0,
+            "verdict": "RequiresModification",
+        }
+    )
+
+    assert restored.requirement_status_counts[RequirementStatus.GAP] == 1
+    assert RequirementStatus.NOT_ADDRESSED not in restored.requirement_status_counts

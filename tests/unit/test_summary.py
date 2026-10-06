@@ -11,7 +11,11 @@ from veritas.models.entities import (
     VerificationFailure,
     Verdict,
 )
-from veritas.output.summary import compute_summary
+from veritas.output.summary import (
+    _MODIFICATION_STATUSES,
+    _REVIEW_STATUSES,
+    compute_summary,
+)
 
 
 def _code_finding(severity: Severity, category: Category = Category.CODE_QUALITY) -> CodeFinding:
@@ -65,6 +69,63 @@ def test_partial_requirement_forces_requires_review():
 def test_unclear_requirement_forces_requires_review():
     summary = compute_summary([], [_req(RequirementStatus.UNCLEAR)])
     assert summary.verdict is Verdict.REQUIRES_REVIEW
+
+
+def test_not_addressed_never_reaches_a_verdict():
+    """A requirement the PR carries no code for is not a reason to hold it back."""
+    summary = compute_summary([], [_req(RequirementStatus.NOT_ADDRESSED)])
+    assert summary.verdict is Verdict.CLEAN
+
+
+def test_satisfied_and_not_addressed_requirements_are_clean_with_no_code_findings():
+    summary = compute_summary(
+        [],
+        [
+            _req(RequirementStatus.SATISFIED, "FR-001"),
+            _req(RequirementStatus.NOT_ADDRESSED, "FR-002"),
+            _req(RequirementStatus.NOT_ADDRESSED, "FR-003"),
+        ],
+    )
+    assert summary.verdict is Verdict.CLEAN
+    assert summary.requirement_status_counts[RequirementStatus.NOT_ADDRESSED] == 2
+    assert summary.total_requirement_findings == 3
+
+
+def test_not_addressed_does_not_mask_a_gap_or_a_warning():
+    # It is not a verdict input, so it cannot absorb one: the other statuses decide.
+    assert (
+        compute_summary(
+            [], [_req(RequirementStatus.NOT_ADDRESSED, "FR-001"), _req(RequirementStatus.GAP, "FR-002")]
+        ).verdict
+        is Verdict.REQUIRES_MODIFICATION
+    )
+    assert (
+        compute_summary(
+            [_code_finding(Severity.WARNING)],
+            [_req(RequirementStatus.NOT_ADDRESSED)],
+        ).verdict
+        is Verdict.REQUIRES_REVIEW
+    )
+
+
+def test_every_requirement_status_is_classified_or_the_verdict_would_change():
+    """A new status must be a deliberate decision here, not an omission.
+
+    The verdict is derived from two explicit sets of statuses, so this is the tripwire
+    for a future status being added to the enum and silently reaching no verdict.
+    Exactly two statuses are deliberately outside both: the two that describe the
+    PR being fine, so neither can hold it back.
+    """
+    classified = _MODIFICATION_STATUSES | _REVIEW_STATUSES
+    assert classified == {
+        RequirementStatus.GAP,
+        RequirementStatus.PARTIAL,
+        RequirementStatus.UNCLEAR,
+    }
+    assert set(RequirementStatus) - classified == {
+        RequirementStatus.SATISFIED,
+        RequirementStatus.NOT_ADDRESSED,
+    }
 
 
 def test_clean_verdict():

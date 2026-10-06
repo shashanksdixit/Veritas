@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from veritas.config.settings import Settings
-from veritas.models.entities import RequirementStatus
+from veritas.models.entities import RequirementStatus, ReviewScope
 from veritas.review.batching import plan_batches
 from veritas.review.graph import Runtime
 from veritas.review.nodes.requirements import make_requirements_node
@@ -162,7 +162,10 @@ def test_the_summary_line_counts_every_status(tmp_path):
     events: list[str] = []
     llm = AnswerLLM([{"FR-001": "implemented", "FR-002": "not_in_this_batch"}] * len(plan.batches))
     make_requirements_node(_runtime(llm, events))(state)
-    assert "info: requirements: 2 evaluated: 1 satisfied, 0 partial, 1 gap, 0 unclear" in events
+    assert (
+        "info: requirements: 2 evaluated: 1 satisfied, 0 partial, 1 gap, 0 unclear, "
+        "0 not addressed"
+    ) in events
 
 
 # --- ids the requirements list does not contain ---
@@ -323,6 +326,124 @@ def test_the_free_text_path_is_used_when_nothing_was_extracted(tmp_path):
     assert "not_in_this_batch" not in llm.calls[0][0]
     assert [f.status for f in result["requirement_findings"]] == [RequirementStatus.SATISFIED]
     assert result.get("errors", []) == []
+
+
+# --- PR scope: not_addressed instead of gap (FR-007) ---
+
+
+def _pr_state(files: dict[str, str], *, requirements=True):
+    state, plan = _state(files, requirements=requirements)
+    state["scope"] = ReviewScope.PR
+    return state, plan
+
+
+def test_the_node_reports_not_addressed_for_a_pr_that_implements_nothing(tmp_path):
+    state, plan = _pr_state(_project(tmp_path))
+    answers = [{"FR-001": "not_in_this_batch", "FR-002": "not_in_this_batch"}] * len(plan.batches)
+    result = make_requirements_node(_runtime(AnswerLLM(answers)))(state)
+
+    assert [f.status for f in result["requirement_findings"]] == [
+        RequirementStatus.NOT_ADDRESSED,
+        RequirementStatus.NOT_ADDRESSED,
+    ]
+    assert all(
+        f.explanation == "No code for this requirement is part of this PR."
+        for f in result["requirement_findings"]
+    )
+
+
+def test_the_node_names_a_failed_batch_in_preference_to_not_addressed(tmp_path):
+    state, plan = _pr_state(_project(tmp_path))
+    negative = {"FR-001": "not_in_this_batch", "FR-002": "not_in_this_batch"}
+    result = make_requirements_node(_runtime(AnswerLLM([negative] * 3, fail_on=2)))(state)
+
+    assert all(f.status is RequirementStatus.UNCLEAR for f in result["requirement_findings"])
+    assert all(
+        "a requirements batch failed" in f.explanation for f in result["requirement_findings"]
+    )
+
+
+def test_the_free_text_path_reports_a_gap_as_not_addressed_in_pr_scope_only(tmp_path):
+    """The reviewer answered about the PR's files, so its "gap" is about the PR."""
+    files = _project(tmp_path)
+    project, _ = _state(files, requirements=False)
+    project["files"] = {**files, "spec.md": _SPEC_TEXT}
+    pr, _ = _pr_state(files, requirements=False)
+    pr["files"] = {**files, "spec.md": _SPEC_TEXT}
+
+    def _gap_llm():
+        class FreeTextLLM:
+            def complete(self, system: str, user: str) -> str:
+                return json.dumps(
+                    [
+                        {
+                            "requirement_ref": "REQ-1",
+                            "requirement_text": "The system MUST ship.",
+                            "status": "gap",
+                            "evidence": [],
+                            "explanation": "No code implementing this requirement was found.",
+                        }
+                    ]
+                )
+
+        return FreeTextLLM()
+
+    in_project = make_requirements_node(_runtime(_gap_llm()))(project)
+    in_pr = make_requirements_node(_runtime(_gap_llm()))(pr)
+
+    assert in_project["requirement_findings"][0].status is RequirementStatus.GAP
+    assert in_project["requirement_findings"][0].explanation == (
+        "No code implementing this requirement was found."
+    )
+
+    reported = in_pr["requirement_findings"][0]
+    assert reported.status is RequirementStatus.NOT_ADDRESSED
+    # The reviewer's own wording would read as a claim about the whole project.
+    assert reported.explanation == "No code for this requirement is part of this PR."
+
+
+def test_the_free_text_path_leaves_every_other_status_alone_in_pr_scope(tmp_path):
+    files = _project(tmp_path)
+    pr, _ = _pr_state(files, requirements=False)
+    pr["files"] = {**files, "spec.md": _SPEC_TEXT}
+
+    class FreeTextLLM:
+        def complete(self, system: str, user: str) -> str:
+            return json.dumps(
+                [
+                    {
+                        "requirement_ref": "REQ-1",
+                        "requirement_text": "The system MUST ship.",
+                        "status": "partial",
+                        "evidence": ["src/app.py:1"],
+                        "explanation": "partly there",
+                    },
+                    {
+                        "requirement_ref": "REQ-2",
+                        "requirement_text": "The system MUST warn.",
+                        "status": "unclear",
+                        "evidence": [],
+                        "explanation": "no docs",
+                    },
+                ]
+            )
+
+    result = make_requirements_node(_runtime(FreeTextLLM()))(pr)
+    assert [f.status for f in result["requirement_findings"]] == [
+        RequirementStatus.PARTIAL,
+        RequirementStatus.UNCLEAR,
+    ]
+
+
+def test_the_node_logs_the_not_addressed_count_in_pr_scope(tmp_path):
+    state, plan = _pr_state(_project(tmp_path))
+    events: list[str] = []
+    answers = [{"FR-001": "implemented", "FR-002": "not_in_this_batch"}] * len(plan.batches)
+    make_requirements_node(_runtime(AnswerLLM(answers), events))(state)
+    assert (
+        "info: requirements: 2 evaluated: 1 satisfied, 0 partial, 0 gap, 0 unclear, "
+        "1 not addressed"
+    ) in events
 
 
 # --- end to end: a real gap reaches the report as a gap ---
