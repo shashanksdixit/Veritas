@@ -1,16 +1,25 @@
 """Integration tests — LLM provider construction (T007/T008, FR-020/FR-021)."""
 
+import io
+import json
+from pathlib import Path
+
 import pytest
 
+from veritas.config.constants import LAST_REPORT_JSON
 from veritas.config.settings import Settings
 from veritas.llm.client import (
+    MAX_ERROR_SUMMARY_CHARS,
     LLMClient,
     build_chat_model,
     build_kwargs,
     runtime_model_id,
     split_model_string,
+    summarize_llm_error,
 )
 from veritas.llm.models import discover_free_models
+from veritas.models.entities import Report, ReviewScope
+from veritas.review.graph import run_review
 from veritas.utils.logging import Log
 
 
@@ -306,3 +315,157 @@ def test_stalled_endpoint_fails_without_retrying(stall_server, no_proxy):
         assert elapsed < 3.5, f"{elapsed:.1f}s suggests the request was retried"
     finally:
         _close_client(client)
+
+
+# --- provider failures are summarized, never echoed (FR-029) ---
+
+_CREDIT_MESSAGE = (
+    "This request would exceed your available credits given your current "
+    "in-flight requests."
+)
+_REASON = "in_flight_budget_exhausted"
+_USER_ID = "user_TEST123"
+
+# The body a real provider sends with a 402: the words worth reporting, plus an
+# account identifier that must not travel.
+_PAYMENT_REQUIRED_BODY = json.dumps(
+    {
+        "error": {
+            "message": _CREDIT_MESSAGE,
+            "code": 402,
+            "metadata": {"reason": _REASON},
+        },
+        "user_id": _USER_ID,
+    }
+).encode("utf-8")
+
+
+@pytest.fixture
+def payment_required_server():
+    """An OpenAI-compatible endpoint that always answers 402.
+
+    Yields ``(port, requests_seen)``.
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    requests_seen: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler's spelling
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            requests_seen.append(self.path)
+            self.send_response(402)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(_PAYMENT_REQUIRED_BODY)))
+            self.end_headers()
+            self.wfile.write(_PAYMENT_REQUIRED_BODY)
+
+        def log_message(self, *_args):  # keep the test output clean
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield server.server_address[1], requests_seen
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _payment_client(port: int, log: Log | None = None) -> LLMClient:
+    return LLMClient(
+        Settings(
+            api_key="test",
+            base_url=f"http://127.0.0.1:{port}/v1",
+            model="openai:gpt-4o-mini",
+            timeout_seconds=10,
+            max_retries=0,
+        ),
+        log or Log(stream=None),
+    )
+
+
+def test_a_real_402_is_summarized_in_the_log_and_never_echoed(
+    payment_required_server, no_proxy
+):
+    """The status, the provider's words and the reason reach the log; the body
+    (and its user_id) does not, in the summary or anywhere else."""
+    port, requests_seen = payment_required_server
+    stream = io.StringIO()
+    client = _payment_client(port, Log(stream=stream))
+    try:
+        with pytest.raises(Exception) as excinfo:
+            client.complete("system", "user")
+    finally:
+        _close_client(client)
+
+    assert requests_seen, "no request reached the endpoint; nothing was proved"
+
+    summary = summarize_llm_error(excinfo.value, provider=client.provider)
+    assert summary == (
+        f"openai 402: {_CREDIT_MESSAGE} [{_REASON}]"
+    )
+    assert len(summary) <= MAX_ERROR_SUMMARY_CHARS
+    assert _USER_ID not in summary
+    assert "{'error'" not in summary
+
+    logged = stream.getvalue()
+    assert summary in logged
+    assert _USER_ID not in logged
+
+
+def test_a_timeout_is_summarized_too(stall_server, no_proxy):
+    """A failure with no status and no body still yields one sensible line."""
+    port, accepted = stall_server
+    client = _stalled_client(port)
+    try:
+        with pytest.raises(Exception) as excinfo:
+            client.complete("system", "user")
+    finally:
+        _close_client(client)
+
+    assert accepted, "no connection reached the stall server; nothing was proved"
+    summary = summarize_llm_error(excinfo.value)
+    assert summary.startswith("openai")
+    assert "timed out" in summary.lower()
+    assert len(summary) <= MAX_ERROR_SUMMARY_CHARS
+
+
+def test_the_report_carries_the_summary_and_not_the_body(
+    payment_required_server, no_proxy, monkeypatch, sample_project, settings
+):
+    """End to end: every batch failing with 402 leaves run.error holding the
+    summary — status, provider message, reason — and no account identifier."""
+    from veritas.review.nodes import scope as scope_module
+    from veritas.security.opengrep import OpengrepResult
+
+    # SAST is not what this test is about, and whether Opengrep is installed
+    # would decide part of the run.
+    monkeypatch.setattr(
+        scope_module,
+        "collect_sast",
+        lambda *_a, **_k: OpengrepResult(findings=[], rules="r"),
+    )
+
+    port, _requests_seen = payment_required_server
+    client = _payment_client(port)
+    try:
+        outcome = run_review(
+            settings, ReviewScope.PROJECT, str(sample_project), llm=client
+        )
+    finally:
+        _close_client(client)
+
+    assert outcome.exit_code == 2
+    report = Report.model_validate_json(
+        Path(LAST_REPORT_JSON).read_text(encoding="utf-8")
+    )
+    error = report.run.error or ""
+    assert report.run.report_status.value == "incomplete"
+    assert "openai 402:" in error
+    assert _CREDIT_MESSAGE in error
+    assert _REASON in error
+    assert _USER_ID not in error
+    assert "{'error'" not in error

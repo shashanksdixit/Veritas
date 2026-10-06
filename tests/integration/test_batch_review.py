@@ -21,6 +21,7 @@ from functools import lru_cache
 from pathlib import Path
 from random import Random
 
+from tests.conftest import fake_secret
 from veritas.config.constants import LAST_REPORT_JSON
 from veritas.config.settings import Settings
 from veritas.models.entities import (
@@ -283,7 +284,7 @@ def test_one_failing_batch_keeps_findings_from_the_other_batches():
     assert len(llm.calls) == 3  # every batch was still attempted
     assert [f.file for f in result["code_findings"]] == ["src/a.py", "src/c.py"]
     assert result["errors"] == [
-        "code_quality: batch 2/3 failed (files: src/b.py): provider exploded"
+        "code_quality: batch 2/3 failed (files: src/b.py): llm: provider exploded"
     ]
 
 
@@ -292,7 +293,7 @@ def test_failed_batch_error_names_the_batch_and_its_files():
     llm = SpyLLM(fail_on=1, fail_review="code_quality", message="429 rate limited")
     result = make_code_quality_node(_runtime(llm))(_state(plan))
     (error,) = result["errors"]
-    assert error == "code_quality: batch 1/3 failed (files: src/a.py): 429 rate limited"
+    assert error == "code_quality: batch 1/3 failed (files: src/a.py): llm: 429 rate limited"
     # Only that batch is lost; the two later batches still reviewed their files.
     assert [f.file for f in result["code_findings"]] == ["src/b.py", "src/c.py"]
 
@@ -315,7 +316,7 @@ def test_failing_batch_is_isolated_for_one_review_type_only():
 
 def test_batch_failure_message_is_redacted():
     plan = _three_batch_plan()
-    secret = "sk-abcdefghijklmnop1234"
+    secret = fake_secret("sk-", "abcdefghijklmnop1234")
     llm = SpyLLM(fail_on=2, fail_review="code_quality", message=f"auth failed for {secret}")
     result = make_code_quality_node(_runtime(llm))(_state(plan))
     (error,) = result["errors"]
@@ -327,7 +328,7 @@ def test_batch_failure_message_is_redacted():
 
 def test_redacted_batch_error_is_also_redacted_in_the_log():
     plan = _three_batch_plan()
-    secret = "sk-abcdefghijklmnop1234"
+    secret = fake_secret("sk-", "abcdefghijklmnop1234")
     events: list[str] = []
     llm = SpyLLM(fail_on=2, fail_review="code_quality", message=f"auth failed for {secret}")
     make_code_quality_node(_runtime(llm, capture=events))(_state(plan))

@@ -87,3 +87,16 @@ constitution Principle VIII / FR-016.
 
 ### Fixed
 - Cited snippets copied with the prompt's line-number prefixes (e.g. `   21| code`) are cleaned before verification, so real findings are no longer rejected for the prefix alone.
+
+### Security
+- Secret redaction now covers every shape it claims to: all GitHub token forms
+  (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`), provider `sk-` keys
+  (OpenAI, OpenRouter, Anthropic), Google (`AIza...`), Slack (`xox...`) and GitLab
+  (`glpat-`) tokens, AWS secret access keys, and a secret assigned to a key-,
+  token-, password-, secret- or credential-named variable in quoted or JSON-style
+  form - while environment-variable names, code that reads a secret and prose
+  such as `scikit-learn` pass through unchanged.
+- Partial-review and LLM-call errors are a one-line summary of at most 200
+  characters (provider, HTTP status, the provider's own message, a reason code)
+  instead of the raw response body, so account identifiers in a provider error
+  never reach the report, the log or stdout.

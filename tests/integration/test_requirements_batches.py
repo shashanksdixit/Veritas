@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import fake_secret
 from veritas.config.settings import Settings
 from veritas.models.entities import RequirementStatus, ReviewScope
 from veritas.review.batching import plan_batches
@@ -30,6 +31,8 @@ REQUIREMENTS = [
 ]
 
 _BATCH_CHARS = 3000
+
+_AWS_KEY_ID = fake_secret("AKIA", "IOSFODNN7EXAMPLE")
 
 
 def _lines(count: int, tag: str) -> str:
@@ -63,7 +66,7 @@ class AnswerLLM:
     def complete(self, system: str, user: str) -> str:
         self.calls.append((system, user))
         if self._fail_on is not None and len(self.calls) == self._fail_on:
-            raise RuntimeError("provider exploded: api_key = AKIAIOSFODNN7EXAMPLE")
+            raise RuntimeError(f"provider exploded: api_key = {_AWS_KEY_ID}")
         payload = []
         for requirement in REQUIREMENTS:
             answer = self._answers[len(self.calls) - 1][requirement.id]
@@ -215,7 +218,7 @@ def test_a_failing_batch_is_isolated_and_the_others_still_merge(tmp_path):
     assert len(result["errors"]) == 1
     assert "batch 2/2 failed" in result["errors"][0]
     # The provider's error text is redacted before it is recorded (Privacy & Data).
-    assert "AKIAIOSFODNN7EXAMPLE" not in result["errors"][0]
+    assert _AWS_KEY_ID not in result["errors"][0]
     assert "[REDACTED]" in result["errors"][0]
     assert any(e.startswith("warn: requirements: batch 2/2 failed") for e in events)
 

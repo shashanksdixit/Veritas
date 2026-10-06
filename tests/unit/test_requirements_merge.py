@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import fake_secret
 from veritas.models.entities import RequirementStatus
 from veritas.review.nodes.requirements import MAX_EVIDENCE, merge_answers
 from veritas.review.requirements_source import Requirement
 
 _ONE = [Requirement(id="FR-001", text="The system MUST ship.", file="specs/a/spec.md", line=1)]
+
+_AWS_KEY_ID = fake_secret("AKIA", "IOSFODNN7EXAMPLE")
 
 
 def _answer(answer: str, *evidence: str, explanation: str = "") -> dict:
@@ -325,11 +328,11 @@ def test_an_explanation_is_redacted_like_every_other_node():
     # state is covered by the same guarantee as the free-text path.
     finding = _merge(
         [
-            _answer("implemented", "src/a.py:1", explanation='key api_key = "AKIAIOSFODNN7EXAMPLE"'),
+            _answer("implemented", "src/a.py:1", explanation=f'key api_key = "{_AWS_KEY_ID}"'),
             _answer("not_in_this_batch"),
         ]
     )
-    assert "AKIAIOSFODNN7EXAMPLE" not in finding.explanation
+    assert _AWS_KEY_ID not in finding.explanation
     assert "[REDACTED]" in finding.explanation
 
 

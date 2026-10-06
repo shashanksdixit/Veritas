@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from veritas.config.constants import PROMPT_VERSION, REQUIREMENTS_SOURCES
+from veritas.llm.client import summarize_llm_error
 from veritas.models.entities import (
     Category,
     CodeFinding,
@@ -347,8 +348,10 @@ def llm_findings(
     Per-batch failure isolation: a failure in one batch — anywhere between the
     LLM call and building its findings — is recorded as an error and the
     remaining batches still run, so a provider error loses one batch of review
-    rather than the whole review type. The error text is redacted before it is
-    recorded or logged (constitution Privacy & Data Handling).
+    rather than the whole review type. The error text is the provider's own
+    summary (``summarize_llm_error``, at most 200 characters: label, status,
+    message, reason — never the raw response body, FR-029), redacted before it
+    is recorded or logged (constitution Privacy & Data Handling).
 
     Returns ``(findings, errors)``; the caller routes ``errors`` into the shared
     errors channel, which makes the run's report status incomplete (FR-027).
@@ -421,7 +424,8 @@ def llm_findings(
         except Exception as exc:  # noqa: BLE001 - isolate one batch, keep going
             error = redact_secrets(
                 f"{prompt_name}: batch {position}/{total} failed "
-                f"(files: {', '.join(paths)}): {exc}"
+                f"(files: {', '.join(paths)}): "
+                f"{summarize_llm_error(exc, provider=getattr(llm, 'provider', None))}"
             )
             errors.append(error)
             if log is not None:
@@ -498,7 +502,8 @@ def llm_requirement_answers(
         except Exception as exc:  # noqa: BLE001 - isolate one batch, keep going
             error = redact_secrets(
                 f"requirements: batch {position}/{total} failed "
-                f"(files: {', '.join(paths)}): {exc}"
+                f"(files: {', '.join(paths)}): "
+                f"{summarize_llm_error(exc, provider=getattr(llm, 'provider', None))}"
             )
             errors.append(error)
             if log is not None:
@@ -523,13 +528,22 @@ def find_requirements_source(files: dict[str, str]) -> str | None:
 
 def guarded(node) -> callable:
     """Wrap a review-type node so a mid-run LLM/provider failure becomes a
-    partial-review error (FR-027) rather than aborting the run."""
+    partial-review error (FR-027) rather than aborting the run.
+
+    The failure is described by ``summarize_llm_error`` and redacted, like the
+    per-batch errors (FR-029): a raw provider body would otherwise be written
+    into ``run.error`` whole, account identifiers and all. The wrapped node
+    hands back no client, so the label comes from the exception itself, which
+    ``LLMClient`` stamps with its route on the way out — a test double raises
+    unlabelled and is summarised as ``llm``.
+    """
 
     def wrapper(state):
         try:
             return node(state)
         except Exception as exc:  # noqa: BLE001 - FR-027 partial-review path
-            return {"errors": [f"{node.__name__}: {exc}"]}
+            error = summarize_llm_error(exc)
+            return {"errors": [redact_secrets(f"{node.__name__}: {error}")]}
 
     wrapper.__name__ = f"guarded_{getattr(node, '__name__', 'node')}"
     return wrapper

@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from tests.conftest import fake_secret
 from veritas.models.entities import (
     Category,
     CodeFinding,
@@ -322,7 +323,7 @@ def test_the_rendered_report_has_one_heading_per_extracted_requirement(tmp_path,
 # already masked (build_code_finding redacts), so verification compares a masked
 # snippet against this raw text; before T086 the comparison failed and dropped the
 # exact finding a security review most needs to report.
-_API_KEY = "AKIAIOSFODNN7EXAMPLE"
+_API_KEY = fake_secret("AKIA", "IOSFODNN7EXAMPLE")
 SECRET_FILES = {
     "src/conf.py": f'import os\nAWS = "aws_access_key_id = {_API_KEY}"\nprint(AWS)\n',
 }

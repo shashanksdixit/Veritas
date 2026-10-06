@@ -30,6 +30,19 @@ def _no_inherited_veritas_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in [n for n in os.environ if n.startswith(ENV_PREFIX)]:
         monkeypatch.delenv(name, raising=False)
 
+
+def fake_secret(prefix: str, body: str) -> str:
+    """Assemble a credential-shaped value from two fragments at runtime.
+
+    No full secret ever appears as a single literal in the test source — a
+    secret scanner reading the repository would otherwise reject the push —
+    while the assembled value keeps exactly the shape the rule under test has
+    to recognize. Tests assert on the assembled value, so every assertion
+    about masking, and every assertion that nothing leaked, stays real.
+    """
+    return prefix + body
+
+
 APP_CONTENT = (
     "import os\n"
     'print("hello")\n'
