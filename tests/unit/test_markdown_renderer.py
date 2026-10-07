@@ -80,7 +80,7 @@ def _report(**overrides) -> Report:
 
 def test_schema_version_comment_top():
     md = render_markdown(_report())
-    assert md.startswith("<!-- veritas-report-schema: 1.5.0 -->")
+    assert md.startswith("<!-- veritas-report-schema: 1.6.0 -->")
 
 
 def test_sections_present():
@@ -94,7 +94,7 @@ def test_source_label_sast():
     report.code_findings[0].source = FindingSource.SAST
     md = render_markdown(report)
     assert "*(SAST)*" in md
-    assert "*(LLM-verified)*" not in md
+    assert "*(LLM-identified, citation verified)*" not in md
 
 
 def test_unsuppressed_flag_rendered():
@@ -252,7 +252,10 @@ def test_not_addressed_gets_one_compact_block_after_the_other_requirements():
 def test_the_compact_block_is_collapsible_with_blank_lines_inside():
     md = render_markdown(_report(requirement_findings=[_not_addressed("FR-002")]))
     section = _requirement_section(md)
-    assert "<details>\n\n- FR-002: The system MUST log to stdout.\n\n</details>" in section
+    assert (
+        "<details>\n<summary>Not addressed (1)</summary>\n\n"
+        "- FR-002: The system MUST log to stdout.\n\n</details>"
+    ) in section
 
 
 def test_a_not_addressed_requirement_text_is_cut_to_100_characters():
@@ -507,7 +510,7 @@ def _metrics_rows(md: str) -> list[str]:
 def test_corrected_citation_renders_citation_adjusted_row():
     md = render_markdown(_report(code_findings=[_corrected()]))
     # The heading shows the corrected location, and the row shows the correction.
-    assert "### `src/app.py`:239: Unused import *(LLM-verified)*" in md
+    assert "### `src/app.py`:239: Unused import *(LLM-identified, citation verified)*" in md
     assert "| Citation adjusted | from 240-240 to 239-239 |" in md
 
 
@@ -808,4 +811,49 @@ def test_coverage_section_sits_between_requirement_counts_and_verification_failu
     )
     # Still inside the Summary area, before the next top-level section.
     assert md.index("## Summary") < md.index("### Coverage (FR-029)") < md.index("## Code Findings")
+
+
+# ---------------------------------------------------------------------------
+# T092 — source label prose and duplicate-merge metric (FR-012 / FR-013)
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_findings_merged_row_always_shown_and_defaults_to_zero():
+    for md in (
+        render_markdown(_report()),
+        render_markdown(_report(code_findings=[], requirement_findings=[])),
+    ):
+        assert "| Duplicate findings merged | 0 |" in md
+
+
+def test_duplicate_findings_merged_row_counts_merged_findings():
+    report = _report()
+    report.summary = report.summary.model_copy(update={"duplicates_merged": 2})
+    md = render_markdown(report)
+    assert "| Duplicate findings merged | 2 |" in md
+
+
+def test_duplicate_findings_merged_row_immediately_after_citations_adjusted():
+    labels = [
+        row.split("|")[1].strip() for row in _metrics_rows(render_markdown(_report()))
+    ]
+    assert labels.index("Duplicate findings merged") == labels.index("Citations adjusted") + 1
+
+
+def test_llm_identified_finding_labeled_in_heading_and_source_row():
+    # The default _report finding is LLM-identified (FR-012): the heading carries
+    # the suffix and the field table spells the honest provenance out.
+    md = render_markdown(_report())
+    assert "### `src/app.py`:2: Unused import *(LLM-identified, citation verified)*" in md
+    assert "| Source | LLM-identified (citation verified) |" in md
+    # The stored enum value is schema/JSON territory, not report prose.
+    assert "| Source | llm-verified |" not in md
+
+
+def test_citation_verified_explanatory_sentence_under_code_findings():
+    sentence = (
+        "Citation verified means the quoted code was found at the cited lines; "
+        "it does not mean the finding's claim was confirmed."
+    )
+    assert "## Code Findings\n\n" + sentence in render_markdown(_report())
 

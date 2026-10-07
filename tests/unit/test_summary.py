@@ -170,3 +170,12 @@ def test_sast_source_flag_flows_through():
     finding.source = FindingSource.SAST
     summary = compute_summary([finding], [])
     assert summary.total_code_findings == 1
+
+
+def test_duplicates_merged_is_reported_and_never_a_verdict_input():
+    """FR-013: the count says how much of a report was one issue said twice; it
+    must not by itself hold a PR back."""
+    summary = compute_summary([], [], duplicates_merged=3)
+    assert summary.duplicates_merged == 3
+    assert summary.verdict is Verdict.CLEAN
+    assert compute_summary([], []).duplicates_merged == 0

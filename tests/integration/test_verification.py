@@ -29,6 +29,7 @@ from veritas.review.nodes.verification import (
     _find_snippet_spans,
     correct_citation,
     make_verify_node,
+    merge_duplicate_findings,
     partition_requirement_evidence,
     verify_code_finding,
     verify_requirement_finding,
@@ -772,3 +773,195 @@ def test_verification_summary_reports_zero_corrections_when_none_needed():
         "verification: 1/1 code findings kept (0 citation(s) corrected), 0/0 requirement findings kept "
         "(0 with evidence removed, 0 demoted to unclear)"
     ]
+
+
+# ---------------------------------------------------------------------------
+# FR-013 de-duplication: same suppression fingerprint merged after verification
+# ---------------------------------------------------------------------------
+
+
+def _merge_finding(
+    finding_id: str,
+    *,
+    severity: Severity = Severity.WARNING,
+    confidence: float = 0.9,
+    category: Category = Category.CODE_QUALITY,
+    snippet: str | None = 'print("hello")',
+    start: int = 2,
+    citation_adjusted_from: LineRange | None = None,
+) -> CodeFinding:
+    return CodeFinding(
+        id=finding_id,
+        file="src/app.py",
+        line_range=LineRange(start_line=start, start_col=1, end_line=start, end_col=18),
+        severity=severity,
+        category=category,
+        source=FindingSource.LLM_IDENTIFIED,
+        title="t",
+        description="d",
+        recommendation="r",
+        confidence=confidence,
+        cited_snippet=snippet,
+        citation_adjusted_from=citation_adjusted_from,
+    )
+
+
+def test_merge_duplicate_findings_keeps_the_highest_severity():
+    warning = _merge_finding("f-warn", severity=Severity.WARNING, confidence=0.9, start=2)
+    error = _merge_finding("f-error", severity=Severity.ERROR, confidence=0.5, start=3)
+    merged, duplicates = merge_duplicate_findings([warning, error], FILES)
+    assert duplicates == 1
+    assert len(merged) == 1
+    assert merged[0].id == "f-error"
+    assert merged[0].severity is Severity.ERROR
+
+
+def test_merge_duplicate_findings_breaks_equal_severity_by_confidence():
+    lower = _merge_finding("f-06", severity=Severity.WARNING, confidence=0.6)
+    higher = _merge_finding("f-09", severity=Severity.WARNING, confidence=0.9)
+    merged, duplicates = merge_duplicate_findings([lower, higher], FILES)
+    assert duplicates == 1
+    assert merged[0].id == "f-09"
+
+
+def test_merge_duplicate_findings_breaks_equal_confidence_by_earliest_line():
+    later = _merge_finding("f-line-5", confidence=0.9, start=5)
+    earlier = _merge_finding("f-line-2", confidence=0.9, start=2)
+    merged, duplicates = merge_duplicate_findings([later, earlier], FILES)
+    assert duplicates == 1
+    assert merged[0].id == "f-line-2"
+
+
+def test_merge_duplicate_findings_never_merges_across_categories():
+    quality = _merge_finding("f-quality", category=Category.CODE_QUALITY)
+    security = _merge_finding(
+        "f-security", category=Category.SECURITY, severity=Severity.ERROR, confidence=1.0
+    )
+    merged, duplicates = merge_duplicate_findings([quality, security], FILES)
+    assert len(merged) == 2
+    assert duplicates == 0
+
+
+def test_merge_duplicate_findings_normalizes_whitespace_in_the_snippet():
+    # The fingerprint key is the normalized snippet (FR-017): a surrounding
+    # blank line and trailing space change no code, so they must not split a
+    # duplicate group.
+    plain = _merge_finding("f-plain", snippet='print("hello")')
+    padded = _merge_finding("f-padded", snippet=' \n print("hello") \n')
+    merged, duplicates = merge_duplicate_findings([plain, padded], FILES)
+    assert duplicates == 1
+    assert len(merged) == 1
+
+
+def test_merge_duplicate_findings_counts_duplicates_and_zero_when_none():
+    a = _merge_finding("f-a")
+    b = _merge_finding("f-b", snippet='print("hello")')
+    c = _merge_finding("f-c", snippet="secret = 42\n", start=3)
+    merged, duplicates = merge_duplicate_findings([a, b, c], FILES)
+    assert duplicates == 1
+    assert len(merged) == 2
+
+    alone = _merge_finding("f-alone")
+    merged, duplicates = merge_duplicate_findings([alone], FILES)
+    assert merged == [alone]
+    assert duplicates == 0
+
+    merged, duplicates = merge_duplicate_findings([], FILES)
+    assert merged == [] and duplicates == 0
+
+
+def test_merge_duplicate_findings_preserves_the_survivors_citation():
+    # The survivor is one of the inputs, exactly as verification left it: its
+    # own corrected citation and citation_adjusted_from are never re-pointed by
+    # the merge (FR-013).
+    adjusted = LineRange(start_line=9, start_col=1, end_line=9, end_col=18)
+    winner = _merge_finding(
+        "f-winner",
+        severity=Severity.ERROR,
+        citation_adjusted_from=adjusted,
+        start=3,
+    )
+    loser = _merge_finding("f-loser", start=2)
+    merged, duplicates = merge_duplicate_findings([loser, winner], FILES)
+    assert duplicates == 1
+    survivor = merged[0]
+    assert survivor.id == "f-winner"
+    assert survivor.citation_adjusted_from == adjusted
+    assert survivor.line_range.start_line == 3
+
+
+def test_verify_node_merges_duplicates_and_logs_the_count():
+    log = _RecordingLog()
+    dup_a = _finding(snippet='print("hello")', id="f-dup-a")
+    dup_b = _finding(snippet='print("hello")', id="f-dup-b")
+    out = make_verify_node(_NodeRuntime(log))(
+        {"files": FILES, "code_findings": [dup_a, dup_b], "requirement_findings": []}
+    )
+    assert out["duplicates_merged"] == 1
+    assert len(out["verified_code_findings"]) == 1
+    assert log.info_lines == [
+        "verification: merged 1 duplicate finding(s)",
+        "verification: 1/2 code findings kept (0 citation(s) corrected), 0/0 requirement findings kept "
+        "(0 with evidence removed, 0 demoted to unclear)",
+    ]
+
+
+def test_verify_node_reports_zero_duplicates_when_none_merged():
+    log = _RecordingLog()
+    out = make_verify_node(_NodeRuntime(log))(
+        {"files": FILES, "code_findings": [_finding(snippet='print("hello")', id="f-ok")], "requirement_findings": []}
+    )
+    assert out["duplicates_merged"] == 0
+    assert not [line for line in log.info_lines if "merged" in line]
+
+
+def test_duplicate_merge_count_reaches_summary_and_metrics_row(tmp_path, settings):
+    """End to end: two review batches (or two review types) flagging the same
+    code fold into one reported finding, the count reaches the summary, and the
+    metrics table shows the honest figure (FR-013)."""
+    from tests.conftest import FakeLLM
+
+    from veritas.config.constants import LAST_REPORT_JSON
+    from veritas.models.entities import Report, ReviewScope
+    from veritas.review.graph import run_review
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text(
+        'import os\nprint("hello")\n', encoding="utf-8"
+    )
+
+    def _payload(finding_id: str, confidence: float) -> dict:
+        return {
+            "id": finding_id,
+            "file": "src/app.py",
+            "start_line": 2,
+            "start_col": 1,
+            "end_line": 2,
+            "end_col": 18,
+            "severity": "warning",
+            "title": "Unused import os",
+            "description": "os is imported but never used.",
+            "recommendation": "Remove the unused import.",
+            "confidence": confidence,
+            "cited_snippet": 'print("hello")',
+        }
+
+    llm = FakeLLM(
+        {
+            "code-quality": json.dumps(
+                [_payload("cf-dup-a", 0.6), _payload("cf-dup-b", 0.9)]
+            )
+        }
+    )
+    outcome = run_review(settings, ReviewScope.PROJECT, str(tmp_path), llm=llm)
+    assert outcome.exit_code == 0
+
+    report = Report.model_validate_json(Path(LAST_REPORT_JSON).read_text(encoding="utf-8"))
+    assert len(report.code_findings) == 1
+    assert report.code_findings[0].id == "cf-dup-b"
+    assert report.summary.total_code_findings == 1
+    assert report.summary.duplicates_merged == 1
+
+    md = Path(str(outcome.report_path)).read_text(encoding="utf-8")
+    assert "| Duplicate findings merged | 1 |" in md
+    assert md.index("| Citations adjusted |") < md.index("| Duplicate findings merged |")

@@ -162,7 +162,14 @@ def make_render_node(runtime) -> Callable[[ReviewState], dict]:
 
         code = _apply_suppressions(code, state.get("files", {}), runtime.suppressions)
 
-        summary = compute_summary(code, req, state.get("verification_failures", []))
+        summary = compute_summary(
+            code,
+            req,
+            state.get("verification_failures", []),
+            # .get, not [key]: tests and older graphs build state without it,
+            # and "nothing merged" is exactly what 0 means (FR-013).
+            duplicates_merged=int(state.get("duplicates_merged") or 0),
+        )
         report = Report(
             schema_version=SCHEMA_VERSION,
             run=run,

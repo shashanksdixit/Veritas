@@ -21,6 +21,15 @@ constitution Principle VIII / FR-016.
   **1.7.0**.
 
 ### Added
+- Report schema **1.6.0**: adds `Summary.duplicates_merged`. Migration:
+  earlier reports remain valid (the field defaults to 0).
+- Precise do-not-report filters, fingerprint de-duplication, and a clearer LLM
+  source label: a recommendation that says no change is needed and the
+  `Optional[` / `| None` idiom opinion are discarded and logged instead of
+  reported (FR-014); kept code findings sharing a suppression fingerprint are
+  merged after verification with the count logged and shown in the summary
+  (FR-013); the report labels an LLM-identified finding "LLM-identified,
+  citation verified" and says what that does and does not mean (FR-012).
 - Report schema **1.5.0**: adds the `not_addressed` requirement status. Migration:
   earlier reports remain valid.
 - In PR scope, requirements with no evidence in the PR are reported as

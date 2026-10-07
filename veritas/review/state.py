@@ -35,6 +35,10 @@ class ReviewState(TypedDict):
     # nothing" is never mistaken for "never ran".
     verified_code_findings: list[CodeFinding] | None
     verified_requirement_findings: list[RequirementFinding] | None
+    # Duplicate code findings the verification node merged after verifying
+    # (FR-013), so the report can say how many were folded together. Written by
+    # the verification node; 0 before it runs, like the other plain channels.
+    duplicates_merged: int
     verification_failures: Annotated[list[VerificationFailure], add]
     run: ReviewRun
     phase: str

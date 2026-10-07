@@ -116,6 +116,8 @@ def _initial_state(
         # two apart to publish only grounded findings (FR-013).
         "verified_code_findings": None,
         "verified_requirement_findings": None,
+        # Filled by the verification node; 0 means nothing was merged yet.
+        "duplicates_merged": 0,
         "verification_failures": [],
         "run": run,
         "phase": "scope",

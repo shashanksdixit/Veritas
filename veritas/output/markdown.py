@@ -40,9 +40,27 @@ def _category_label(cat: Category) -> str:
 
 
 def _source_label(finding: CodeFinding) -> str:
+    """Heading suffix naming where a finding came from (FR-012)."""
     if finding.source is None:
         return ""
-    return " *(SAST)*" if finding.source.value == "sast" else " *(LLM-verified)*"
+    return (
+        " *(SAST)*"
+        if finding.source.value == "sast"
+        else " *(LLM-identified, citation verified)*"
+    )
+
+
+def _source_value(finding: CodeFinding) -> str:
+    """The same provenance as prose for the finding's field table (FR-012).
+
+    The stored FindingSource stays ``sast`` / ``llm-verified`` — that is what
+    the JSON schema and the compact stdout line say — but the report spells it
+    out honestly: a verified citation means the quoted code was found, not that
+    the claim was confirmed.
+    """
+    if finding.source is None:
+        return "—"
+    return "sast" if finding.source.value == "sast" else "LLM-identified (citation verified)"
 
 
 def _code_block(text: str | None) -> str:
@@ -294,6 +312,9 @@ def render_markdown(report: Report) -> str:
         ("Requirement findings", str(summary.total_requirement_findings)),
         ("Verification failures", str(summary.verification_failure_count)),
         ("Citations adjusted", str(_citations_adjusted(report))),
+        # Reported, never counted into a verdict: it says how much of the list
+        # above was one issue said several times (FR-013).
+        ("Duplicate findings merged", str(summary.duplicates_merged)),
     ]
     for sev in Severity:
         rows.append((f"Severity: {sev.value}", str(summary.severity_counts.get(sev, 0))))
@@ -342,6 +363,13 @@ def render_markdown(report: Report) -> str:
 
     out.append("## Code Findings")
     out.append("")
+    # FR-012: what "citation verified" does and does not mean, stated where the
+    # label is first used rather than left to be guessed.
+    out.append(
+        "Citation verified means the quoted code was found at the cited lines; "
+        "it does not mean the finding's claim was confirmed."
+    )
+    out.append("")
     if not report.code_findings:
         out.append("No code findings.")
         out.append("")
@@ -369,7 +397,7 @@ def render_markdown(report: Report) -> str:
                 ("Confidence", f"{finding.confidence:.2f}"),
                 ("OWASP", finding.owasp_id or "—"),
                 ("CWE", finding.cwe_id or "—"),
-                ("Source", finding.source.value if finding.source else "—"),
+                ("Source", _source_value(finding)),
                 ("Suppressed", "yes" if finding.is_suppressed else "no"),
             ]
         )
@@ -438,6 +466,7 @@ def render_markdown(report: Report) -> str:
         out.append(f"{len(not_addressed)} requirement(s) are not addressed by this PR:")
         out.append("")
         out.append("<details>")
+        out.append(f"<summary>Not addressed ({len(not_addressed)})</summary>")
         out.append("")
         for rf in not_addressed:
             out.append(f"- {rf.requirement_ref}: {rf.requirement_text[:NOT_ADDRESSED_TEXT_CHARS]}")

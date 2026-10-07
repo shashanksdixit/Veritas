@@ -26,6 +26,8 @@ def compute_summary(
     code_findings: list[CodeFinding],
     requirement_findings: list[RequirementFinding],
     verification_failures: list[VerificationFailure] | None = None,
+    *,
+    duplicates_merged: int = 0,
 ) -> Summary:
     """Aggregate counts and derive the verdict per FR-015.
 
@@ -38,6 +40,11 @@ def compute_summary(
 
     not_addressed is counted in ``requirement_status_counts`` and reaches neither
     verdict (FR-015).
+
+    ``duplicates_merged`` is how many code findings verification folded together
+    (FR-013): reported, never part of a verdict, defaulting to 0 so callers that
+    have nothing to report — and reports written before schema 1.6.0 — are
+    unchanged.
     """
     failures = verification_failures or []
     severity_counts: dict[Severity, int] = {}
@@ -59,6 +66,7 @@ def compute_summary(
         requirement_status_counts=requirement_status_counts,
         verification_failure_count=len(failures),
         verification_failures=failures,
+        duplicates_merged=duplicates_merged,
         verdict=verdict,
     )
 

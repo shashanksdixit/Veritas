@@ -189,6 +189,9 @@ class Summary(BaseModel):
     requirement_status_counts: dict[RequirementStatus, int] = Field(default_factory=dict)
     verification_failure_count: int
     verification_failures: list[VerificationFailure] = Field(default_factory=list)
+    # Duplicate code findings merged after verification (FR-013). Added in schema
+    # 1.6.0, so reports written before it validate with the default of 0.
+    duplicates_merged: int = 0
     verdict: Verdict
 
 

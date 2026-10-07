@@ -314,6 +314,67 @@ def _batch_paths(chunks) -> list[str]:
     return list(dict.fromkeys(chunk.path for chunk in chunks))
 
 
+# The recommendation wordings that ask for no change at all (FR-014). Matched
+# case-insensitively against the trimmed recommendation AND AT ITS START only:
+# a recommendation that merely mentions the phrase later - "there is no change
+# to the API required" - is a real finding and is kept.
+_NO_CHANGE_OPENINGS = (
+    "no change",
+    "no changes",
+    "no action",
+    "none needed",
+    "nothing to change",
+)
+
+# The recommendation/snippet pair that marks an idiom opinion rather than a
+# defect (FR-014): recommending Optional[...] where the cited code spells the
+# same thing as "| None" is a style preference about code the reviewer dislikes.
+# A recommendation naming Optional[ over a snippet with no "| None" idiom (for
+# example a typer.Option(None, ...) default) is a real annotation issue and is
+# kept, as is any finding whose snippet alone contains "| None".
+_OPTIONAL_IDIOM = "Optional["
+_UNION_NONE_IDIOM = "| None"
+
+
+def discard_reason(finding: CodeFinding) -> str | None:
+    """Why ``finding`` must not be reported, or None when it is kept (FR-014).
+
+    Two do-not-report classes, counted and logged by the caller rather than
+    dropped silently: ``"no-change"`` for a recommendation that states nothing
+    needs to change, ``"idiom-only"`` for the Optional[ / | None style opinion.
+    """
+    if finding.recommendation.strip().lower().startswith(_NO_CHANGE_OPENINGS):
+        return "no-change"
+    if (
+        _OPTIONAL_IDIOM in finding.recommendation
+        and _UNION_NONE_IDIOM in (finding.cited_snippet or "")
+    ):
+        return "idiom-only"
+    return None
+
+
+def discard_do_not_report(
+    findings: list[CodeFinding],
+) -> tuple[list[CodeFinding], int, int]:
+    """Split findings into ``(kept, no_change_count, idiom_only_count)`` (FR-014).
+
+    Order is preserved and every dropped finding is attributed to exactly one
+    reason, so the caller can log one honest line per review type.
+    """
+    kept: list[CodeFinding] = []
+    no_change = 0
+    idiom = 0
+    for finding in findings:
+        reason = discard_reason(finding)
+        if reason is None:
+            kept.append(finding)
+        elif reason == "no-change":
+            no_change += 1
+        else:
+            idiom += 1
+    return (kept, no_change, idiom)
+
+
 def llm_findings(
     llm,
     plan: BatchPlan | None,
@@ -339,11 +400,14 @@ def llm_findings(
     batch being sent goes after ``extra`` and before the code; a batch with no
     entry, and every caller that passes nothing, send the message unchanged.
 
-    No payload is filtered on the way out. Whether a citation is real is decided
-    once, by the verification node, which re-reads the cited file from the full
-    scoped contents and records a ``VerificationFailure`` for a citation it
-    cannot confirm. Filtering here would drop such a finding silently, leaving
-    no record that it was ever made (FR-013).
+    Two kinds of finding are discarded here, both counted and logged in one
+    line per review type (FR-014): a recommendation that says no change is
+    needed, and the Optional[ ... ] / | None idiom opinion. Nothing else is
+    filtered on the way out. Whether a citation is real is decided once, by the
+    verification node, which re-reads the cited file from the full scoped
+    contents and records a ``VerificationFailure`` for a citation it cannot
+    confirm. Filtering any other finding here would drop it silently, leaving no
+    record that it was ever made (FR-013).
 
     Per-batch failure isolation: a failure in one batch — anywhere between the
     LLM call and building its findings — is recorded as an error and the
@@ -388,8 +452,10 @@ def llm_findings(
                     batch_note = f"{note}\n\n"
             text = llm.complete(sys_prompt, prefix + batch_note + "Code to review:\n\n" + batch.text)
             payloads = parse_json_array(text)
-            # Every payload the LLM returns becomes a finding. Nothing is
-            # filtered here: a finding must never be dropped silently (FR-013).
+            # Every payload the LLM returns becomes a finding here. The only
+            # things dropped before verification are the two do-not-report
+            # classes removed below, each counted and logged (FR-014); nothing
+            # else may be dropped silently (FR-013).
             # Verification is the single authority on whether a citation is real,
             # and it records a finding citing an out-of-scope file as a
             # file_not_in_scope failure instead of discarding it. It also checks
@@ -430,6 +496,14 @@ def llm_findings(
             errors.append(error)
             if log is not None:
                 log.warn(error)
+    findings, no_change, idiom = discard_do_not_report(findings)
+    if (no_change or idiom) and log is not None:
+        # One line per review type, not per batch: the counts say why anything
+        # was withheld, so no finding ever disappears without a record (FR-014).
+        log.info(
+            f"{prompt_name}: discarded {no_change + idiom} finding(s): "
+            f"{no_change} no-change, {idiom} idiom-only"
+        )
     return (findings, errors)
 
 

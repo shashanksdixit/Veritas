@@ -100,7 +100,7 @@ def test_report_roundtrip_json():
             verdict=V.CLEAN,
         ),
     )
-    assert report.schema_version == "1.5.0"
+    assert report.schema_version == "1.6.0"
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.run.id == report.run.id
 
@@ -289,3 +289,43 @@ def test_the_status_counts_table_of_an_older_report_still_validates():
 
     assert restored.requirement_status_counts[RequirementStatus.GAP] == 1
     assert RequirementStatus.NOT_ADDRESSED not in restored.requirement_status_counts
+
+
+# --- schema 1.6.0 adds summary.duplicates_merged (FR-013) ---
+
+
+def test_duplicates_merged_round_trips_through_json():
+    from veritas.models.entities import Severity as Sev, Summary, Verdict as V
+
+    summary = Summary(
+        total_code_findings=2,
+        severity_counts={Sev.WARNING: 2},
+        total_requirement_findings=0,
+        verification_failure_count=0,
+        duplicates_merged=3,
+        verdict=V.REQUIRES_REVIEW,
+    )
+
+    restored = Summary.model_validate_json(summary.model_dump_json())
+
+    assert restored.duplicates_merged == 3
+    assert restored.verdict is V.REQUIRES_REVIEW
+
+
+def test_a_pre_1_6_summary_without_duplicates_merged_still_validates():
+    """Schema 1.6.0 is additive: the key is absent in older reports, not null."""
+    from veritas.models.entities import Summary
+
+    restored = Summary.model_validate(
+        {
+            "total_code_findings": 0,
+            "severity_counts": {},
+            "category_counts": {},
+            "total_requirement_findings": 0,
+            "requirement_status_counts": {},
+            "verification_failure_count": 0,
+            "verdict": "Clean",
+        }
+    )
+
+    assert restored.duplicates_merged == 0

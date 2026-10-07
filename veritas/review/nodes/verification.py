@@ -31,6 +31,12 @@ sits within two lines of the cited range, the citation is corrected to the real
 location and the reviewer's original range is preserved in
 ``citation_adjusted_from`` (T070, FR-013). Corrections are logged and surfaced in
 the report — never silent.
+
+What survives verification is then merged (FR-013): two review types (or two
+batches) report the same flagged code often enough that the report would repeat
+one issue several times. Findings sharing a suppression fingerprint — file,
+category and normalized snippet — are folded into one, the count is logged and
+carried into the report summary, and everything else is left alone.
 """
 
 from __future__ import annotations
@@ -44,9 +50,12 @@ from veritas.models.entities import (
     LineRange,
     RequirementFinding,
     RequirementStatus,
+    Severity,
     VerificationFailure,
     VerificationReasonCode,
+    compute_fingerprint,
 )
+from veritas.review.nodes.common import snippet_for
 from veritas.review.state import ReviewState
 from veritas.utils.redaction import redact_secrets
 
@@ -378,6 +387,70 @@ def verify_requirement_finding(rf: RequirementFinding, files: dict[str, str]) ->
     return partition_requirement_evidence(rf, files)[1]
 
 
+# Which severity survives a merge: the most serious report of the same code.
+_SEVERITY_RANK = {
+    Severity.ERROR: 2,
+    Severity.WARNING: 1,
+    Severity.INFO: 0,
+}
+
+
+def _merge_rank(finding: CodeFinding) -> tuple[int, float, int]:
+    """Rank a group's survivor: severity, then confidence, then earliest line.
+
+    Returned as one sortable key so the order is total and the same input
+    always yields the same survivor (FR-013).
+    """
+    return (
+        _SEVERITY_RANK.get(finding.severity, 0),
+        finding.confidence,
+        -finding.line_range.start_line,
+    )
+
+
+def merge_duplicate_findings(
+    findings: list[CodeFinding], files: dict[str, str]
+) -> tuple[list[CodeFinding], int]:
+    """Fold kept findings that share a suppression fingerprint (FR-013).
+
+    The key is the fingerprint suppression already uses — file, category and
+    the normalized flagged snippet (:func:`snippet_for`, so the finding's own
+    citation when it has one) — which is exactly "the same code, flagged the
+    same way". The same code under two categories (security and performance,
+    say) is two findings and is never merged; so is the same code in two files.
+
+    The survivor is the strongest report of that code: highest severity first,
+    then highest confidence, then the earliest citation. Its citation is left
+    exactly as verified — merging reports one duplicate, it does not re-point
+    the finding that stays.
+
+    Returns ``(merged, duplicates)`` where ``duplicates`` is how many findings
+    were folded away (0 when nothing was merged), for the caller to log and to
+    carry into the report summary.
+    """
+    groups: dict[str, list[CodeFinding]] = {}
+    order: list[str] = []
+    for finding in findings:
+        key = compute_fingerprint(
+            finding.file, finding.category.value, snippet_for(finding, files)
+        )
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(finding)
+
+    merged: list[CodeFinding] = []
+    duplicates = 0
+    for key in order:
+        group = groups[key]
+        if len(group) == 1:
+            merged.append(group[0])
+            continue
+        duplicates += len(group) - 1
+        merged.append(max(group, key=_merge_rank))
+    return (merged, duplicates)
+
+
 def make_verify_node(runtime) -> Callable[[ReviewState], dict]:
     log = runtime.log
 
@@ -417,6 +490,12 @@ def make_verify_node(runtime) -> Callable[[ReviewState], dict]:
                 continue
             failures.append(failure)
             _warn(f"verification failed: {finding.id} {finding.file} — {failure.reason}")
+
+        # Merge only what survived verification, so a discarded citation can
+        # never win a merge, and log every non-zero count (FR-013).
+        kept, duplicates = merge_duplicate_findings(kept, files)
+        if duplicates > 0 and log is not None:
+            log.info(f"verification: merged {duplicates} duplicate finding(s)")
 
         req_kept: list[RequirementFinding] = []
         stripped = 0
@@ -465,6 +544,7 @@ def make_verify_node(runtime) -> Callable[[ReviewState], dict]:
             "verified_code_findings": kept,
             "verified_requirement_findings": req_kept,
             "verification_failures": failures,
+            "duplicates_merged": duplicates,
         }
 
     return verify_node

@@ -227,6 +227,10 @@ class Summary(BaseModel):
     requirement_status_counts: dict[RequirementStatus, int]
     verification_failure_count: int
     verification_failures: list[VerificationFailure] = Field(default_factory=list)
+    # Duplicate code findings merged after verification (FR-013). Introduced in
+    # Report.schema_version 1.6.0: earlier reports have no such count, so the
+    # field defaults to 0 and a 1.5.0-shaped summary deserializes unchanged.
+    duplicates_merged: int = 0
     verdict: Verdict                 # derived per FR-015; see Verdict enum
 
 class ExcludedFile(BaseModel):
@@ -245,7 +249,7 @@ class Coverage(BaseModel):
 
 class Report(BaseModel):
     """The full review deliverable (FR-016)."""
-    schema_version: str = "1.5.0"    # semver; bump on any breaking change to
+    schema_version: str = "1.6.0"    # semver; bump on any breaking change to
                                       # Report/CodeFinding/RequirementFinding shape,
                                       # per CHANGELOG.md (constitution Principle VIII)
     run: ReviewRun
