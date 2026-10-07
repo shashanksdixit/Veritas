@@ -1,5 +1,5 @@
 """Integration test — output-schema versioning (T022b, constitution Principle
-VII, FR-016).
+VIII, FR-016).
 
 A full pipeline run's ``Report.schema_version`` matches the version declared in
 ``data-model.md``; ``CHANGELOG.md`` (T004a) contains a corresponding entry for

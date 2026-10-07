@@ -235,3 +235,86 @@ def test_config_hash_changes_with_llm_bounds():
     base = Settings()
     assert base.config_hash != Settings(timeout_seconds=60).config_hash
     assert base.config_hash != Settings(max_retries=7).config_hash
+
+
+def test_max_concurrency_defaults_apply():
+    settings = Settings()
+    assert settings.max_concurrency == 4
+
+
+def test_max_concurrency_override_and_env(tmp_path, monkeypatch):
+    """[llm] max_concurrency reads from the file like the other [llm] keys, and
+    VERITAS_MAX_CONCURRENCY beats it (FR-019)."""
+    path = _write_llm_config(tmp_path, "[llm]\nmax_concurrency = 2\n")
+    assert load_settings(str(path)).max_concurrency == 2
+
+    monkeypatch.setenv("VERITAS_MAX_CONCURRENCY", "8")
+    assert load_settings(str(path)).max_concurrency == 8
+
+
+def test_max_concurrency_bounds_rejected(tmp_path):
+    """ge=1 / le=16, enforced by the same pydantic validation path."""
+    low = _write_llm_config(tmp_path, "[llm]\nmax_concurrency = 0\n")
+    with pytest.raises(ValidationError) as excinfo:
+        load_settings(str(low))
+    assert "max_concurrency" in str(excinfo.value)
+    assert "greater than or equal to 1" in str(excinfo.value)
+
+    high = _write_llm_config(tmp_path, "[llm]\nmax_concurrency = 17\n")
+    with pytest.raises(ValidationError) as excinfo:
+        load_settings(str(high))
+    assert "max_concurrency" in str(excinfo.value)
+    assert "less than or equal to 16" in str(excinfo.value)
+
+
+def test_max_concurrency_boundary_values_accepted(tmp_path):
+    low = _write_llm_config(tmp_path, "[llm]\nmax_concurrency = 1\n")
+    high = tmp_path / "high-concurrency.toml"
+    high.write_text("[llm]\nmax_concurrency = 16\n", encoding="utf-8")
+    assert load_settings(str(low)).max_concurrency == 1
+    assert load_settings(str(high)).max_concurrency == 16
+
+
+def test_config_hash_changes_with_max_concurrency():
+    assert Settings().config_hash != Settings(max_concurrency=2).config_hash
+
+
+# --- CLI configuration errors (exit 1, one [error] line, no traceback) ---
+
+
+def test_cli_batch_chars_zero_prints_one_error_line_and_exits_1(tmp_path):
+    """[review] batch_chars = 0 fails validation; the CLI reports the one
+    problem on stderr and exits 1 without a traceback."""
+    from typer.testing import CliRunner
+
+    from veritas.cli.app import app
+
+    path = tmp_path / "bad-config.toml"
+    path.write_text("[review]\nbatch_chars = 0\n", encoding="utf-8")
+    result = CliRunner().invoke(
+        app, ["review", "--scope", "project", "--target", ".", "--config", str(path)]
+    )
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr.strip() == (
+        "[error] invalid configuration: batch_chars: "
+        "Input should be greater than or equal to 1000"
+    )
+    assert "Traceback" not in result.stderr
+
+
+def test_cli_env_exclude_not_json_prints_one_error_line_and_exits_1(monkeypatch):
+    """A malformed VERITAS_EXCLUDE surfaces as one ValueError line, same shape."""
+    from typer.testing import CliRunner
+
+    from veritas.cli.app import app
+
+    monkeypatch.setenv("VERITAS_EXCLUDE", ".specify/")
+    result = CliRunner().invoke(app, ["review", "--scope", "project", "--target", "."])
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr.strip() == (
+        "[error] invalid configuration: VERITAS_EXCLUDE must be a JSON array of "
+        'strings, for example VERITAS_EXCLUDE=\'[".specify/"]\'; got: .specify/'
+    )
+    assert "Traceback" not in result.stderr

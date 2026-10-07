@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import typer
+from pydantic import ValidationError
 
 from veritas.config.constants import LAST_REPORT_JSON
 from veritas.config.settings import load_settings
@@ -34,6 +35,29 @@ _SCOPE_VALUES: dict[str, ReviewScope] = {
 }
 
 
+def _configure_console() -> None:
+    """Make result/error streams UTF-8 with loss-tolerant decoding on Windows.
+
+    Windows consoles default to the ANSI codepage (e.g. cp1252); reconfiguring
+    to UTF-8 with ``errors="replace"`` keeps non-ASCII report output from
+    crashing a run. Streams that do not support ``reconfigure`` (e.g. some
+    interceptors) are left untouched.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
+@app.callback()
+def _startup() -> None:
+    """Pre-command start-up: normalize the console before anything is printed."""
+    _configure_console()
+
+
 @app.command()
 def review(
     scope: str = typer.Option(..., "--scope", help="Review scope: project|module|file|pr"),
@@ -54,6 +78,18 @@ def review(
         raise typer.Exit(1)
     try:
         settings = load_settings(config)
+    except ValidationError as exc:
+        for problem in exc.errors():
+            field = ".".join(str(part) for part in problem["loc"])
+            print(
+                f"[error] invalid configuration: {field}: {problem['msg']}",
+                file=sys.stderr,
+            )
+        raise typer.Exit(1) from None
+    except ValueError as exc:
+        print(f"[error] invalid configuration: {exc}", file=sys.stderr)
+        raise typer.Exit(1) from None
+    try:
         outcome = run_review(
             settings,
             scope_val,

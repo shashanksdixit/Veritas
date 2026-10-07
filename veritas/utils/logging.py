@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import time
 from typing import Any, TextIO
 
@@ -22,11 +23,16 @@ class Log:
 
     Structured (JSON) metadata can be attached to any record; when ``verbose``
     is set the structured payload is rendered inline for human inspection.
+
+    Every line is written atomically — one ``write`` call carrying the full line
+    plus its newline, under a lock — so lines emitted concurrently by parallel
+    review nodes never interleave.
     """
 
     def __init__(self, stream: TextIO | None = None, verbose: bool = False) -> None:
         self.stream = stream if stream is not None else sys.stderr
         self.verbose = verbose
+        self._lock = threading.Lock()
 
     def _emit(self, level: str, message: str, **structured: Any) -> None:
         record: dict[str, Any] = {
@@ -41,7 +47,10 @@ class Log:
                 line += " " + json.dumps(structured, default=str, sort_keys=True)
         else:
             line = f"[{level}] {message}"
-        print(line, file=self.stream, flush=True)
+        payload = line + "\n"
+        with self._lock:
+            self.stream.write(payload)
+            self.stream.flush()
 
     def info(self, message: str, **structured: Any) -> None:
         self._emit("info", message, **structured)

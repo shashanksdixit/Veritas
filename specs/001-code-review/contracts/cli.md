@@ -38,6 +38,7 @@ Options:
 | `VERITAS_ZDR` | Enable ZDR routing ("true"/"false"); OpenRouter only — "true" on any other backend is a fatal error | --config value |
 | `VERITAS_TIMEOUT_SECONDS` | Per-request LLM timeout in seconds (default: 120, min 1) | --config value |
 | `VERITAS_MAX_RETRIES` | Retry limit per LLM request (default: 2, range 0-10) | --config value |
+| `VERITAS_MAX_CONCURRENCY` | Maximum concurrent LLM requests (default: 4, range 1-16) | --config value |
 | `VERITAS_GITHUB_TOKEN` | GitHub API token (PR mode) | --config value |
 | `VERITAS_GITLAB_TOKEN` | GitLab API token (PR mode) | --config value |
 | `VERITAS_GITLAB_URL` | GitLab instance URL | --config value (default: https://gitlab.com) |
@@ -49,6 +50,12 @@ Options:
 | 0 | Review completed (findings or not) |
 | 1 | Fatal error (missing args, bad config, target not found, provider unreachable, `VERITAS_ZDR=true` on a non-OpenRouter backend, or --post used with a non-pr scope) |
 | 2 | Partial review (LLM failed mid-run; report written with completed types, marked incomplete per FR-027) |
+
+On exit code 1 for bad configuration (a pydantic validation error or a
+settings-loading `ValueError`), the CLI prints one
+`[error] invalid configuration: {field}: {message}` line per problem to stderr
+(for a `ValueError`, `[error] invalid configuration: {message}`) — never a
+traceback — and exits before any review work starts.
 
 ### stdout
 
@@ -134,6 +141,7 @@ model = "openai/gpt-4o-mini"                 # default (or free model discovered
 zdr = false                                  # default: off; true = OpenRouter only (FR-021)
 timeout_seconds = 120                        # default: per-request timeout, >= 1 (FR-019)
 max_retries = 2                              # default: retry limit per request, 0-10 (FR-019)
+max_concurrency = 4                          # default: max concurrent LLM requests, 1-16 (FR-019)
 
 [hosting]
 provider = "github"                          # "github" or "gitlab"
@@ -141,9 +149,6 @@ provider = "github"                          # "github" or "gitlab"
 # GitLab:
 # gitlab_url = "https://gitlab.com"          # default
 # Set VERITAS_GITLAB_TOKEN env var (never in file)
-
-[report]
-output_dir = "."                             # default: current directory
 
 [review]
 exclude = [".specify/"]                       # default; path exclusion patterns (FR-029)

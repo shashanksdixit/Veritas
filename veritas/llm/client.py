@@ -11,7 +11,11 @@ Never the openai SDK directly. Calls are wrapped with structured logging
 from __future__ import annotations
 
 import json
+import threading
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Callable
 
 from langchain.chat_models import init_chat_model  # type: ignore[import-untyped]
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -254,44 +258,122 @@ def summarize_llm_error(exc: BaseException, provider: str | None = None) -> str:
     return f"{head}: {message}{tail}" if budget > 0 else head[:MAX_ERROR_SUMMARY_CHARS]
 
 
+_IN_FLIGHT_BUDGET_REASON = "in_flight_budget_exhausted"
+MAX_IN_FLIGHT_RETRY_DELAY = 120.0
+
+
+def _retry_after_seconds(exc: BaseException) -> float | None:
+    """The ``Retry-After`` header's value as seconds, or None when absent."""
+    headers = None
+    response = getattr(exc, "response", None)
+    if response is not None:
+        headers = getattr(response, "headers", None)
+    if headers is None:
+        headers = getattr(exc, "headers", None)
+    if headers is None:
+        return None
+    value = headers.get("retry-after")
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    try:
+        parsed = parsedate_to_datetime(str(value))
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        return (parsed - now).total_seconds()
+    except (TypeError, ValueError):  # noqa: PERF203 - a malformed header is zero wait
+        return 0.0
+
+
+def in_flight_retry_delay(exc: BaseException) -> float | None:
+    """The wait before retrying an OpenRouter in-flight-budget 402, else None.
+
+    A 402 whose ``error.metadata.reason`` is ``in_flight_budget_exhausted`` is
+    retried once after its ``Retry-After`` header, capped at 120 seconds (FR-019).
+    Any other failure (or a 402 with any other reason) is not retried here.
+    """
+    if _http_status(exc) != 402:
+        return None
+    payload = _provider_payload(exc)
+    if payload is None:
+        return None
+    _message, reason = _payload_parts(payload)
+    if reason != _IN_FLIGHT_BUDGET_REASON:
+        return None
+    delay = _retry_after_seconds(exc)
+    if delay is None:
+        return 0.0
+    return max(0.0, min(float(delay), MAX_IN_FLIGHT_RETRY_DELAY))
+
+
 class LLMClient:
     """Thin wrapper around a LangChain chat model with structured logging."""
 
-    def __init__(self, settings: Settings, log: Log | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        log: Log | None = None,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self.settings = settings
         self.log = log or Log()
+        self._sleep = sleep
         self._model = build_chat_model(settings)
         self.model_name = runtime_model_id(settings)
         # The route this client talks to (`openai`, `anthropic`, ...): the label
         # every error summary for it carries (FR-029).
         self.provider = split_model_string(settings.model_runtime)[0]
+        # A run uses exactly one LLMClient (built once in graph.run_review), so
+        # one semaphore per client is the run-wide `[llm] max_concurrency` limit
+        # (FR-019). complete() holds it only for the model call itself; the
+        # in-flight retry wait happens outside it so a sleeping slot does not
+        # reduce the concurrency other calls can use.
+        self._semaphore = threading.BoundedSemaphore(settings.max_concurrency)
 
     def complete(self, system: str, user: str, *, max_tokens: int | None = None) -> str:
-        """Run one chat completion; returns the assistant text (never None)."""
+        """Run one chat completion; returns the assistant text (never None).
+
+        An OpenRouter 402 with reason ``in_flight_budget_exhausted`` is retried
+        once after its Retry-After delay (capped at 120s); the semaphore is
+        released while waiting, so the wait occupies no concurrency slot.
+        """
         messages = [SystemMessage(content=system), HumanMessage(content=user)]
-        started = time.monotonic()
-        error: str | None = None
-        try:
-            response = self._model.invoke(messages, **( {"max_tokens": max_tokens} if max_tokens else {}))
+        invoke_kwargs = {"max_tokens": max_tokens} if max_tokens else {}
+        retried_in_flight = False
+        while True:
+            started = time.monotonic()
+            self._semaphore.acquire()
+            try:
+                response = self._model.invoke(messages, **invoke_kwargs)
+            except Exception as exc:  # noqa: BLE001 - record then re-raise for FR-027 handling
+                # The route is stamped on the way out so a summary built further up
+                # (guarded nodes) can still name it without a reference to this
+                # client (FR-029). The slot is released before any sleeping below.
+                self._semaphore.release()
+                setattr(exc, "veritas_provider", self.provider)
+                error = redact_secrets(summarize_llm_error(exc, provider=self.provider))
+                latency_ms = (time.monotonic() - started) * 1000
+                self.log.llm_call(self.model_name, latency_ms, error=error)
+                delay = None if retried_in_flight else in_flight_retry_delay(exc)
+                if delay is None:
+                    raise
+                retried_in_flight = True
+                self.log.info(f"llm: in-flight budget exhausted, retrying in {delay:g}s")
+                self._sleep(delay)
+                continue
+            self._semaphore.release()
             text = response.content or ""
-        except Exception as exc:  # noqa: BLE001 - record then re-raise for FR-027 handling
-            # The route is stamped on the way out so a summary built further up
-            # (guarded nodes) can still name it without a reference to this
-            # client (FR-029).
-            setattr(exc, "veritas_provider", self.provider)
-            error = redact_secrets(summarize_llm_error(exc, provider=self.provider))
             latency_ms = (time.monotonic() - started) * 1000
-            usage = {}
-            self.log.llm_call(self.model_name, latency_ms, error=error)
-            raise
-        latency_ms = (time.monotonic() - started) * 1000
-        metadata = response.response_metadata or {}
-        usage = metadata.get("token_usage") or metadata.get("usage") or {}
-        self.log.llm_call(
-            self.model_name,
-            latency_ms,
-            prompt_tokens=usage.get("prompt_tokens"),
-            completion_tokens=usage.get("completion_tokens"),
-            total_tokens=usage.get("total_tokens"),
-        )
-        return text if isinstance(text, str) else str(text)
+            metadata = response.response_metadata or {}
+            usage = metadata.get("token_usage") or metadata.get("usage") or {}
+            self.log.llm_call(
+                self.model_name,
+                latency_ms,
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+            )
+            return text if isinstance(text, str) else str(text)

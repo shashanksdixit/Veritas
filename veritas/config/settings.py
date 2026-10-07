@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     # is a valid, meaningful configuration (one attempt, no retry).
     timeout_seconds: float = Field(default=120, ge=1, description="VERITAS_TIMEOUT_SECONDS")
     max_retries: int = Field(default=2, ge=0, le=10, description="VERITAS_MAX_RETRIES")
+    max_concurrency: int = Field(default=4, ge=1, le=16, description="VERITAS_MAX_CONCURRENCY")
     github_token: str | None = Field(default=None, description="VERITAS_GITHUB_TOKEN")
     gitlab_token: str | None = Field(default=None, description="VERITAS_GITLAB_TOKEN")
     gitlab_url: str = Field(default="https://gitlab.com", description="VERITAS_GITLAB_URL")
@@ -112,6 +113,7 @@ def _flatten_toml(data: dict) -> dict:
     flat["zdr"] = llm.get("zdr")
     flat["timeout_seconds"] = llm.get("timeout_seconds")
     flat["max_retries"] = llm.get("max_retries")
+    flat["max_concurrency"] = llm.get("max_concurrency")
     hosting = data.get("hosting", {})
     flat["provider"] = hosting.get("provider")
     flat["gitlab_url"] = hosting.get("gitlab_url")

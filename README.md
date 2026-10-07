@@ -53,6 +53,42 @@ paid tier) for grounded security findings. Install the standalone `opengrep`
 binary on `PATH` (see github.com/opengrep/opengrep/releases). Without it, security
 coverage degrades gracefully with a specific reason printed to stderr.
 
+## Setup
+
+The repository uses `uv` for dependency management:
+
+```bash
+# From the repository root
+uv sync
+```
+
+Run the CLI with `uv` so it uses the locked environment:
+
+```bash
+uv run veritas review --scope project --target ./myproject
+```
+
+## Corporate networks
+
+Python's TLS (via `requests`/httpx) trusts the CA bundle shipped with the
+`certifi` package, not the OS store. On a corporate network with an
+inspection proxy:
+
+- Use uv's native-TLS variant so uv itself (which downloads dependencies) can
+  trust your environment: `uv sync --native-tls` and `uv run --native-tls ...`.
+- For the Python requests Veritas makes at runtime, append your company root CA
+  to certifi's bundle:
+
+  ```bash
+  # Certificates from your corporate CA (ask your IT team for P12/PEM)
+  uv pip install certifi
+  python -c "import certifi, pathlib; print(certifi.where())"
+  # ...then append your company root CA to the printed cacert.pem
+  ```
+
+  A proxy that rewrites HTTPS without being trusted will otherwise surface as
+  TLS certificate errors from the LLM or hosting API, never as a clean message.
+
 ## Quick start
 
 ```bash
@@ -180,12 +216,11 @@ timeout_seconds = 120                        # default: per-request timeout in s
 max_retries = 2                              # default: retries per request after a
                                               #  timeout/failed attempt, 0-10 (FR-019).
                                               #  0 means one attempt, no retry.
+max_concurrency = 4                          # default: maximum concurrent LLM requests,
+                                              #  1-16 (FR-019).
 
 [hosting]
 provider = "github"                          # "github" or "gitlab"
-
-[report]
-output_dir = "."                             # default
 
 [review]
 exclude = [".specify/"]                       # default; path exclusion patterns (FR-029)
@@ -209,6 +244,7 @@ max_batches = 8                              # default: max batches per code rev
 | `VERITAS_ZDR` | Zero-data-retention routing (`"true"`/`"false"`) |
 | `VERITAS_TIMEOUT_SECONDS` | Per-request LLM timeout in seconds (default: 120, min 1) |
 | `VERITAS_MAX_RETRIES` | Retry limit per LLM request (default: 2, range 0-10; 0 = no retry) |
+| `VERITAS_MAX_CONCURRENCY` | Maximum concurrent LLM requests (default: 4, range 1-16) |
 | `VERITAS_GITHUB_TOKEN` | GitHub API token (PR mode) |
 | `VERITAS_GITLAB_TOKEN` | GitLab API token (PR mode) |
 | `VERITAS_GITLAB_URL` | GitLab instance URL (default: https://gitlab.com) |
@@ -227,6 +263,25 @@ own catalog id (e.g. `openai:openai/gpt-4o-mini`). To use a native Anthropic
 (Claude) key, configure `VERITAS_MODEL=anthropic:claude-...` and install the
 `[anthropic]` extra. Without the extra, startup fails fast with the exact
 install command.
+
+### Direct OpenAI
+
+Veritas can also talk straight to OpenAI by pointing the OpenAI-compatible route
+at OpenAI's own endpoint, with the key read from an environment variable (never
+a committed file):
+
+```bash
+export VERITAS_BASE_URL=https://api.openai.com/v1
+export VERITAS_MODEL=openai:gpt-4o-mini
+export VERITAS_API_KEY=$OPENAI_API_KEY
+
+uv run veritas review --scope project --target ./myproject
+```
+
+Note that ZDR (zero-data-retention routing) is an OpenRouter-only request field,
+so it MUST stay off on OpenAI or any other non-OpenRouter backend:
+`VERITAS_ZDR` must be unset or `false`, and a `zdr = true` configuration on this
+endpoint is refused before any code is fetched or sent.
 
 ## ZDR and privacy
 

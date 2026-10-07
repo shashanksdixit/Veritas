@@ -8,6 +8,9 @@ constitution Principle VIII / FR-016.
 
 ## [Unreleased]
 
+### Added
+- Operational polish: [llm] max_concurrency, a single retry for OpenRouter's in-flight 402, atomic log lines, UTF-8 console output on Windows, friendly configuration errors, LF line endings, README setup notes.
+
 ### Fixed
 - A requirement with an unconfirmable evidence reference is no longer dropped from
   the report: the bad reference is removed (and recorded), and the requirement

@@ -13,6 +13,7 @@ from veritas.llm.client import (
     LLMClient,
     build_chat_model,
     build_kwargs,
+    in_flight_retry_delay,
     runtime_model_id,
     split_model_string,
     summarize_llm_error,
@@ -469,3 +470,234 @@ def test_the_report_carries_the_summary_and_not_the_body(
     assert _REASON in error
     assert _USER_ID not in error
     assert "{'error'" not in error
+
+
+# --- [llm] max_concurrency: a run-wide limit on parallel complete() calls ---
+
+
+def test_complete_calls_are_limited_to_max_concurrency_concurrently():
+    """A run uses exactly one LLMClient (graph.run_review builds it once), so
+    the client's semaphore is the run-wide `[llm] max_concurrency` bound: N=2
+    must be the observed maximum, never more."""
+    import threading
+    import time
+
+    class TrackingModel:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+            self._active = 0
+            self.max_active = 0
+
+        def invoke(self, messages, **kwargs):
+            with self._lock:
+                self._active += 1
+                self.max_active = max(self.max_active, self._active)
+            # Keep the slot busy long enough for other threads to contend on it.
+            time.sleep(0.05)
+            with self._lock:
+                self._active -= 1
+            return type(
+                "R", (), {"content": "ok", "response_metadata": {}}
+            )()
+
+    client = LLMClient(
+        Settings(api_key="test", max_concurrency=2),
+        Log(stream=io.StringIO()),
+    )
+    client._model = TrackingModel()
+
+    failures: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            for _ in range(5):
+                client.complete("system", "user")
+        except BaseException as exc:  # noqa: BLE001 - record every failure mode
+            failures.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for worker_thread in threads:
+        worker_thread.start()
+    for worker_thread in threads:
+        worker_thread.join()
+
+    assert failures == []
+    assert client._model.max_active == 2
+
+
+# --- the single in-flight-budget retry (FR-019) ---
+
+
+def _chat_completion(text: str = "hello") -> bytes:
+    return json.dumps(
+        {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "gpt-4o-mini",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": text},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+    ).encode("utf-8")
+
+
+def _in_flight_402(retry_after: int | None) -> dict:
+    headers = {"Retry-After": str(retry_after)} if retry_after is not None else {}
+    return {"status": 402, "headers": headers, "body": _PAYMENT_REQUIRED_BODY}
+
+
+_OK_RESPONSE = {"status": 200, "headers": {}, "body": _chat_completion("hello")}
+
+
+@pytest.fixture
+def in_flight_server():
+    """A local OpenAI-compatible endpoint serving a caller-supplied script.
+
+    Consumes ``responses`` in order; after the script is spent it answers 404.
+    Yields ``(responses, port, requests_seen)``.
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    responses: list[dict] = []
+    requests_seen: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler's spelling
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            requests_seen.append(self.path)
+            if responses:
+                response = responses.pop(0)
+            else:
+                response = {"status": 404, "headers": {}, "body": b"{}"}
+            self.send_response(response["status"])
+            for key, value in response["headers"].items():
+                self.send_header(key, value)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response["body"])))
+            self.end_headers()
+            self.wfile.write(response["body"])
+
+        def log_message(self, *_args):  # keep the test output clean
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield responses, server.server_address[1], requests_seen
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _inflight_client(port: int, sleep) -> LLMClient:
+    return LLMClient(
+        Settings(
+            api_key="test",
+            base_url=f"http://127.0.0.1:{port}/v1",
+            model="openai:gpt-4o-mini",
+            timeout_seconds=10,
+            max_retries=0,
+            max_concurrency=2,
+        ),
+        Log(stream=io.StringIO()),
+        sleep=sleep,
+    )
+
+
+def test_in_flight_402_is_retried_once_then_succeeds(in_flight_server, no_proxy):
+    """Retry-After: 1 → the real client waits the requested 1s (injected sleep),
+    sends one more request, and the completion succeeds."""
+    responses, port, requests_seen = in_flight_server
+    slept: list[float] = []
+    responses.append(_in_flight_402(1))
+    responses.append(_OK_RESPONSE)
+
+    client = _inflight_client(port, sleep=slept.append)
+    try:
+        text = client.complete("system", "user")
+    finally:
+        _close_client(client)
+
+    assert text == "hello"
+    assert slept == [1.0], f"expected one 1s wait, saw {slept}"
+    assert len(requests_seen) == 2
+
+
+def test_in_flight_402_retry_after_is_capped_at_120(in_flight_server, no_proxy):
+    """Retry-After: 500 is honored as 120 seconds, never a 500s wait."""
+    responses, port, requests_seen = in_flight_server
+    slept: list[float] = []
+    responses.append(_in_flight_402(500))
+    responses.append(_OK_RESPONSE)
+
+    client = _inflight_client(port, sleep=slept.append)
+    try:
+        text = client.complete("system", "user")
+    finally:
+        _close_client(client)
+
+    assert text == "hello"
+    assert slept == [120.0], f"expected the 120s cap, saw {slept}"
+    assert len(requests_seen) == 2
+
+
+def test_a_second_consecutive_in_flight_402_is_not_retried(
+    in_flight_server, no_proxy
+):
+    """Exactly one retry per call: two in-flight 402s in a row fail, and the
+    second 402 does not trigger another wait."""
+    responses, port, requests_seen = in_flight_server
+    slept: list[float] = []
+    responses.append(_in_flight_402(1))
+    responses.append(_in_flight_402(1))
+
+    client = _inflight_client(port, sleep=slept.append)
+    try:
+        with pytest.raises(Exception):
+            client.complete("system", "user")
+    finally:
+        _close_client(client)
+
+    assert slept == [1.0], f"expected a single retry wait, saw {slept}"
+    assert len(requests_seen) == 2
+
+
+def test_in_flight_delay_only_matches_402_with_the_reason():
+    """in_flight_retry_delay is None for anything but a 402 carrying
+    error.metadata.reason == in_flight_budget_exhausted."""
+
+    class E(BaseException):
+        status_code = 402
+        body = {
+            "error": {
+                "message": "credits",
+                "metadata": {"reason": "in_flight_budget_exhausted"},
+            },
+            "user_id": "u",
+        }
+        headers = {"retry-after": "5"}
+
+    assert in_flight_retry_delay(E()) == 5.0
+
+    class E2(BaseException):
+        status_code = 402
+        body = {
+            "error": {"message": "credits", "metadata": {"reason": "some_other"}}
+        }
+        headers = {"retry-after": "5"}
+
+    class E3(BaseException):
+        status_code = 429
+        body = {"error": {"message": "slow down"}}
+        headers = {"retry-after": "5"}
+
+    assert in_flight_retry_delay(E2()) is None
+    assert in_flight_retry_delay(E3()) is None
