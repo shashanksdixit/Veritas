@@ -235,6 +235,9 @@ def run_review(
         report_path=report_path,
         post=post,
         pr_parsed=parsed,
+        # [security] opengrep_rules (FR-012): the configured rules source, so
+        # collect_sast/run_opengrep scan with what the config asked for.
+        opengrep_rules=settings.opengrep_rules,
     )
     runtime.target = target
 

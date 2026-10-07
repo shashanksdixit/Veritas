@@ -381,10 +381,19 @@ def make_scope_node(runtime) -> Callable[[ReviewState], dict]:
         sast = collect_sast(files, scope_value=scope.value, rules=runtime.opengrep_rules)
         if sast.degraded:
             runtime.log.warn(sast.degraded)
-            if sast.scan_error:
+            # The detail is the same single line as the reason when the reason
+            # came from stderr; log it only when it adds something.
+            if sast.scan_error and sast.scan_error != sast.degraded:
                 runtime.log.warn(f"OpenGrep scan detail: {sast.scan_error}")
 
-        run = state["run"].model_copy(update={"input_revision": result["input_revision"]})
+        run = state["run"].model_copy(
+            update={
+                "input_revision": result["input_revision"],
+                # The rules source SAST ran with, recorded in the report
+                # (schema 1.7.0); None only when the run never reached SAST.
+                "sast_rules": sast.rules,
+            }
+        )
         return {
             "files": files,
             "skipped_languages": result["skipped_languages"],

@@ -315,6 +315,78 @@ def test_cli_env_exclude_not_json_prints_one_error_line_and_exits_1(monkeypatch)
     assert result.stdout == ""
     assert result.stderr.strip() == (
         "[error] invalid configuration: VERITAS_EXCLUDE must be a JSON array of "
-        'strings, for example VERITAS_EXCLUDE=\'[".specify/"]\'; got: .specify/'
+        'strings, for example VERITAS_EXCLUDE=\'[".specify/\"]\'; got: .specify/'
+    )
+    assert "Traceback" not in result.stderr
+
+
+# --- [security] opengrep_rules (FR-012): a registry name or a local rules source ---
+
+
+def test_opengrep_rules_default_is_owasp_top_ten():
+    assert Settings().opengrep_rules == "p/owasp-top-ten"
+
+
+def test_opengrep_rules_override_from_config_file(tmp_path):
+    path = tmp_path / "security-config.toml"
+    path.write_text('[security]\nopengrep_rules = "r/corp-pack"\n', encoding="utf-8")
+    assert load_settings(str(path)).opengrep_rules == "r/corp-pack"
+
+
+def test_opengrep_rules_env_overrides_file(tmp_path, monkeypatch):
+    path = tmp_path / "security-config.toml"
+    path.write_text('[security]\nopengrep_rules = "p/owasp-top-ten"\n', encoding="utf-8")
+    monkeypatch.setenv("VERITAS_OPENGREP_RULES", "r/from-env")
+    assert load_settings(str(path)).opengrep_rules == "r/from-env"
+
+
+def test_opengrep_rules_local_file_and_directory_accepted(tmp_path):
+    """An existing path is a valid rules source, whether file or directory."""
+    rules_file = tmp_path / "rules" / "custom.yaml"
+    rules_file.parent.mkdir()
+    rules_file.write_text("rules: []\n", encoding="utf-8")
+    rules_dir = tmp_path / "ruleset-dir"
+    rules_dir.mkdir()
+
+    config = tmp_path / "security-config.toml"
+    # TOML basic strings escape backslashes, so the POSIX form of the path goes in.
+    config.write_text(
+        f'[security]\nopengrep_rules = "{rules_file.as_posix()}"\n', encoding="utf-8"
+    )
+    assert load_settings(str(config)).opengrep_rules == rules_file.as_posix()
+
+    config.write_text(
+        f'[security]\nopengrep_rules = "{rules_dir.as_posix()}"\n', encoding="utf-8"
+    )
+    assert load_settings(str(config)).opengrep_rules == rules_dir.as_posix()
+
+
+def test_opengrep_rules_nonexistent_path_rejected():
+    """Neither a registry name nor an existing path - rejected by validation."""
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(opengrep_rules="missing/rules.yaml")
+    message = str(excinfo.value)
+    assert "opengrep_rules" in message
+    assert "registry ruleset" in message
+    assert "missing/rules.yaml" in message
+
+
+def test_cli_bad_opengrep_rules_prints_one_error_line_and_exits_1(tmp_path):
+    """The same friendly invalid-configuration path as any other bad key."""
+    from typer.testing import CliRunner
+
+    from veritas.cli.app import app
+
+    path = tmp_path / "bad-rules.toml"
+    path.write_text('[security]\nopengrep_rules = "not-a-ruleset"\n', encoding="utf-8")
+    result = CliRunner().invoke(
+        app, ["review", "--scope", "project", "--target", ".", "--config", str(path)]
+    )
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr.strip() == (
+        "[error] invalid configuration: opengrep_rules: Value error, must be a "
+        "registry ruleset name starting with 'p/' or 'r/', or an existing local "
+        "rules file or directory; got: not-a-ruleset"
     )
     assert "Traceback" not in result.stderr

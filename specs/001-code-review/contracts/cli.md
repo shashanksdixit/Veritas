@@ -39,6 +39,7 @@ Options:
 | `VERITAS_TIMEOUT_SECONDS` | Per-request LLM timeout in seconds (default: 120, min 1) | --config value |
 | `VERITAS_MAX_RETRIES` | Retry limit per LLM request (default: 2, range 0-10) | --config value |
 | `VERITAS_MAX_CONCURRENCY` | Maximum concurrent LLM requests (default: 4, range 1-16) | --config value |
+| `VERITAS_OPENGREP_RULES` | SAST rules source: a registry ruleset name (`p/...` or `r/...`) or an existing local rules file/directory (default: `p/owasp-top-ten`) | --config value |
 | `VERITAS_GITHUB_TOKEN` | GitHub API token (PR mode) | --config value |
 | `VERITAS_GITLAB_TOKEN` | GitLab API token (PR mode) | --config value |
 | `VERITAS_GITLAB_URL` | GitLab instance URL | --config value (default: https://gitlab.com) |
@@ -160,6 +161,16 @@ exclude = [".specify/"]                       # default; path exclusion patterns
                                              #  list disables exclusion.
 batch_chars = 48000                          # default: max line-numbered chars per batch (FR-029)
 max_batches = 8                              # default: max batches per code review type (FR-029)
+
+[security]
+opengrep_rules = "p/owasp-top-ten"           # default: SAST rules source (FR-012).
+                                             #  A registry ruleset name starting with
+                                             #  "p/" or "r/", or an existing local rules
+                                             #  file or directory - a local source makes
+                                             #  SAST reproducible. The value is recorded
+                                             #  in the report as ReviewRun.sast_rules.
+                                             #  Anything else is rejected as an invalid
+                                             #  configuration error before the run starts.
 ```
 
 **Privacy rule (constitution):** API keys and tokens MUST be supplied via environment variables or a non-committed config file. The default config file `.veritas/config.toml` MUST NOT contain keys/tokens. A `.veritas/config.local.toml` (gitignored) is allowed for developer-local overrides.

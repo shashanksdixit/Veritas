@@ -12,10 +12,20 @@ import json
 import shutil
 import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from veritas.config.constants import SUPPORTED_LANGUAGES
+from veritas.utils.logging import get_log
+from veritas.utils.redaction import redact_secrets
 
 OPENGPRE_NOT_FOUND = "OpenGrep not found on PATH"
+OPENGREP_SCAN_FAILED = "OpenGrep scan reported an error"
+OPENGREP_NO_JSON = "OpenGrep scan produced no parseable JSON"
+
+# A failed scan is reported as ONE line of at most this many characters: the
+# degraded reason and the logged detail are the last non-empty line of the
+# scanner's stderr, redacted - never a multi-line traceback (FR-012).
+MAX_FAILURE_CHARS = 200
 
 _SEVERITY_MAP = {
     "ERROR": "error",
@@ -26,6 +36,21 @@ _SEVERITY_MAP = {
 
 def _normalize_severity(value: str | None) -> str:
     return _SEVERITY_MAP.get((value or "").upper(), "warning")
+
+
+def _failure_line(*candidates: str | None) -> str:
+    """The last non-empty line of the first candidate that has one.
+
+    A Python traceback in the scanner's stderr therefore reports as its final
+    exception line. The line is passed through ``redact_secrets`` and cut to
+    ``MAX_FAILURE_CHARS``, so the degraded reason and the logged detail are
+    each one line no longer than that.
+    """
+    for candidate in candidates:
+        lines = [line.strip() for line in (candidate or "").splitlines() if line.strip()]
+        if lines:
+            return redact_secrets(lines[-1])[:MAX_FAILURE_CHARS]
+    return ""
 
 
 @dataclass
@@ -69,7 +94,16 @@ def run_opengrep(
         target_dir,
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        # UTF-8 with replacement, not the locale codec: OpenGrep's scan summary
+        # carries box-drawing characters, and on Windows a byte outside the
+        # active code page would raise inside the reader thread.
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         if isinstance(exc, subprocess.TimeoutExpired):
             reason = "OpenGrep scan timed out"
@@ -79,9 +113,10 @@ def run_opengrep(
 
     if proc.returncode not in (0, 1, 2):
         # opengrep exits 0 on clean scan; certain rule/scan errors yield non-zero
+        detail = _failure_line(proc.stderr, proc.stdout)
         return OpengrepResult(
-            degraded="OpenGrep scan reported an error",
-            scan_error=(proc.stderr or proc.stdout or "").strip()[:500],
+            degraded=detail or OPENGREP_SCAN_FAILED,
+            scan_error=detail or None,
             rules=resolved_rules,
         )
 
@@ -89,9 +124,13 @@ def run_opengrep(
         with open(out_json, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, json.JSONDecodeError):
+        # stderr only: on this path stdout may be the JSON payload itself, and
+        # the last line of JSON is punctuation, not a reason. With no stderr
+        # line the category message above is the reason.
+        detail = _failure_line(proc.stderr)
         return OpengrepResult(
-            degraded="OpenGrep scan produced no parseable JSON",
-            scan_error=(proc.stdout or proc.stderr or "").strip()[:500],
+            degraded=detail or OPENGREP_NO_JSON,
+            scan_error=detail or None,
             rules=resolved_rules,
         )
     finally:
@@ -143,6 +182,34 @@ def result_to_finding(result: dict) -> dict:
     }
 
 
+def _map_result_path(result_path: str, tmpdir: str, files: dict[str, str]) -> str | None:
+    """Map an OpenGrep result path back to a scoped file key.
+
+    First try an exact resolution: the result path resolved against the scan's
+    temp directory, as a forward-slash key. On Windows OpenGrep reports the
+    path it was given in the spelling the filesystem handed back - backslashes,
+    sometimes an 8.3 short name (``SHASHA~1``) for the long user directory the
+    temp directory was created under - so the resolved key can miss. Then fall
+    back to suffix matching on the backslash-normalised path: the scoped key the
+    path equals or ends with, longest key winning when keys share a suffix.
+
+    Returns None when the result belongs to no reviewed file.
+    """
+    try:
+        key = Path(result_path).resolve().relative_to(Path(tmpdir).resolve()).as_posix()
+    except (OSError, ValueError):
+        key = None
+    if key is not None and key in files:
+        return key
+    normalized = result_path.replace("\\", "/")
+    best: str | None = None
+    for candidate in files:
+        if normalized == candidate or normalized.endswith("/" + candidate):
+            if best is None or len(candidate) > len(best):
+                best = candidate
+    return best
+
+
 def collect_sast(
     files: dict[str, str],
     *,
@@ -155,7 +222,9 @@ def collect_sast(
     Scoped contents are materialized into a temp directory (relative paths
     preserved) so path matching is exact regardless of scope type; the temp
     directory is created and cleaned up here (scope-preparation, not review
-    analysis). Results whose path is not in the scoped file set are filtered.
+    analysis). Each result path is mapped back to its scoped file key; results
+    that map to no reviewed file are counted and reported through the degraded
+    reason rather than silently dropped.
     """
     if not files:
         return OpengrepResult(degraded=None, rules=rules or OpengrepResult.rules)
@@ -172,5 +241,19 @@ def collect_sast(
             with open(dest, "w", encoding="utf-8", errors="replace") as fh:
                 fh.write(content)
         result = run_opengrep(tmpdir, rules=rules, opengrep_bin=opengrep_bin)
-        result.findings = [f for f in result.findings if f.get("path") in files]
+        findings: list[dict] = []
+        unmapped = 0
+        for finding in result.findings:
+            key = _map_result_path(finding.get("path", ""), tmpdir, files)
+            if key is None:
+                unmapped += 1
+                continue
+            findings.append({**finding, "path": key})
+        result.findings = findings
+        if unmapped:
+            get_log().warn(
+                f"sast: {unmapped} result(s) could not be mapped to reviewed files"
+            )
+            note = f"{unmapped} result(s) unmapped"
+            result.degraded = f"{result.degraded}; {note}" if result.degraded else note
         return result

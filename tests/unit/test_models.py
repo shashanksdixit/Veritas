@@ -100,7 +100,7 @@ def test_report_roundtrip_json():
             verdict=V.CLEAN,
         ),
     )
-    assert report.schema_version == "1.6.0"
+    assert report.schema_version == "1.7.0"
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.run.id == report.run.id
 
@@ -329,3 +329,56 @@ def test_a_pre_1_6_summary_without_duplicates_merged_still_validates():
     )
 
     assert restored.duplicates_merged == 0
+
+
+# --- schema 1.7.0 adds ReviewRun.sast_rules (FR-012) ---
+
+
+def test_sast_rules_defaults_to_none_when_sast_did_not_run():
+    run = ReviewRun(
+        scope=ReviewScope.PROJECT,
+        target=".",
+        config_hash="h",
+        model_name="m",
+        prompt_version="1.0.0",
+    )
+    assert run.sast_rules is None
+
+
+def test_sast_rules_round_trips_at_schema_1_7_0():
+    from veritas.models.entities import Report, Summary
+
+    report = Report(
+        run=ReviewRun(
+            scope=ReviewScope.PROJECT,
+            target=".",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.0.0",
+            sast_rules="r/corp-pack",
+        ),
+        summary=Summary(
+            total_code_findings=0,
+            total_requirement_findings=0,
+            verification_failure_count=0,
+            verdict=Verdict.CLEAN,
+        ),
+    )
+    assert report.schema_version == "1.7.0"
+
+    restored = Report.model_validate_json(report.model_dump_json())
+    assert restored.run.sast_rules == "r/corp-pack"
+
+
+def test_a_pre_1_7_run_without_sast_rules_still_validates():
+    """Schema 1.7.0 is additive: the key is absent in older runs, not null."""
+    restored = ReviewRun.model_validate(
+        {
+            "scope": "project",
+            "target": ".",
+            "config_hash": "h",
+            "model_name": "m",
+            "prompt_version": "1.0.0",
+        }
+    )
+    assert restored.sast_rules is None

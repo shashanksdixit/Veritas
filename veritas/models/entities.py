@@ -102,6 +102,11 @@ class ReviewRun(BaseModel):
     prompt_version: str
     report_status: ReportStatus = ReportStatus.INCOMPLETE
     error: str | None = None
+    # Report.schema_version 1.7.0: the SAST rules source the run scanned with
+    # ([security] opengrep_rules - a registry name or a local rules file or
+    # directory); None when the run never reached SAST, so a report written
+    # before this field existed still validates.
+    sast_rules: str | None = None
 
 
 class LineRange(BaseModel):

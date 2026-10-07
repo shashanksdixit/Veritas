@@ -292,6 +292,8 @@ def render_markdown(report: Report) -> str:
     out.append(f"- **Scope**: `{run.scope.value}`")
     out.append(f"- **Model**: `{run.model_name}`")
     out.append(f"- **Prompt version**: `{run.prompt_version}`")
+    if run.sast_rules:
+        out.append(f"- **SAST rules**: `{run.sast_rules}`")
     out.append(f"- **Input revision**: `{run.input_revision or 'n/a'}`")
     out.append(f"- **Report status**: `{run.report_status.value}`")
     if run.error:

@@ -80,7 +80,7 @@ def _report(**overrides) -> Report:
 
 def test_schema_version_comment_top():
     md = render_markdown(_report())
-    assert md.startswith("<!-- veritas-report-schema: 1.6.0 -->")
+    assert md.startswith("<!-- veritas-report-schema: 1.7.0 -->")
 
 
 def test_sections_present():
@@ -856,4 +856,15 @@ def test_citation_verified_explanatory_sentence_under_code_findings():
         "it does not mean the finding's claim was confirmed."
     )
     assert "## Code Findings\n\n" + sentence in render_markdown(_report())
+
+
+def test_sast_rules_line_rendered_when_recorded():
+    report = _report()
+    report.run = report.run.model_copy(update={"sast_rules": "r/corp-pack"})
+    md = render_markdown(report)
+    assert "- **SAST rules**: `r/corp-pack`" in md
+
+
+def test_sast_rules_line_absent_when_sast_did_not_run():
+    assert "- **SAST rules**" not in render_markdown(_report())
 

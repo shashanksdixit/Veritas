@@ -9,9 +9,11 @@ constitution Principle VIII / FR-016.
 ## [Unreleased]
 
 ### Added
+- Report schema **1.7.0**: adds `ReviewRun.sast_rules`. Configurable SAST rules source; single-line OpenGrep failure reasons.
 - Operational polish: [llm] max_concurrency, a single retry for OpenRouter's in-flight 402, atomic log lines, UTF-8 console output on Windows, friendly configuration errors, LF line endings, README setup notes.
 
 ### Fixed
+- SAST findings are no longer discarded on Windows: OpenGrep result paths (backslashes, 8.3 short names) are mapped to reviewed files; unmappable results are reported, not dropped; OpenGrep output is decoded as UTF-8.
 - A requirement with an unconfirmable evidence reference is no longer dropped from
   the report: the bad reference is removed (and recorded), and the requirement
   becomes unclear only if no evidence remains. A failed requirements batch is named

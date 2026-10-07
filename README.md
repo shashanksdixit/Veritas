@@ -51,7 +51,11 @@ pip install -e ".[test]"
 **SAST (optional but recommended):** Veritas integrates OpenGrep (LGPL-2.1, no
 paid tier) for grounded security findings. Install the standalone `opengrep`
 binary on `PATH` (see github.com/opengrep/opengrep/releases). Without it, security
-coverage degrades gracefully with a specific reason printed to stderr.
+coverage degrades gracefully with a specific one-line reason printed to stderr.
+The rules source is configurable - `[security] opengrep_rules`
+(`VERITAS_OPENGREP_RULES`), a registry ruleset such as `p/owasp-top-ten` or an
+existing local rules file/directory - and the source used is recorded in the
+report.
 
 ## Setup
 
@@ -88,6 +92,17 @@ inspection proxy:
 
   A proxy that rewrites HTTPS without being trusted will otherwise surface as
   TLS certificate errors from the LLM or hosting API, never as a clean message.
+- OpenGrep is a separate binary with its own HTTP client: it downloads registry
+  rules (a `p/...` or `r/...` `opengrep_rules` value) itself, outside Python's
+  `certifi` bundle, so give it a CA bundle that includes your company root:
+
+  ```bash
+  export REQUESTS_CA_BUNDLE=/path/to/company-root-bundle.pem
+  ```
+
+  Without it the rules download fails behind an inspection proxy and SAST
+  degrades; a local `[security] opengrep_rules` file or directory sidesteps the
+  download entirely.
 
 ## Quick start
 
@@ -232,6 +247,15 @@ exclude = [".specify/"]                       # default; path exclusion patterns
                                              #  list disables exclusion.
 batch_chars = 48000                          # default: max line-numbered chars per batch (FR-029)
 max_batches = 8                              # default: max batches per code review type (FR-029)
+
+[security]
+opengrep_rules = "p/owasp-top-ten"           # default: SAST rules source. A registry
+                                             #  ruleset name ("p/..." or "r/...") or an
+                                             #  existing local rules file or directory.
+                                             #  A registry ruleset may change over time;
+                                             #  a local rules source makes SAST
+                                             #  reproducible. The value used is recorded
+                                             #  in the report as "- **SAST rules**".
 ```
 
 ### Environment variables
@@ -245,6 +269,7 @@ max_batches = 8                              # default: max batches per code rev
 | `VERITAS_TIMEOUT_SECONDS` | Per-request LLM timeout in seconds (default: 120, min 1) |
 | `VERITAS_MAX_RETRIES` | Retry limit per LLM request (default: 2, range 0-10; 0 = no retry) |
 | `VERITAS_MAX_CONCURRENCY` | Maximum concurrent LLM requests (default: 4, range 1-16) |
+| `VERITAS_OPENGREP_RULES` | SAST rules source (default: `p/owasp-top-ten`); a registry ruleset name `p/...`/`r/...` or an existing local rules file or directory |
 | `VERITAS_GITHUB_TOKEN` | GitHub API token (PR mode) |
 | `VERITAS_GITLAB_TOKEN` | GitLab API token (PR mode) |
 | `VERITAS_GITLAB_URL` | GitLab instance URL (default: https://gitlab.com) |

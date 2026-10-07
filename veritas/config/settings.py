@@ -19,7 +19,7 @@ import tomllib
 from pathlib import Path
 from typing import get_origin
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from veritas.config.constants import (
@@ -72,6 +72,34 @@ class Settings(BaseSettings):
     )
     batch_chars: int = Field(default=48000, ge=1000, description="VERITAS_BATCH_CHARS")
     max_batches: int = Field(default=8, ge=1, description="VERITAS_MAX_BATCHES")
+    # [security] section (FR-012): the SAST rules source, recorded in the report
+    # as ReviewRun.sast_rules. A registry ruleset may change over time; a local
+    # rules file or directory makes SAST reproducible.
+    opengrep_rules: str = Field(
+        default="p/owasp-top-ten",
+        description=(
+            "VERITAS_OPENGREP_RULES: registry ruleset name (p/... or r/...) "
+            "or a local rules file/directory"
+        ),
+    )
+
+    @field_validator("opengrep_rules", mode="after")
+    @classmethod
+    def _opengrep_rules_is_usable(cls, value: str) -> str:
+        """Accept a registry name or an existing local path, nothing else.
+
+        Anything else raises, so the value fails through the CLI's existing
+        friendly invalid-configuration path (one line to stderr, exit 1, no
+        traceback) instead of surfacing later as an OpenGrep failure.
+        """
+        if value.startswith(("p/", "r/")):
+            return value
+        if Path(value).exists():
+            return value
+        raise ValueError(
+            "must be a registry ruleset name starting with 'p/' or 'r/', or an "
+            f"existing local rules file or directory; got: {value}"
+        )
 
     @property
     def model_runtime(self) -> str:
@@ -123,6 +151,8 @@ def _flatten_toml(data: dict) -> dict:
     flat["exclude"] = review.get("exclude")
     flat["batch_chars"] = review.get("batch_chars")
     flat["max_batches"] = review.get("max_batches")
+    security = data.get("security", {})
+    flat["opengrep_rules"] = security.get("opengrep_rules")
     return {k: v for k, v in flat.items() if v is not None}
 
 
