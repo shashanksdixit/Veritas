@@ -9,7 +9,10 @@ constitution Principle VIII / FR-016.
 ## [Unreleased]
 
 ### Added
-- Report schema **1.7.0**: adds `ReviewRun.sast_rules`. Configurable SAST rules source; single-line OpenGrep failure reasons.
+- Provider error summaries drop URLs
+- [llm] max_output_tokens bounds every LLM response and truncation is logged
+
+### Changed
 - Operational polish: [llm] max_concurrency, a single retry for OpenRouter's in-flight 402, atomic log lines, UTF-8 console output on Windows, friendly configuration errors, LF line endings, README setup notes.
 
 ### Fixed

@@ -39,6 +39,7 @@ Options:
 | `VERITAS_TIMEOUT_SECONDS` | Per-request LLM timeout in seconds (default: 120, min 1) | --config value |
 | `VERITAS_MAX_RETRIES` | Retry limit per LLM request (default: 2, range 0-10) | --config value |
 | `VERITAS_MAX_CONCURRENCY` | Maximum concurrent LLM requests (default: 4, range 1-16) | --config value |
+| `VERITAS_MAX_OUTPUT_TOKENS` | Maximum output tokens per LLM request (default: 8192, min 256, max 65536) | --config value |
 | `VERITAS_OPENGREP_RULES` | SAST rules source: a registry ruleset name (`p/...` or `r/...`) or an existing local rules file/directory (default: `p/owasp-top-ten`) | --config value |
 | `VERITAS_GITHUB_TOKEN` | GitHub API token (PR mode) | --config value |
 | `VERITAS_GITLAB_TOKEN` | GitLab API token (PR mode) | --config value |

@@ -233,6 +233,8 @@ max_retries = 2                              # default: retries per request afte
                                               #  0 means one attempt, no retry.
 max_concurrency = 4                          # default: maximum concurrent LLM requests,
                                               #  1-16 (FR-019).
+max_output_tokens = 8192                      # default: maximum output tokens per LLM request,
+                                              #  256-65536 (FR-019).
 
 [hosting]
 provider = "github"                          # "github" or "gitlab"
@@ -269,6 +271,7 @@ opengrep_rules = "p/owasp-top-ten"           # default: SAST rules source. A reg
 | `VERITAS_TIMEOUT_SECONDS` | Per-request LLM timeout in seconds (default: 120, min 1) |
 | `VERITAS_MAX_RETRIES` | Retry limit per LLM request (default: 2, range 0-10; 0 = no retry) |
 | `VERITAS_MAX_CONCURRENCY` | Maximum concurrent LLM requests (default: 4, range 1-16) |
+| `VERITAS_MAX_OUTPUT_TOKENS` | Maximum output tokens per LLM request (default: 8192, min 256, max 65536) |
 | `VERITAS_OPENGREP_RULES` | SAST rules source (default: `p/owasp-top-ten`); a registry ruleset name `p/...`/`r/...` or an existing local rules file or directory |
 | `VERITAS_GITHUB_TOKEN` | GitHub API token (PR mode) |
 | `VERITAS_GITLAB_TOKEN` | GitLab API token (PR mode) |

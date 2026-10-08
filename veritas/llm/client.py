@@ -11,10 +11,10 @@ Never the openai SDK directly. Calls are wrapped with structured logging
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
 from typing import Callable
 
 from langchain.chat_models import init_chat_model  # type: ignore[import-untyped]
@@ -56,6 +56,7 @@ def build_kwargs(settings: Settings) -> tuple[str, str, dict]:
         "temperature": 0.0,
         "timeout": settings.timeout_seconds,
         "max_retries": settings.max_retries,
+        "max_tokens": settings.max_output_tokens,
     }
 
     if provider == "anthropic":
@@ -246,6 +247,8 @@ def summarize_llm_error(exc: BaseException, provider: str | None = None) -> str:
     if reason is not None and str(reason) == str(status):
         reason = None
 
+    message = re.sub(r"https?://\S+", "[link removed]", message)
+
     head = f"{label} {status}" if status is not None else label
     tail = f" [{reason}]" if reason else ""
     budget = MAX_ERROR_SUMMARY_CHARS - len(head) - len(tail) - 2
@@ -368,6 +371,11 @@ class LLMClient:
             text = response.content or ""
             latency_ms = (time.monotonic() - started) * 1000
             metadata = response.response_metadata or {}
+            finish_reason = metadata.get("finish_reason")
+            if finish_reason in ("length", "max_tokens"):
+                self.log.warning(
+                    f"llm: response truncated at max_output_tokens ({finish_reason}); raise [llm] max_output_tokens if findings are missing"
+                )
             usage = metadata.get("token_usage") or metadata.get("usage") or {}
             self.log.llm_call(
                 self.model_name,
