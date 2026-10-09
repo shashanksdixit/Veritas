@@ -373,8 +373,8 @@ class LLMClient:
             metadata = response.response_metadata or {}
             finish_reason = metadata.get("finish_reason")
             if finish_reason in ("length", "max_tokens"):
-                self.log.warning(
-                    f"llm: response truncated at max_output_tokens ({finish_reason}); raise [llm] max_output_tokens if findings are missing"
+                self.log.warn(
+                    f"llm: response truncated at max_output_tokens ({self.settings.max_output_tokens}); raise [llm] max_output_tokens if findings are missing"
                 )
             usage = metadata.get("token_usage") or metadata.get("usage") or {}
             self.log.llm_call(
