@@ -3,6 +3,7 @@
 The output-schema version tripwire lives in ``test_schema_version.py`` (T022b).
 """
 
+import re
 from pathlib import Path
 
 from tests.conftest import default_fake_llm
@@ -65,7 +66,7 @@ def test_fingerprint_identical_across_runs(sample_project, settings):
 
 def test_provenance_recorded_in_full_run(sample_project, settings):
     """Attribution (FR-024 / constitution Principle I): a full pipeline run's
-    report records the model, prompt version, and (pr-only) input revision.
+    report records the model, prompt version, and input revision.
     This also serves as integration coverage for prompt-version changes: the
     recorded version must equal the header actually loaded from the prompt
     files (T064: integration coverage for prompt changes)."""
@@ -75,4 +76,5 @@ def test_provenance_recorded_in_full_run(sample_project, settings):
     md = Path(str(outcome.report_path)).read_text(encoding="utf-8")
     assert f"**Model**: `{default_fake_llm().model_name}`" in md or "fake-model" in md
     assert f"**Prompt version**: `{current_prompt_version()}`" in md
-    assert "**Input revision**: `n/a`" in md  # revision tracking is PR-only
+    # Local scopes record a digest of the reviewed files (FR-024, T101).
+    assert re.search(r"\*\*Input revision\*\*: `sha256:[0-9a-f]{64}`", md)

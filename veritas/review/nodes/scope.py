@@ -4,8 +4,9 @@
   only, no local git state per FR-002); ``input_revision`` = PR/MR head sha.
 * ``project``/``module`` — walk the directory tree for supported-language files.
 * ``file`` — a single file.
-For local scopes ``input_revision`` is always None (revision tracking is
-PR-only, data-model.md / constitution Principle IV).
+For local scopes ``input_revision`` is ``sha256:<hex>``, a digest of the
+reviewed files (``local_input_revision``), so a local report records which
+input it reviewed (FR-024, constitution Principle I).
 
 Exclusion (FR-029): ``[review] exclude`` patterns are applied before file
 contents are fetched in every scope except ``file``, whose explicit target is
@@ -14,6 +15,7 @@ always reviewed. SAST scans exactly the post-exclusion file set.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 from typing import Callable
@@ -197,6 +199,24 @@ def build_hosting_client(settings, provider: str, log):
     raise ReviewFatalError(f"unsupported hosting provider: {provider}")
 
 
+def local_input_revision(files: dict[str, str]) -> str:
+    """The input revision of a local review (FR-024): ``sha256:`` + hex digest.
+
+    ``files`` is the post-exclusion file set the review receives. For each file
+    in sorted relative-path order the digest takes the path, a NUL byte, the
+    content and a NUL byte, all UTF-8, so the result depends only on which files
+    were reviewed and what they held, never on dict order. The NULs keep
+    boundaries unambiguous: ("ab", "c") and ("a", "bc") hash differently.
+    """
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        digest.update(path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(files[path].encode("utf-8"))
+        digest.update(b"\0")
+    return f"sha256:{digest.hexdigest()}"
+
+
 def _read_local_file(path: str) -> str:
     candidate = Path(path)
     if not candidate.is_file():
@@ -326,7 +346,7 @@ def _run_local(scope: ReviewScope, target: str, patterns: list[str]) -> dict:
         "files": files,
         "skipped_languages": skipped,
         "excluded_files": excluded,
-        "input_revision": None,
+        "input_revision": local_input_revision(files),
     }
 
 

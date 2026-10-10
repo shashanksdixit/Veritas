@@ -378,6 +378,50 @@ The report schema is versioned: an HTML comment
 changes are tracked in `CHANGELOG.md`. The machine-readable
 `.veritas/last-report.json` sidecar powers `veritas suppress`.
 
+## Purging stored data
+
+Veritas keeps no caches and no state between runs. A review stores its results
+in exactly these places, and deleting them removes every review artifact
+Veritas keeps (FR-030):
+
+| Location | Written by | Contains |
+|---|---|---|
+| `veritas-report-<timestamp>.md` (or your `--output` path) | every review | the full report |
+| `.veritas/last-report.json` (in the directory you ran from) | every review | the latest report as JSON, read by `veritas suppress` |
+| `.veritas/suppressions.json` | `veritas suppress` / `unsuppress` only | your suppressions |
+
+`.veritas/last-report.json` is git-ignored. `.veritas/config.toml` and
+`.veritas/suppressions.json` are not, so you can commit them on purpose.
+
+The SAST scan copies the reviewed files to a temporary `veritas-sast-*`
+directory, which Veritas deletes before the run ends. The OpenGrep binary,
+however, writes two kinds of file of its own that Veritas does not control:
+its log `~/.opengrep/semgrep.log`, overwritten on each scan, which lists the
+scanned file paths; and `semgrep-*.rules` files left in your system temporary
+directory, which hold rule definitions only (no code).
+
+Run these from the directory you ran `veritas review` in.
+
+Git Bash (or any POSIX shell):
+
+```bash
+rm -f veritas-report-*.md               # reports at the default path; delete any --output files by name
+rm -f .veritas/last-report.json
+rm -f .veritas/suppressions.json        # deletes ALL suppressions: suppressed findings reappear
+rm -f ~/.opengrep/semgrep.log
+rm -f "$TEMP"/semgrep-*.rules           # on Linux/macOS: rm -f "${TMPDIR:-/tmp}"/semgrep-*.rules
+```
+
+PowerShell:
+
+```powershell
+Remove-Item veritas-report-*.md -ErrorAction SilentlyContinue
+Remove-Item .veritas\last-report.json -ErrorAction SilentlyContinue
+Remove-Item .veritas\suppressions.json -ErrorAction SilentlyContinue   # deletes ALL suppressions
+Remove-Item "$HOME\.opengrep\semgrep.log" -ErrorAction SilentlyContinue
+Remove-Item "$env:TEMP\semgrep-*.rules" -ErrorAction SilentlyContinue
+```
+
 ## Development
 
 ```bash

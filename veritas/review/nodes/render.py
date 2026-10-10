@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime
+from http import HTTPStatus
 from typing import Callable
 
 from veritas.config.constants import LAST_REPORT_JSON, SCHEMA_VERSION
@@ -112,6 +113,23 @@ def _coverage(state: ReviewState, runtime) -> Coverage | None:
     )
 
 
+def _post_failure_reason(exc: Exception) -> str:
+    """The failure the --post warning names (FR-028), e.g. "403 Forbidden".
+
+    Built from the HTTP status alone, never from str(exc): a hosting API error's
+    text carries the raw response body, which can hold account details.
+    """
+    status = getattr(exc, "status", None)
+    if not isinstance(status, int):
+        return type(exc).__name__
+    if status == 0:
+        return "network error"  # hosting clients use status 0 for transport errors
+    try:
+        return f"{status} {HTTPStatus(status).phrase}"
+    except ValueError:
+        return f"HTTP {status}"
+
+
 def _post_report(runtime, report: Report) -> None:
     host = getattr(runtime, "hosting", None)
     parsed = getattr(runtime, "pr_parsed", None)
@@ -126,8 +144,11 @@ def _post_report(runtime, report: Report) -> None:
             host.post_note(parsed.owner, parsed.repo, parsed.number, body)
         runtime.log.info(f"Report posted as {parsed.provider} comment on {parsed.ref}")
     except Exception as exc:  # noqa: BLE001 - FR-028: posting failure is non-fatal
+        # The exit code is untouched: run_review derives it from the report
+        # status alone (FR-016), whatever happened here.
         runtime.log.warn(
-            f"Failed to post report as {parsed.provider} comment: {exc}; "
+            f"Failed to post report as {parsed.provider} comment: "
+            f"{_post_failure_reason(exc)}; "
             f"report saved to {runtime.report_path}"
         )
 

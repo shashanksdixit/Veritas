@@ -4,7 +4,12 @@ import pytest
 
 from veritas.hosting.resolver import UnresolvableTarget, parse_pr_target
 from veritas.review import ReviewNotFoundError
-from veritas.review.nodes.scope import _normalize_rel, _run_local, _walk_local_scope
+from veritas.review.nodes.scope import (
+    _normalize_rel,
+    _run_local,
+    _walk_local_scope,
+    local_input_revision,
+)
 from veritas.config.constants import MAX_SCOPE_FILES
 
 
@@ -78,7 +83,8 @@ def test_file_scope_reads_single_file(scope_tree):
     target = str(scope_tree / "src" / "a.py")
     result = _run_local("file", target, [])
     assert result["files"][_normalize_rel_target(target)] == "x = 1"
-    assert result["input_revision"] is None
+    # FR-024: local scopes record a content digest, not None (T101).
+    assert result["input_revision"] == local_input_revision(result["files"])
     assert result["excluded_files"] == []
 
 

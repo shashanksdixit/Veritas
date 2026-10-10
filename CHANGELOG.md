@@ -16,9 +16,20 @@ constitution Principle VIII / FR-016.
   field defaults to an empty list); readers that parsed per-batch details out
   of `run.error` should read `failed_batches` instead.
 - Provider error summaries drop URLs
+- README "Purging stored data" section and FR-030: every place Veritas stores
+  review artifacts (the report file, `.veritas/last-report.json`,
+  `.veritas/suppressions.json`), the OpenGrep binary's own log and leftover
+  rules files, and Git Bash / PowerShell commands to delete each. No behaviour
+  change; a new test pins that a review writes nothing else and removes its
+  SAST temporary directory.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- Project, module and file reviews record an input revision (FR-024):
+  `sha256:` + the hex SHA-256 of the reviewed files after exclusion (sorted by
+  path; path, NUL, content, NUL per file), shown in the report header in place
+  of `n/a`. PR reviews still record the head commit SHA. `run.input_revision`
+  keeps its type (`str | None`), so the report schema version is unchanged.
 - Run failure output is concise: `run.error` and the compact
   `Report status: incomplete — ...` line (at most 500 characters in total) give
   the failed batch count, the count per review type and each distinct reason
@@ -28,6 +39,7 @@ constitution Principle VIII / FR-016.
 - Operational polish: [llm] max_concurrency, a single retry for OpenRouter's in-flight 402, atomic log lines, UTF-8 console output on Windows, friendly configuration errors, LF line endings, README setup notes.
 
 ### Fixed
+- A failed `--post` warning names only the HTTP status (e.g. `403 Forbidden`) and the report path; it no longer includes the hosting API's raw response body. The exit code still ignores the posting outcome (0 complete, 2 incomplete) (FR-028).
 - A response truncated by [llm] max_output_tokens no longer crashes the LLM call with `AttributeError`; it logs a warning naming the configured limit.
 - SAST findings are no longer discarded on Windows: OpenGrep result paths (backslashes, 8.3 short names) are mapped to reviewed files; unmappable results are reported, not dropped; OpenGrep output is decoded as UTF-8.
 - A requirement with an unconfirmable evidence reference is no longer dropped from

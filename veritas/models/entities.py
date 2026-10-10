@@ -94,7 +94,7 @@ class ReviewRun(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     scope: ReviewScope
     target: str
-    input_revision: str | None = None  # PR head SHA for scope=pr; None for ad-hoc scopes
+    input_revision: str | None = None  # PR head SHA for scope=pr; "sha256:<hex>" of the reviewed files for local scopes (FR-024)
     config_hash: str
     started_at: datetime = Field(default_factory=datetime.now)
     completed_at: datetime | None = None

@@ -84,7 +84,7 @@ class ReviewRun(BaseModel):
     id: str                          # uuid4, stable across serializations
     scope: ReviewScope
     target: str                      # path or PR url/number
-    input_revision: str | None = None  # PR head SHA for scope=pr; always None for ad-hoc scopes (project/module/file) — revision tracking is a PR-only concept per constitution Principle IV (no diff-aware state between runs)
+    input_revision: str | None = None  # PR head SHA for scope=pr; for ad-hoc scopes (project/module/file) "sha256:" + the hex SHA-256 digest of the reviewed files after exclusion (FR-024). Computed from this run's input only, so no state is kept between runs (constitution Principle IV)
     config_hash: str                 # hash of config used (for determinism audit)
     started_at: datetime
     completed_at: datetime | None = None
