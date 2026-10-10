@@ -8,7 +8,7 @@
 
 ## Summary
 
-Build Veritas: a CLI-based, multi-agent code review tool that fetches PRs remotely via hosting-provider APIs (GitHub/GitLab), performs grounded reviews (code quality, security/OWASP with SAST + LLM-verified findings, requirement traceability, test-coverage judgment, performance reasoning, suggested changes), verifies every finding against real source before emission, and outputs a Markdown report + compact stdout summary. Orchestrated via LangGraph with architectural read-only safety boundaries; LLM backend configurable via OpenRouter (free models default, ZDR toggle); suppressions managed via a git-tracked allowlist keyed by code fingerprint.
+Build Veritas: a CLI-based, multi-agent code review tool that fetches PRs remotely via hosting-provider APIs (GitHub/GitLab), performs grounded reviews (code quality, security/OWASP with SAST + LLM-verified findings, requirement traceability, test-coverage judgment, performance reasoning; each finding with its recommendation), verifies every finding against real source before emission, and outputs a Markdown report + compact stdout summary. Orchestrated via LangGraph with architectural read-only safety boundaries; LLM backend configurable via OpenRouter (free models default, ZDR toggle); suppressions managed via a git-tracked allowlist keyed by code fingerprint.
 
 ## Technical Context
 
@@ -55,7 +55,7 @@ Build Veritas: a CLI-based, multi-agent code review tool that fetches PRs remote
 | **Read-Only Safety Boundary** | Additional Constraints § Read-Only | PASS | Review nodes use `ToolNode(read_only_tools)` only; write nodes (`ToolNode(write_tools)`) are terminal, no back-edges. Structural — tools not in the dict. |
 | **Grounded Verification** | Principle I | PASS | Dedicated verification node re-reads file/line for every non-SAST finding (FR-013). Per-finding exemption by actual source — LLM-identified security findings go through re-check. |
 | **SAST-Grounded & Verified Security** | Principle II | PASS | OpenGrep subprocess (LGPL-2.1, no paid tier) produces ground-truth findings (`source="sast"`). LLM-identified security findings (`source="llm-verified"`) pass verification. Every security finding labeled by source. |
-| **Requirement Traceability** | Principle III | PASS | Review checks code against project requirements (spec-kit or freeform). Findings carry status (satisfied/partial/gap/unclear) + evidence citations. |
+| **Requirement Traceability** | Principle III | PASS | Review checks code against project requirements (spec-kit or freeform). Findings carry status (satisfied/partial/gap/unclear/not_addressed, per FR-007; not_addressed is PR scope only) + evidence citations. |
 | **Fixed Review Scope** | Principle IV | PASS | Scope is user-directed per run. No state between runs. Five review-type nodes (code quality, security, requirements, test-coverage, performance) each produce findings that include recommendation text; all mandatory, no per-run toggles. |
 | **Project-Aware Review** | Principle V | PASS | Language/framework versions parsed from manifest files (FR-009). Project conventions honored (FR-010). Custom NL rules supported (FR-011). |
 | **CLI-First & Markdown Report** | Principle VI | PASS | All capability via CLI (Typer). Compact stdout + full Markdown file. Output schema versioned. |
@@ -100,7 +100,8 @@ veritas/
 ├── models/
 │   ├── __init__.py
 │   └── entities.py                  # ReviewRun, CodeFinding, RequirementFinding,
-│                                    #   SuppressionEntry, Report, Summary (from data-model.md)
+│                                    #   SuppressionEntry, VerificationFailure, Coverage,
+│                                    #   FailedBatch, Report, Summary (from data-model.md)
 ├── hosting/
 │   ├── __init__.py
 │   ├── github.py                    # GitHub REST via httpx (PR files, contents, comments)
@@ -115,9 +116,14 @@ veritas/
 │   ├── __init__.py
 │   ├── graph.py                     # LangGraph StateGraph definition
 │   ├── state.py                     # ReviewState TypedDict
+│   ├── batching.py                  # Deterministic batch planner for code-review inputs (FR-029, T076/T083)
+│   ├── test_index.py                # Test-file identification + relevance-ordered per-batch test index (FR-004, T081/T082/T084)
+│   ├── requirements_source.py       # Requirement source discovery + FR-NNN extraction (FR-008, T087)
 │   ├── nodes/
 │   │   ├── __init__.py
 │   │   ├── scope.py                 # Scope resolution (parse target, fetch files)
+│   │   ├── context.py               # Project-context node: manifests, conventions, NL rules (FR-009–011, T057)
+│   │   ├── common.py                # Shared node helpers: prompt loading, line-numbered code package, per-batch LLM calls (T068/T080/T092)
 │   │   ├── code_quality.py          # Code quality review node
 │   │   ├── security.py              # Security/OWASP review node
 │   │   ├── requirements.py          # Requirement traceability node
@@ -134,6 +140,7 @@ veritas/
 │       ├── code_quality.md
 │       ├── security.md
 │       ├── requirements.md
+│       ├── requirements_structured.md   # Per-batch evaluation of extracted requirements (FR-007, T088)
 │       ├── test_coverage.md
 │       └── performance.md
 ├── security/
@@ -153,31 +160,55 @@ veritas/
     ├── __init__.py
     ├── logging.py                    # Structured logging (Principle VIII)
     ├── redaction.py                  # Shared redact_secrets() utility (constitution Privacy & Data Handling) — called by every review node on finding text before it enters state
-    └── languages.py                  # Supported-language detection + skip logic
+    ├── languages.py                  # Supported-language detection + skip logic
+    ├── paths.py                      # Path matching helpers for exclusion patterns (FR-029, T075)
+    └── project_context.py            # Manifest/convention/NL-rule parsing (FR-009–011, T056)
 
 tests/
+├── conftest.py                      # Shared fixtures: deterministic fake LLM, sample project, settings, fake_secret()
 ├── contract/
 │   ├── test_github_api.py           # GitHub API contract (mocked httpx)
 │   └── test_gitlab_api.py           # GitLab API contract (mocked httpx)
 ├── integration/
+│   ├── conftest.py                  # No real SAST binary, sandboxed CWD
 │   ├── test_llm_provider.py         # LLM provider request/response contracts
+│   ├── test_llm_output_limit.py     # Provider error URL removal, [llm] max_output_tokens (FR-019, FR-029)
+│   ├── test_zdr.py                  # ZDR toggle (FR-021, T079)
 │   ├── test_cli_review.py           # CLI review command behavior
 │   ├── test_cli_suppress.py         # CLI suppress/unsuppress behavior
 │   ├── test_config.py               # Config loading (env, file, CLI flags)
 │   ├── test_opengrep.py             # OpenGrep invocation + JSON parsing
 │   ├── test_verification.py         # Verification node re-check logic
+│   ├── test_prefixed_citations.py   # Cited snippets copied with the prompts' line numbers (FR-014, T080)
+│   ├── test_batch_review.py         # Batched code review consumption (FR-029, T076)
+│   ├── test_review_exclusion.py     # Scope exclusion (FR-029, T075)
+│   ├── test_test_coverage_index.py  # Relevance-ordered test index for the test-coverage review (FR-004)
+│   ├── test_requirements_discovery.py # Requirement source discovery + extraction in the scope node (FR-008)
+│   ├── test_requirements_batches.py # Per-batch requirement evaluation (FR-007)
 │   ├── test_determinism.py          # Run-level determinism (SC-004)
 │   ├── test_schema_version.py       # Output-schema versioning tripwire (FR-016)
 │   └── test_project_aware_review.py # Project-context influence on reports (US4)
 └── unit/
     ├── test_fingerprint.py          # Suppression fingerprint determinism
+    ├── test_suppression_resolver.py # Suppression resolution rules (FR-017)
     ├── test_markdown_renderer.py    # Report → Markdown output
     ├── test_compact_summary.py      # Report → stdout compact output
+    ├── test_failure_summary.py      # Concise run failure output (FR-027, T098)
     ├── test_scope_resolver.py       # PR ref parsing, scope validation
     ├── test_models.py               # Pydantic model validation
     ├── test_redaction.py            # redact_secrets() masking
+    ├── test_llm_error_summary.py    # summarize_llm_error() one-line summaries (FR-029)
+    ├── test_logging.py              # Atomic structured logging
     ├── test_languages.py            # Unsupported-language skip/note logic
     ├── test_project_context.py      # Manifest/convention/NL-rule parsing
+    ├── test_exclusion_patterns.py   # Exclusion-pattern matching (FR-029)
+    ├── test_batching.py             # Deterministic batch planner (FR-029)
+    ├── test_code_package.py         # Line-numbered, line-boundary-truncated code package (FR-014)
+    ├── test_line_number_prefixes.py # Cited-snippet line-number prefix stripping (FR-014)
+    ├── test_findings_filters.py     # Do-not-report finding filters (FR-014)
+    ├── test_test_index.py           # Relevance-ordered test index (FR-004)
+    ├── test_requirements_source.py  # Requirement source discovery + extraction (FR-008)
+    ├── test_requirements_merge.py   # Merging per-batch requirement answers (FR-007)
     └── test_summary.py              # Verdict derivation (T041b)
 ```
 
