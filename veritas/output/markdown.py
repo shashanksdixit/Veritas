@@ -12,6 +12,7 @@ from veritas.models.entities import (
     Category,
     CodeFinding,
     Coverage,
+    FailedBatch,
     Report,
     RequirementStatus,
     Severity,
@@ -363,6 +364,9 @@ def render_markdown(report: Report) -> str:
         for vf in summary.verification_failures:
             _render_failure_detail(out, vf)
 
+    if report.failed_batches:
+        _render_failed_batches(out, report.failed_batches)
+
     out.append("## Code Findings")
     out.append("")
     # FR-012: what "citation verified" does and does not mean, stated where the
@@ -479,6 +483,36 @@ def render_markdown(report: Report) -> str:
     result = "\n".join(out)
     report.markdown_content = result
     return result
+
+
+def _render_failed_batches(out: list[str], failed: list[FailedBatch]) -> None:
+    """Every failed LLM batch call, one row each (FR-027).
+
+    The report status line only summarises these; this is where a reader finds
+    which batch of which review type failed and why. Collapsed, because a run
+    whose provider is down can fail every batch of every review type.
+    """
+    out.append("### Failed batches (FR-027)")
+    out.append("")
+    out.append(
+        "These LLM batch calls failed, so the code in them was not reviewed by "
+        "that review type and the report is incomplete."
+    )
+    out.append("")
+    out.append("<details>")
+    out.append(f"<summary>{len(failed)} failed batch call(s)</summary>")
+    out.append("")
+    _render_table(
+        out,
+        ("Review type", "Batch", "Files", "Reason"),
+        [
+            (f.review_type, f"{f.batch}/{f.total}", str(len(f.files)), f.reason)
+            for f in failed
+        ],
+    )
+    out.append("")
+    out.append("</details>")
+    out.append("")
 
 
 def _render_table(out: list[str], header: tuple[str, ...], rows: list[tuple[str, ...]]) -> None:

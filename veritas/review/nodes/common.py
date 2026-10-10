@@ -14,6 +14,7 @@ from veritas.llm.client import summarize_llm_error
 from veritas.models.entities import (
     Category,
     CodeFinding,
+    FailedBatch,
     FindingSource,
     LineRange,
     RequirementFinding,
@@ -314,6 +315,25 @@ def _batch_paths(chunks) -> list[str]:
     return list(dict.fromkeys(chunk.path for chunk in chunks))
 
 
+def _failed_batch(
+    review_type: str, position: int, total: int, paths: list[str], exc: Exception, llm
+) -> FailedBatch:
+    """Record one failed batch call (FR-027, FR-029).
+
+    The file list and the provider summary are redacted here, once, so the
+    record, its ``message`` and the log line built from it all carry the same
+    redacted text (constitution Privacy & Data Handling).
+    """
+    reason = summarize_llm_error(exc, provider=getattr(llm, "provider", None))
+    return FailedBatch(
+        review_type=review_type,
+        batch=position,
+        total=total,
+        files=[redact_secrets(path) for path in paths],
+        reason=redact_secrets(reason),
+    )
+
+
 # The recommendation wordings that ask for no change at all (FR-014). Matched
 # case-insensitively against the trimmed recommendation AND AT ITS START only:
 # a recommendation that merely mentions the phrase later - "there is no change
@@ -386,7 +406,7 @@ def llm_findings(
     source: FindingSource | None = None,
     extra: str = "",
     batch_extra: dict[int, str] | None = None,
-) -> tuple[list[CodeFinding], list[str]]:
+) -> tuple[list[CodeFinding], list[FailedBatch]]:
     """Drive the LLM for a code-findings review type over the shared batch plan.
 
     The scope node planned the batches once and every code review type drives the
@@ -417,8 +437,10 @@ def llm_findings(
     message, reason — never the raw response body, FR-029), redacted before it
     is recorded or logged (constitution Privacy & Data Handling).
 
-    Returns ``(findings, errors)``; the caller routes ``errors`` into the shared
-    errors channel, which makes the run's report status incomplete (FR-027).
+    Returns ``(findings, failed)``: one ``FailedBatch`` per failed call. The
+    caller routes each record into the ``failed_batches`` channel and its
+    ``message`` into the shared errors channel, which makes the run's report
+    status incomplete (FR-027).
     """
     sys_prompt = load_prompt(prompt_name)
     batches = list(plan.batches) if plan is not None else []
@@ -436,7 +458,7 @@ def llm_findings(
 
     total = len(batches)
     findings: list[CodeFinding] = []
-    errors: list[str] = []
+    failed: list[FailedBatch] = []
     for position, batch in enumerate(batches, start=1):
         paths = _batch_paths(batch.chunks)
         if log is not None:
@@ -488,14 +510,10 @@ def llm_findings(
                 )
             findings.extend(batch_findings)
         except Exception as exc:  # noqa: BLE001 - isolate one batch, keep going
-            error = redact_secrets(
-                f"{prompt_name}: batch {position}/{total} failed "
-                f"(files: {', '.join(paths)}): "
-                f"{summarize_llm_error(exc, provider=getattr(llm, 'provider', None))}"
-            )
-            errors.append(error)
+            failure = _failed_batch(prompt_name, position, total, paths, exc, llm)
+            failed.append(failure)
             if log is not None:
-                log.warn(error)
+                log.warn(failure.message)
     findings, no_change, idiom = discard_do_not_report(findings)
     if (no_change or idiom) and log is not None:
         # One line per review type, not per batch: the counts say why anything
@@ -504,7 +522,7 @@ def llm_findings(
             f"{prompt_name}: discarded {no_change + idiom} finding(s): "
             f"{no_change} no-change, {idiom} idiom-only"
         )
-    return (findings, errors)
+    return (findings, failed)
 
 
 def llm_requirement_findings(
@@ -535,15 +553,16 @@ def llm_requirement_answers(
     context: str | None,
     *,
     log,
-) -> tuple[list[dict], list[str]]:
+) -> tuple[list[dict], list[FailedBatch]]:
     """Ask each batch how it answers every structured requirement (FR-007).
 
     One call per batch of the shared plan, mirroring :func:`llm_findings`: the same
     per-batch log line before the call, the same per-batch failure isolation, and
     the same redacted error text, so a provider error costs one batch of
-    requirement coverage rather than the whole review. Errors come back for the
-    caller to route into the shared errors channel (FR-027) *and* to consult when
-    merging, because a failed batch means a gap cannot be concluded (FR-007).
+    requirement coverage rather than the whole review. Failed batches come back
+    as ``FailedBatch`` records for the caller to route into the shared channels
+    (FR-027) *and* to consult when merging, because a failed batch means a gap
+    cannot be concluded (FR-007).
 
     The returned payloads are the raw answer objects; parsing the individual
     answers, dropping ids that are not in ``requirements`` and merging per batch
@@ -564,7 +583,7 @@ def llm_requirement_answers(
 
     total = len(batches)
     payloads: list[dict] = []
-    errors: list[str] = []
+    failed: list[FailedBatch] = []
     for position, batch in enumerate(batches, start=1):
         paths = _batch_paths(batch.chunks)
         if log is not None:
@@ -574,15 +593,11 @@ def llm_requirement_answers(
             text = llm.complete(sys_prompt, prefix + "Code to review:\n\n" + batch.text)
             payloads.extend(parse_json_array(text))
         except Exception as exc:  # noqa: BLE001 - isolate one batch, keep going
-            error = redact_secrets(
-                f"requirements: batch {position}/{total} failed "
-                f"(files: {', '.join(paths)}): "
-                f"{summarize_llm_error(exc, provider=getattr(llm, 'provider', None))}"
-            )
-            errors.append(error)
+            failure = _failed_batch("requirements", position, total, paths, exc, llm)
+            failed.append(failure)
             if log is not None:
-                log.warn(error)
-    return (payloads, errors)
+                log.warn(failure.message)
+    return (payloads, failed)
 
 
 def grounding_filter(finding: CodeFinding, files: dict[str, str]) -> bool:

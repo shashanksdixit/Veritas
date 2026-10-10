@@ -80,7 +80,7 @@ def _report(**overrides) -> Report:
 
 def test_schema_version_comment_top():
     md = render_markdown(_report())
-    assert md.startswith("<!-- veritas-report-schema: 1.7.0 -->")
+    assert md.startswith("<!-- veritas-report-schema: 1.8.0 -->")
 
 
 def test_sections_present():

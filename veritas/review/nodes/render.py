@@ -17,13 +17,14 @@ from veritas.config.constants import LAST_REPORT_JSON, SCHEMA_VERSION
 from veritas.models.entities import (
     CodeFinding,
     Coverage,
+    FailedBatch,
     FindingSource,
     Report,
     ReportStatus,
     RequirementFinding,
     ReviewRun,
 )
-from veritas.output.compact import render_compact
+from veritas.output.compact import ERROR_SUMMARY_LIMIT, render_compact, summarize_errors
 from veritas.output.markdown import render_markdown
 from veritas.output.summary import compute_summary
 from veritas.review.nodes.common import snippet_for
@@ -59,14 +60,26 @@ def _apply_suppressions(
     return kept
 
 
-def _finalize_run(state: ReviewState, errors: list[str]) -> ReviewRun:
+def _finalize_run(
+    state: ReviewState, errors: list[str], failed: list[FailedBatch]
+) -> ReviewRun:
+    """The run, marked complete or incomplete (FR-027).
+
+    ``errors`` is every error on the shared channel, including the message of
+    each failed batch; ``failed`` is the record behind each of those messages.
+    run.error summarises them in at most ERROR_SUMMARY_LIMIT characters, so
+    40 identical batch failures read as one count and one reason rather than
+    40 near-identical lines; the detail is in Report.failed_batches.
+    """
     run = state["run"]
-    if errors:
+    if errors or failed:
+        batch_messages = {f.message for f in failed}
+        others = [e for e in errors if e not in batch_messages]
         return run.model_copy(
             update={
                 "report_status": ReportStatus.INCOMPLETE,
                 "completed_at": datetime.now(),
-                "error": "; ".join(errors),
+                "error": summarize_errors(failed, others, limit=ERROR_SUMMARY_LIMIT),
             }
         )
     return run.model_copy(
@@ -158,7 +171,9 @@ def make_render_node(runtime) -> Callable[[ReviewState], dict]:
         else:
             req = list(verified_req)
 
-        run = _finalize_run(state, [*state.get("errors", []), *withheld_errors])
+        # .get: tests and older graphs build state without failed_batches.
+        failed = list(state.get("failed_batches") or [])
+        run = _finalize_run(state, [*state.get("errors", []), *withheld_errors], failed)
 
         code = _apply_suppressions(code, state.get("files", {}), runtime.suppressions)
 
@@ -177,6 +192,7 @@ def make_render_node(runtime) -> Callable[[ReviewState], dict]:
             requirement_findings=req,
             summary=summary,
             coverage=_coverage(state, runtime),
+            failed_batches=failed,
         )
         markdown = render_markdown(report)
 

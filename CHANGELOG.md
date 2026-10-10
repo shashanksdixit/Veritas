@@ -9,10 +9,22 @@ constitution Principle VIII / FR-016.
 ## [Unreleased]
 
 ### Added
+- Report schema **1.8.0**: adds `Report.failed_batches`, one `FailedBatch`
+  record (review type, batch, total, files, reason) per failed LLM batch call,
+  and a collapsible "Failed batches" table in the Markdown report after
+  Verification failures (FR-027). Migration: earlier reports remain valid (the
+  field defaults to an empty list); readers that parsed per-batch details out
+  of `run.error` should read `failed_batches` instead.
 - Provider error summaries drop URLs
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- Run failure output is concise: `run.error` and the compact
+  `Report status: incomplete — ...` line (at most 500 characters in total) give
+  the failed batch count, the count per review type and each distinct reason
+  once (at most 3, then "and N more"), plus any non-batch errors, each once.
+  Previously every per-batch error was concatenated (about 10,000 characters
+  for 40 identical failures).
 - Operational polish: [llm] max_concurrency, a single retry for OpenRouter's in-flight 402, atomic log lines, UTF-8 console output on Windows, friendly configuration errors, LF line endings, README setup notes.
 
 ### Fixed

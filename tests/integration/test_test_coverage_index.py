@@ -484,7 +484,7 @@ def test_the_indexes_survive_a_node_that_finds_nothing(project_tree, monkeypatch
     llm = RecordingLLM()
     result = make_test_coverage_node(_runtime(llm, batch_chars=_BATCH_CHARS))(state)
 
-    assert result == {"code_findings": [], "errors": []}
+    assert result == {"code_findings": [], "errors": [], "failed_batches": []}
     assert set(state["test_indexes"]) == {1, 2}, "the node must not clear shared state"
 
 

@@ -132,6 +132,7 @@ def _initial_state(
         "degraded_sast": None,
         "sast_findings": [],
         "errors": [],
+        "failed_batches": [],
         "report_path": report_path,
         "report_markdown": None,
     }

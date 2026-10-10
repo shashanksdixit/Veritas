@@ -221,6 +221,14 @@ def test_a_failing_batch_is_isolated_and_the_others_still_merge(tmp_path):
     assert _AWS_KEY_ID not in result["errors"][0]
     assert "[REDACTED]" in result["errors"][0]
     assert any(e.startswith("warn: requirements: batch 2/2 failed") for e in events)
+    # The same failure is recorded for the report's Failed batches section
+    # (FR-027): redacted too, and its message is exactly the error above.
+    (failed,) = result["failed_batches"]
+    assert (failed.review_type, failed.batch, failed.total) == ("requirements", 2, 2)
+    assert failed.files == list(dict.fromkeys(c.path for c in plan.batches[1].chunks))
+    assert _AWS_KEY_ID not in failed.reason
+    assert "[REDACTED]" in failed.reason
+    assert failed.message == result["errors"][0]
 
 
 def test_a_failed_batch_prevents_a_gap_even_when_the_other_batches_say_not_here(tmp_path):

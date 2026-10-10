@@ -10,6 +10,7 @@ from langgraph.graph.message import add_messages
 from veritas.models.entities import (
     CodeFinding,
     ExcludedFile,
+    FailedBatch,
     RequirementFinding,
     ReviewRun,
     ReviewScope,
@@ -70,5 +71,8 @@ class ReviewState(TypedDict):
     degraded_sast: str | None
     sast_findings: list[dict]
     errors: Annotated[list[str], add]
+    # One record per failed LLM batch call, additive like errors. Each record's
+    # message is also on errors; this keeps the detail for the report (FR-027).
+    failed_batches: Annotated[list[FailedBatch], add]
     report_path: str | None
     report_markdown: str | None

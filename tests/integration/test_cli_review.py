@@ -24,7 +24,7 @@ def test_project_review_succeeds_and_writes_report(sample_project, settings):
     report_path = Path(str(outcome.report_path))
     assert report_path.is_file()
     md = report_path.read_text(encoding="utf-8")
-    assert md.startswith("<!-- veritas-report-schema: 1.7.0 -->")
+    assert md.startswith("<!-- veritas-report-schema: 1.8.0 -->")
     assert "# Veritas Code Review" in md
     assert "## Code Findings" in md
     assert "Unused import os" in md
@@ -128,9 +128,18 @@ def test_partial_failure_returns_exit_2(sample_project, settings):
     assert outcome.exit_code == 2
     report = Report.model_validate_json(Path(LAST_REPORT_JSON).read_text(encoding="utf-8"))
     assert report.run.report_status.value == "incomplete"
-    # The failing batch is named with the files it held (FR-029 batch isolation,
-    # FR-027 partial-review status), and the provider message survives.
-    assert "code_quality: batch 1/1 failed (files: src/app.py)" in (report.run.error or "")
+    # The failing batch is recorded with the files it held (FR-029 batch
+    # isolation), and run.error summarises it with the provider message
+    # (FR-027 partial-review status).
+    (failed,) = report.failed_batches
+    assert (failed.review_type, failed.batch, failed.total, failed.files) == (
+        "code_quality",
+        1,
+        1,
+        ["src/app.py"],
+    )
+    assert "provider exploded" in failed.reason
+    assert "1 LLM batch call(s) failed (code_quality: 1)" in (report.run.error or "")
     assert "provider exploded" in (report.run.error or "")
 
 

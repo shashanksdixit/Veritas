@@ -46,7 +46,7 @@ def make_security_node(runtime) -> Callable[[ReviewState], dict]:
         sast = _sast_findings(state["sast_findings"], files)
         runtime.log.info(f"security: {len(sast)} SAST findings")
 
-        llm_raw, errors = llm_findings(
+        llm_raw, failed = llm_findings(
             runtime.llm,
             state["batch_plan"],
             "security",
@@ -66,8 +66,13 @@ def make_security_node(runtime) -> Callable[[ReviewState], dict]:
                 f"Security coverage degraded: {state['degraded_sast']}; "
                 "LLM-identified findings remain subject to re-verification."
             )
-        # errors rides the shared FR-027 channel: any recorded error makes the
-        # run's report status incomplete.
-        return {"code_findings": combined, "errors": errors}
+        # Each failed batch rides the shared FR-027 errors channel (any recorded
+        # error makes the run's report status incomplete) and failed_batches,
+        # which keeps the per-batch detail for the report.
+        return {
+            "code_findings": combined,
+            "errors": [f.message for f in failed],
+            "failed_batches": failed,
+        }
 
     return security_node

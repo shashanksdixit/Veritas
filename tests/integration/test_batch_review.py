@@ -430,7 +430,7 @@ def test_zero_batch_plan_makes_no_llm_call():
         events: list[str] = []
         result = factory(_runtime(llm, capture=events))(_state(empty, {}))
         assert llm.calls == [], name
-        assert result == {"code_findings": [], "errors": []}, name
+        assert result == {"code_findings": [], "errors": [], "failed_batches": []}, name
         assert any(f"{name}: no source files to review" in e for e in events), name
 
 
@@ -657,7 +657,9 @@ def test_end_to_end_batch_failure_makes_the_report_incomplete(tmp_path):
 
     assert outcome.exit_code == 2
     assert report.run.report_status.value == "incomplete"
-    assert "batch 2/" in (report.run.error or "")
+    # The second code-quality batch is recorded in full; run.error summarises it.
+    assert [(f.review_type, f.batch) for f in report.failed_batches] == [("code_quality", 2)]
+    assert "1 LLM batch call(s) failed (code_quality: 1)" in (report.run.error or "")
     # Coverage still describes the plan: a failed batch is an error, not a gap
     # in coverage.
     assert report.coverage is not None

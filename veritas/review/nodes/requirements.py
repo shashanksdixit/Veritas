@@ -259,7 +259,7 @@ def _structured_node(
     """Evaluate the extracted requirements against every batch (FR-007)."""
     plan = state.get("batch_plan")
     total_batches = len(plan.batches) if plan is not None else 0
-    payloads, errors = llm_requirement_answers(
+    payloads, failed = llm_requirement_answers(
         runtime.llm,
         plan,
         requirements,
@@ -277,7 +277,7 @@ def _structured_node(
         payloads,
         total_batches=total_batches,
         not_reviewed_files=tuple(plan.not_reviewed_files) if plan is not None else (),
-        batch_failed=bool(errors),
+        batch_failed=bool(failed),
         pr_scope=_is_pr_scope(state),
     )
     counts = {status: 0 for status in RequirementStatus}
@@ -291,9 +291,13 @@ def _structured_node(
         f"{counts[RequirementStatus.UNCLEAR]} unclear, "
         f"{counts[RequirementStatus.NOT_ADDRESSED]} not addressed"
     )
-    # errors rides the shared FR-027 channel and also holds back every gap (FR-007):
-    # a batch that failed is a batch whose "not in here" we never heard.
-    return {"requirement_findings": findings, "errors": errors}
+    # A failed batch rides the shared FR-027 channels and also holds back every
+    # gap (FR-007): a batch that failed is a batch whose "not in here" we never heard.
+    return {
+        "requirement_findings": findings,
+        "errors": [f.message for f in failed],
+        "failed_batches": failed,
+    }
 
 
 def _free_text_node(runtime, state: ReviewState) -> dict:

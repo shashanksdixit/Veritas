@@ -219,6 +219,29 @@ class Coverage(BaseModel):
     not_reviewed_files: list[str] = Field(default_factory=list)
 
 
+class FailedBatch(BaseModel):
+    """One LLM batch call that failed (FR-027, FR-029).
+
+    ``files`` and ``reason`` are already redacted when the record is built, so
+    the record can be written to the report as it is.
+    """
+
+    review_type: str  # the prompt name: code_quality, security, requirements, ...
+    batch: int        # 1-based position in the batch plan
+    total: int        # number of batches in the plan
+    files: list[str] = Field(default_factory=list)
+    reason: str       # summarize_llm_error's one-line summary
+
+    @property
+    def message(self) -> str:
+        """The one-line error text logged for this batch and carried on the
+        shared errors channel."""
+        return (
+            f"{self.review_type}: batch {self.batch}/{self.total} failed "
+            f"(files: {', '.join(self.files)}): {self.reason}"
+        )
+
+
 class Report(BaseModel):
     """The full review deliverable (FR-016)."""
 
@@ -230,6 +253,9 @@ class Report(BaseModel):
     # FR-029 coverage — backward-compatible addition in schema 1.3.0. Earlier
     # reports carry no coverage data, so the field defaults to None.
     coverage: Coverage | None = None
+    # Schema 1.8.0: every failed LLM batch call, in full (FR-027). run.error
+    # only summarises them; earlier reports have none, so it defaults to empty.
+    failed_batches: list[FailedBatch] = Field(default_factory=list)
     markdown_content: str | None = None
 
 

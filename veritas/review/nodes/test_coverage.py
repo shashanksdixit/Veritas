@@ -60,7 +60,7 @@ def make_test_coverage_node(runtime) -> Callable[[ReviewState], dict]:
         # get(), not []: a state built without the scope node's output means the
         # same as an empty index - nothing known about the tests.
         indexes = state.get("test_indexes")
-        findings, errors = llm_findings(
+        findings, failed = llm_findings(
             runtime.llm,
             state["batch_plan"],
             "test_coverage",
@@ -76,8 +76,13 @@ def make_test_coverage_node(runtime) -> Callable[[ReviewState], dict]:
         # summary counts it - so nothing downstream ever sees an error here.
         findings, _lowered = _cap_severity(findings, runtime.log)
         runtime.log.info(f"test-coverage: {len(findings)} findings")
-        # errors rides the shared FR-027 channel: any recorded error makes the
-        # run's report status incomplete.
-        return {"code_findings": findings, "errors": errors}
+        # Each failed batch rides the shared FR-027 errors channel (any recorded
+        # error makes the run's report status incomplete) and failed_batches,
+        # which keeps the per-batch detail for the report.
+        return {
+            "code_findings": findings,
+            "errors": [f.message for f in failed],
+            "failed_batches": failed,
+        }
 
     return test_coverage_node
