@@ -219,15 +219,42 @@ def test_a_partial_requirement_left_with_no_evidence_is_demoted_too():
     assert kept.evidence == []
 
 
-def test_a_gap_or_unclear_finding_is_left_alone():
+def test_a_gap_finding_without_evidence_is_left_alone():
     gap = _requirement(RequirementStatus.GAP, [], ref="FR-003", id="rf-gap")
     gap.explanation = "No code implementing this requirement was found in any reviewed batch."
-    unclear = _requirement(RequirementStatus.UNCLEAR, ["src/missing.py:1"], ref="FR-004", id="rf-unc")
     out = make_verify_node(_NodeRuntime(_RecordingLog()))(
-        {"files": FILES, "code_findings": [], "requirement_findings": [gap, unclear]}
+        {"files": FILES, "code_findings": [], "requirement_findings": [gap]}
     )
-    assert out["verified_requirement_findings"] == [gap, unclear]
+    assert out["verified_requirement_findings"] == [gap]
     assert out["verification_failures"] == []
+
+
+def test_an_unclear_finding_citing_a_missing_file_loses_the_reference_and_stays_unclear():
+    """T106: unclear is checked like every other status (FR-013)."""
+    unclear = _requirement(
+        RequirementStatus.UNCLEAR, ["src/app.py:2", "src/ghost.py:999"], ref="FR-004", id="rf-unc"
+    )
+    out = make_verify_node(_NodeRuntime(_RecordingLog()))(
+        {"files": FILES, "code_findings": [], "requirement_findings": [unclear]}
+    )
+
+    (kept,) = out["verified_requirement_findings"]
+    assert kept.status is RequirementStatus.UNCLEAR
+    assert kept.evidence == ["src/app.py:2"]
+    assert kept.explanation == unclear.explanation
+    (failure,) = out["verification_failures"]
+    assert failure.finding_id == "rf-unc"
+    assert failure.reason_code is VerificationReasonCode.EVIDENCE_NOT_CONFIRMED
+    assert failure.reason == "evidence not confirmed: src/ghost.py:999 (file not in scope)"
+
+
+def test_partition_checks_an_unclear_finding_line_by_line():
+    """T106: a reviewed file with an out-of-range line is unconfirmed for unclear too."""
+    rf = _requirement(RequirementStatus.UNCLEAR, ["src/app.py:3", "src/app.py:999"])
+    assert partition_requirement_evidence(rf, FILES) == (
+        ["src/app.py:3"],
+        ["src/app.py:999 (line out of range)"],
+    )
 
 
 def test_every_requirement_reaches_the_report_even_with_bad_evidence():
@@ -965,3 +992,43 @@ def test_duplicate_merge_count_reaches_summary_and_metrics_row(tmp_path, setting
     md = Path(str(outcome.report_path)).read_text(encoding="utf-8")
     assert "| Duplicate findings merged | 1 |" in md
     assert md.index("| Citations adjusted |") < md.index("| Duplicate findings merged |")
+
+def test_unclear_ghost_reference_is_removed_from_the_report(sample_project, settings):
+    """T106 end to end: an unclear finding citing src/ghost.py:999 yields one
+    evidence_not_confirmed failure, and the reference is no longer cited as
+    evidence in the written report (FR-013)."""
+    from tests.conftest import FakeLLM
+    from veritas.config.constants import LAST_REPORT_JSON
+    from veritas.models.entities import Report, ReviewScope
+    from veritas.review.graph import run_review
+
+    llm = FakeLLM(
+        {
+            "requirements-traceability": json.dumps(
+                [
+                    {
+                        "requirement_ref": "REQ-1",
+                        "requirement_text": "The tool must support project scope reviews.",
+                        "status": "unclear",
+                        "evidence": ["src/ghost.py:999"],
+                        "explanation": "Could not tell from the code shown.",
+                    }
+                ]
+            )
+        }
+    )
+    run_review(settings, ReviewScope.PROJECT, str(sample_project), llm=llm)
+
+    report = Report.model_validate_json(Path(LAST_REPORT_JSON).read_text(encoding="utf-8"))
+    (rf,) = [f for f in report.requirement_findings if f.requirement_ref == "REQ-1"]
+    assert rf.status is RequirementStatus.UNCLEAR
+    assert rf.evidence == []
+    assert rf.explanation == "Could not tell from the code shown."
+    failures = [
+        vf
+        for vf in report.summary.verification_failures
+        if vf.reason_code is VerificationReasonCode.EVIDENCE_NOT_CONFIRMED
+    ]
+    assert len(failures) == 1
+    assert failures[0].finding_id == rf.id
+    assert failures[0].reason == "evidence not confirmed: src/ghost.py:999 (file not in scope)"

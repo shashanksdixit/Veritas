@@ -37,6 +37,7 @@ from veritas.review.nodes.common import current_prompt_version, guarded
 from veritas.review.state import ReviewState
 from veritas.suppression.store import SuppressionStore
 from veritas.utils.logging import Log
+from veritas.utils.redaction import redact_secrets
 
 
 @dataclass
@@ -244,7 +245,10 @@ def run_review(
 
     run = ReviewRun(
         scope=scope_val,
-        target=target,
+        # A PR URL can carry credentials (https://user:token@host/...); the run
+        # record is published, so it keeps the redacted form (FR-013). The raw
+        # target stays on runtime for the hosting API call.
+        target=redact_secrets(target),
         config_hash=settings.config_hash,
         model_name=llm.model_name,
         prompt_version=current_prompt_version(),

@@ -9,6 +9,22 @@ constitution Principle VIII / FR-016.
 ## [Unreleased]
 
 ### Security
+- A key or token in the committed `.veritas/config.toml` is now refused
+  (FR-020, T107): if it sets `api_key`, `github_token` or `gitlab_token`,
+  `veritas review` exits 1 with `[error] invalid configuration: ...` naming the
+  field and pointing to `.veritas/config.local.toml` or the `VERITAS_*`
+  variable. Keys in `.veritas/config.local.toml`, an explicit `--config` file
+  and environment variables work as before. Migration: move any key from
+  `.veritas/config.toml` to `.veritas/config.local.toml` (and rotate it if the
+  file was ever committed).
+- Every finished output is redacted where it is written or sent (FR-013,
+  T105): the Markdown report file, the compact stdout summary, every string
+  value in `.veritas/last-report.json`, and the `--post` comment body. The
+  run's recorded target is redacted too, so a credentialed PR/MR URL such as
+  `https://oauth2:<token>@gitlab.com/...` is shown as
+  `[REDACTED]gitlab.com/...`. Suppression is unaffected: fingerprints are
+  computed from snippets that were already redacted, and existing
+  `.veritas/suppressions.json` entries keep matching. No report schema change.
 - Redaction masks unquoted secrets (constitution 6.0.0/6.0.1, FR-013, T104):
   a literal value assigned to a credential-named key is now masked when
   unquoted (`password=hunter2`, `api_key: abcd1234efgh5678`), not only when
@@ -61,6 +77,11 @@ constitution Principle VIII / FR-016.
 - Operational polish: [llm] max_concurrency, a single retry for OpenRouter's in-flight 402, atomic log lines, UTF-8 console output on Windows, friendly configuration errors, LF line endings, README setup notes.
 
 ### Fixed
+- An `unclear` requirement's evidence is now verified like every other
+  status (FR-013, T106). Previously a reference it cited was published
+  unchecked; now a reference to a file outside the review or a line past its
+  end is removed and recorded as an `evidence_not_confirmed` verification
+  failure. The requirement stays `unclear`. No report schema change.
 - A failed `--post` warning names only the HTTP status (e.g. `403 Forbidden`) and the report path; it no longer includes the hosting API's raw response body. The exit code still ignores the posting outcome (0 complete, 2 incomplete) (FR-028).
 - A response truncated by [llm] max_output_tokens no longer crashes the LLM call with `AttributeError`; it logs a warning naming the configured limit.
 - SAST findings are no longer discarded on Windows: OpenGrep result paths (backslashes, 8.3 short names) are mapped to reviewed files; unmappable results are reported, not dropped; OpenGrep output is decoded as UTF-8.

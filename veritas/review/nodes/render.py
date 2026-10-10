@@ -35,6 +35,7 @@ from veritas.review.tools.write_tools import (
     write_report,
 )
 from veritas.suppression.fingerprint import compute_fingerprint
+from veritas.utils.redaction import redact_secrets
 
 
 def _apply_suppressions(
@@ -136,7 +137,8 @@ def _post_report(runtime, report: Report) -> None:
     if host is None or parsed is None:
         runtime.log.warn("--post set but no hosting client available; skipped")
         return
-    body = report.markdown_content or render_markdown(report)
+    # Redacted as it is sent (FR-013), like every other finished output.
+    body = redact_secrets(report.markdown_content or render_markdown(report))
     try:
         if parsed.provider == "github":
             host.post_comment(parsed.owner, parsed.repo, parsed.number, body)
@@ -215,12 +217,13 @@ def make_render_node(runtime) -> Callable[[ReviewState], dict]:
             coverage=_coverage(state, runtime),
             failed_batches=failed,
         )
-        markdown = render_markdown(report)
+        # Each finished output is redacted where it is written or sent (FR-013).
+        markdown = redact_secrets(render_markdown(report))
 
         path = write_report(runtime.report_path, report, runtime.log)
         persist_last_report_json(report, LAST_REPORT_JSON)
 
-        compact = render_compact(report, report_path=path)
+        compact = redact_secrets(render_compact(report, report_path=path))
         print(compact, file=sys.stdout, flush=True)
 
         if runtime.post:

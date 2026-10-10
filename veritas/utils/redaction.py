@@ -211,3 +211,19 @@ def redact_secrets(text: str) -> str:
     for _kind, pattern, replacement in _VALUE_RULES:
         result = pattern.sub(replacement, result)
     return result
+
+
+def redact_json_strings(value: object) -> object:
+    """``value`` with every string value inside it passed through ``redact_secrets()``.
+
+    Walks the dicts and lists of a JSON-shaped value (``model_dump(mode="json")``)
+    so a finished JSON output is redacted field by field (FR-013). Keys, numbers,
+    booleans and None are returned unchanged.
+    """
+    if isinstance(value, str):
+        return redact_secrets(value)
+    if isinstance(value, dict):
+        return {key: redact_json_strings(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact_json_strings(item) for item in value]
+    return value

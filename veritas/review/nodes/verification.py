@@ -350,12 +350,12 @@ def partition_requirement_evidence(
     cause as today (``"src/missing.py (file not in scope)"``) so the recorded
     VerificationFailure still names the specific reference that failed.
 
-    An ``unclear`` requirement needs no evidence and always passes, unchanged.
+    Every status is checked, ``unclear`` included: an unclear requirement needs
+    no evidence, but a reference it does cite is published like any other, so it
+    must be confirmable too. The node keeps an unclear requirement unclear.
     """
     confirmed: list[str] = []
     unconfirmed: list[str] = []
-    if rf.status == RequirementStatus.UNCLEAR:
-        return (list(rf.evidence), unconfirmed)
     for ref in rf.evidence:
         match = _REF_LINE.match(ref.strip())
         if match:

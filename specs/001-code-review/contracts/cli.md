@@ -174,4 +174,4 @@ opengrep_rules = "p/owasp-top-ten"           # default: SAST rules source (FR-01
                                              #  configuration error before the run starts.
 ```
 
-**Privacy rule (constitution):** API keys and tokens MUST be supplied via environment variables or a non-committed config file. The default config file `.veritas/config.toml` MUST NOT contain keys/tokens. A `.veritas/config.local.toml` (gitignored) is allowed for developer-local overrides.
+**Privacy rule (constitution, FR-020):** API keys and tokens (`api_key`, `github_token`, `gitlab_token`) MUST be supplied via `VERITAS_*` environment variables, `.veritas/config.local.toml` (gitignored), or a file passed with `--config`. The committed default config file `.veritas/config.toml` MUST NOT contain them; if it does, `veritas review` exits 1 with `[error] invalid configuration: {fields} must not be set in .veritas/config.toml, which is committed; put it in .veritas/config.local.toml or the environment variable {VERITAS_FIELDS} instead`.

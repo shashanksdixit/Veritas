@@ -187,13 +187,38 @@ def _env_overrides() -> dict:
     return overrides
 
 
+def _reject_committed_secrets(committed: dict) -> None:
+    """Refuse a secret in the committed ``.veritas/config.toml`` (constitution Privacy & Data Handling).
+
+    ``committed`` is that file alone, flattened, so a key set in the local file
+    or the environment is never blamed on it. Raises ValueError, which the CLI
+    reports as one ``[error] invalid configuration: ...`` line and exit 1.
+    """
+    present = [name for name in Settings.model_fields if name in _SECRET_FIELDS and name in committed]
+    if not present:
+        return
+    names = ", ".join(present)
+    env_names = ", ".join(f"VERITAS_{name.upper()}" for name in present)
+    raise ValueError(
+        f"{names} must not be set in {CONFIG_PATH}, which is committed; "
+        f"put it in {LOCAL_CONFIG_PATH} or the environment variable {env_names} instead"
+    )
+
+
 def load_settings(config_path: str | None = None) -> Settings:
-    """Load effective settings, merging TOML files then letting env win."""
+    """Load effective settings, merging TOML files then letting env win.
+
+    Without ``config_path``: ``.veritas/config.toml`` (committed, no secrets),
+    then ``.veritas/config.local.toml``, then ``VERITAS_*``. With it: that file
+    alone, then ``VERITAS_*``.
+    """
     merged: dict = {}
     if config_path:
         merged.update(_flatten_toml(_read_toml(Path(config_path))))
     else:
-        merged.update(_flatten_toml(_read_toml(Path(CONFIG_PATH))))
+        committed = _flatten_toml(_read_toml(Path(CONFIG_PATH)))
+        _reject_committed_secrets(committed)
+        merged.update(committed)
         merged.update(_flatten_toml(_read_toml(Path(LOCAL_CONFIG_PATH))))
     merged.update(_env_overrides())
     return Settings(**merged)

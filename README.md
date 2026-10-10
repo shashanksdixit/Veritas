@@ -215,8 +215,10 @@ errors:
 Configuration layers, lowest to highest precedence:
 
 1. Built-in defaults
-2. `.veritas/config.toml` (committed, must not contain secrets)
-3. `.veritas/config.local.toml` (gitignored, local overrides)
+2. `.veritas/config.toml` (committed; a run that finds `api_key`, `github_token`
+   or `gitlab_token` in it stops with `[error] invalid configuration: ...` and exit 1)
+3. `.veritas/config.local.toml` (gitignored, local overrides; keys and tokens go here
+   or in environment variables)
 4. Environment variables `VERITAS_*`
 
 ```toml

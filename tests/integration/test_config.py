@@ -11,10 +11,13 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from tests.conftest import fake_secret
+
 from veritas.config.settings import Settings, load_settings
 
 def _write_config(tmp_path: Path) -> Path:
-    path = tmp_path / "config.toml"
+    """A config file passed explicitly with --config, so it may hold the key (T107)."""
+    path = tmp_path / "explicit-config.toml"
     path.write_text(
         '[llm]\napi_key = "toml-key"\nmodel = "openai:toml/model"\nbase_url = "https://example.com/v1"\nzdr = true\n'
         '[hosting]\nprovider = "gitlab"\ngitlab_url = "https://gitlab.example.com"\n',
@@ -23,7 +26,7 @@ def _write_config(tmp_path: Path) -> Path:
     return path
 
 
-def test_file_values_loaded(tmp_path):
+def test_explicit_config_file_values_loaded_including_api_key(tmp_path):
     path = _write_config(tmp_path)
     settings = load_settings(str(path))
     assert settings.api_key == "toml-key"
@@ -390,3 +393,93 @@ def test_cli_bad_opengrep_rules_prints_one_error_line_and_exits_1(tmp_path):
         "rules file or directory; got: not-a-ruleset"
     )
     assert "Traceback" not in result.stderr
+
+# --- secrets are refused in the committed .veritas/config.toml (T107) ---------
+
+_COMMITTED_KEY = fake_secret("sk-", "CommittedConfigKey0123456789")
+_SECRET_SECTIONS = {
+    "api_key": "llm",
+    "github_token": "hosting",
+    "gitlab_token": "hosting",
+}
+
+
+def _write_dot_veritas(name: str, text: str) -> None:
+    """Write .veritas/<name> in the sandboxed working directory."""
+    path = Path(".veritas") / name
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+@pytest.mark.parametrize("field", sorted(_SECRET_SECTIONS))
+def test_cli_rejects_a_secret_in_the_committed_config(field):
+    from typer.testing import CliRunner
+
+    from veritas.cli.app import app
+
+    _write_dot_veritas(
+        "config.toml", f'[{_SECRET_SECTIONS[field]}]\n{field} = "{_COMMITTED_KEY}"\n'
+    )
+
+    result = CliRunner().invoke(app, ["review", "--scope", "project", "--target", "."])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr.strip() == (
+        f"[error] invalid configuration: {field} must not be set in "
+        ".veritas/config.toml, which is committed; put it in "
+        ".veritas/config.local.toml or the environment variable "
+        f"VERITAS_{field.upper()} instead"
+    )
+    assert _COMMITTED_KEY not in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_every_secret_in_the_committed_config_is_named_in_one_line():
+    _write_dot_veritas(
+        "config.toml",
+        f'[llm]\napi_key = "{_COMMITTED_KEY}"\n'
+        f'[hosting]\ngitlab_token = "{_COMMITTED_KEY}"\n',
+    )
+    with pytest.raises(ValueError) as excinfo:
+        load_settings()
+    message = str(excinfo.value)
+    assert message.startswith("api_key, gitlab_token must not be set in .veritas/config.toml")
+    assert "VERITAS_API_KEY, VERITAS_GITLAB_TOKEN" in message
+
+
+def test_a_secret_in_the_local_config_still_loads():
+    _write_dot_veritas("config.toml", '[llm]\nmodel = "openai:committed/model"\n')
+    _write_dot_veritas("config.local.toml", f'[llm]\napi_key = "{_COMMITTED_KEY}"\n')
+
+    settings = load_settings()
+
+    assert settings.api_key == _COMMITTED_KEY
+    assert settings.model_runtime == "openai:committed/model"
+
+
+def test_a_secret_in_the_environment_still_loads(monkeypatch):
+    _write_dot_veritas("config.toml", '[llm]\nmodel = "openai:committed/model"\n')
+    monkeypatch.setenv("VERITAS_API_KEY", _COMMITTED_KEY)
+
+    settings = load_settings()
+
+    assert settings.api_key == _COMMITTED_KEY
+    assert settings.model_runtime == "openai:committed/model"
+
+
+def test_cli_accepts_a_secret_in_the_local_config(monkeypatch):
+    """The CLI gets past configuration loading: the next failure is the target."""
+    from typer.testing import CliRunner
+
+    from veritas.cli.app import app
+
+    _write_dot_veritas("config.local.toml", f'[llm]\napi_key = "{_COMMITTED_KEY}"\n')
+
+    result = CliRunner().invoke(
+        app, ["review", "--scope", "project", "--target", "does-not-exist"]
+    )
+
+    assert result.exit_code == 1
+    assert "invalid configuration" not in result.stderr
+    assert "target directory does not exist" in result.stderr
