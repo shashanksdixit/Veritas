@@ -5,8 +5,12 @@
 ### I. Grounded Verification (Anti-Hallucination)
 Every finding MUST be grounded in real project context and verified against a
 cited source before it reaches the user. Verification MUST be a grounded re-check
-that re-reads each finding's cited file/line to confirm it is real and matches the
-claim. Verification MUST NOT be a second LLM judging the first LLM's prose for
+that re-reads each finding's cited file and lines and confirms that the cited code
+exists there: the quoted text MUST match the file at the cited lines after
+whitespace normalisation and secret redaction are applied to both. Verification
+confirms the citation, not the claim: it does not and cannot confirm that what the
+finding says about that code is correct, and the report MUST state this limit.
+Verification MUST NOT be a second LLM judging the first LLM's prose for
 plausibility — that approach inherits the same hallucination failure mode, since a
 hallucinated finding is usually stated in the same confident tone as a true one.
 Where a specific finding is sourced directly from a real tool's output (e.g. a
@@ -87,8 +91,11 @@ text).
 
 Deterministic components of a review — SAST tool output, manifest-parsed
 language/framework version detection, and requirement-status evidence citations
-(file/line references) — MUST be reproducible: the same input and configuration
-MUST yield the same deterministic findings and citations. LLM-narrated content
+(file/line references) — MUST be reproducible: the same input, configuration, and
+SAST rules content MUST yield the same deterministic findings and citations. A
+registry-hosted SAST ruleset can change between runs with no change on the user's
+side, so every report MUST record the SAST rules source used; a local rules source
+(file or directory) makes SAST output fully reproducible. LLM-narrated content
 (finding descriptions, recommendation wording, prioritization language) MAY vary
 between runs and is explicitly exempt from this reproducibility requirement; this
 variability MUST NOT be treated as a defect.
@@ -125,7 +132,18 @@ Enabling ZDR is the user's informed choice; Veritas's constitutional obligation 
 to make that choice informed, not to guess at or enforce an environment. Source code and diffs MAY be sent to LLM
 providers only in accordance with the configured policy and never without explicit
 intent. Provider API keys MUST NOT be committed or logged; they MUST be read from
-environment variables or secure configuration. Secrets MUST NEVER appear in review output, logs, or error messages — including secrets discovered within reviewed code itself. Every review node MUST call a shared redaction utility on any user-facing finding text (title, description, cited snippet, requirement explanation) before adding it to state, so a hardcoded secret the review is reporting on is never echoed back verbatim in the report. Review artifacts are stored only as configured and
+environment variables or secure configuration. Every review node MUST call a
+shared redaction utility on any user-facing finding text (title, description,
+cited snippet, requirement explanation) before adding it to state, and the same
+redaction MUST be applied to all review output, logs, and error messages —
+including secrets discovered within the reviewed code itself, so a hardcoded
+secret the review is reporting on is not echoed back verbatim. Redaction MUST mask
+known secret shapes (such as private keys, cloud and provider API keys, access
+tokens, and credentials embedded in URLs or connection strings) and any literal
+value, quoted or unquoted, assigned to a key-, token-, password-, secret- or
+credential-named key. Redaction is pattern-based and cannot recognise every
+possible secret: a secret of no known shape that is not assigned to a
+credential-named key can pass through unmasked. Review artifacts are stored only as configured and
 MUST be purgeable on request.
 
 ### Read-Only Safety Boundary
@@ -163,4 +181,4 @@ MAJOR for backward-incompatible principle changes or removals, MINOR for added o
 materially expanded principles, PATCH for clarifications and wording fixes. Every
 PR and completed review MUST verify compliance with this constitution.
 
-**Version**: 5.1.0 | **Ratified**: 2026-09-15 | **Last Amended**: 2026-10-03
+**Version**: 6.0.0 | **Ratified**: 2026-09-15 | **Last Amended**: 2026-10-10
