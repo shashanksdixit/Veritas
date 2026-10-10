@@ -141,7 +141,10 @@ secret the review is reporting on is not echoed back verbatim. Redaction MUST ma
 known secret shapes (such as private keys, cloud and provider API keys, access
 tokens, and credentials embedded in URLs or connection strings) and any literal
 value, quoted or unquoted, assigned to a key-, token-, password-, secret- or
-credential-named key. Redaction is pattern-based and cannot recognise every
+credential-named key. An unquoted value that cannot be told apart from an
+identifier, such as a single plain word, is treated as code rather than as a
+literal, except in .env-style KEY=value lines, where every value is a literal.
+Redaction is pattern-based and cannot recognise every
 possible secret: a secret of no known shape that is not assigned to a
 credential-named key can pass through unmasked. Review artifacts are stored only as configured and
 MUST be purgeable on request.
@@ -181,4 +184,4 @@ MAJOR for backward-incompatible principle changes or removals, MINOR for added o
 materially expanded principles, PATCH for clarifications and wording fixes. Every
 PR and completed review MUST verify compliance with this constitution.
 
-**Version**: 6.0.0 | **Ratified**: 2026-09-15 | **Last Amended**: 2026-10-10
+**Version**: 6.0.1 | **Ratified**: 2026-09-15 | **Last Amended**: 2026-10-10
