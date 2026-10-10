@@ -42,7 +42,7 @@ Build Veritas: a CLI-based, multi-agent code review tool that fetches PRs remote
 - ZDR toggle off by default; when on, both `provider.zdr: true` and `provider.data_collection: "deny"` in the OpenRouter request body
 - All review nodes structurally bound to read-only tools only (constitution Read-Only Safety Boundary)
 - Output schema versioned per constitution
-- Deterministic components (SAST, manifest parsing, citations) reproducible; LLM-narrated content may vary
+- Deterministic components (SAST, manifest parsing, citations) reproducible for the same input, configuration and SAST rules content; the SAST rules source is recorded in every report, and a local rules source makes SAST fully reproducible; LLM-narrated content may vary
 
 **Scale/Scope**: Single-user CLI tool; typical input is one PR or project directory per invocation. 6 languages (Python, Java primary; JS, C#, Go, Rust supported).
 
@@ -53,16 +53,16 @@ Build Veritas: a CLI-based, multi-agent code review tool that fetches PRs remote
 | Gate | Principle | Status | Design Mapping |
 |------|-----------|--------|----------------|
 | **Read-Only Safety Boundary** | Additional Constraints § Read-Only | PASS | Review nodes use `ToolNode(read_only_tools)` only; write nodes (`ToolNode(write_tools)`) are terminal, no back-edges. Structural — tools not in the dict. |
-| **Grounded Verification** | Principle I | PASS | Dedicated verification node re-reads file/line for every non-SAST finding (FR-013). Per-finding exemption by actual source — LLM-identified security findings go through re-check. |
+| **Grounded Verification** | Principle I | PASS | Dedicated verification node re-reads the cited file and lines for every non-SAST finding and confirms the quoted code is there, after whitespace normalisation and redaction of both sides (FR-013). It confirms the citation, not the claim, and the report states this limit. Per-finding exemption by actual source — LLM-identified security findings go through re-check. |
 | **SAST-Grounded & Verified Security** | Principle II | PASS | OpenGrep subprocess (LGPL-2.1, no paid tier) produces ground-truth findings (`source="sast"`). LLM-identified security findings (`source="llm-verified"`) pass verification. Every security finding labeled by source. |
 | **Requirement Traceability** | Principle III | PASS | Review checks code against project requirements (spec-kit or freeform). Findings carry status (satisfied/partial/gap/unclear/not_addressed, per FR-007; not_addressed is PR scope only) + evidence citations. |
 | **Fixed Review Scope** | Principle IV | PASS | Scope is user-directed per run. No state between runs. Five review-type nodes (code quality, security, requirements, test-coverage, performance) each produce findings that include recommendation text; all mandatory, no per-run toggles. |
 | **Project-Aware Review** | Principle V | PASS | Language/framework versions parsed from manifest files (FR-009). Project conventions honored (FR-010). Custom NL rules supported (FR-011). |
 | **CLI-First & Markdown Report** | Principle VI | PASS | All capability via CLI (Typer). Compact stdout + full Markdown file. Output schema versioned. |
 | **Integration Testing** | Principle VII | PASS | pytest integration tests planned for: LLM provider contracts, prompt/schema changes, CLI behavior, config handling. |
-| **Observability & Versioning** | Principle VIII | PASS | Structured logging for LLM calls (latency, model, tokens). CLI output follows semver. YAGNI: no IDE plugin, no diff-aware rescoping, no deterministic rule tier, no profiler, no Ollama, no diff/patch output. |
+| **Observability & Versioning** | Principle VIII | PASS | Structured logging for LLM calls (latency, model, tokens); every log line and CLI error message passes through `redact_secrets()` before it is written (FR-013). CLI output follows semver. YAGNI: no IDE plugin, no diff-aware rescoping, no deterministic rule tier, no profiler, no Ollama, no diff/patch output. |
 | **Determinism** | Principle VIII | PASS | SAST output, manifest detection, requirement citations are deterministic (FR-025). LLM-narrated content exempt. |
-| **Privacy & Data Handling** | Additional Constraints § Privacy | PASS | API keys from env vars only; never committed/logged. Secrets never in output/logs/errors, including secrets found within reviewed code — every review node calls the shared `redact_secrets()` utility on finding text before it enters state. ZDR toggle via both `provider.zdr: true` and `provider.data_collection: "deny"` in the OpenRouter request body when enabled; a stderr warning is printed on every run where ZDR is off, per FR-021. Config file `.veritas/config.toml` has no keys; `.veritas/config.local.toml` (gitignored) for local overrides. |
+| **Privacy & Data Handling** | Additional Constraints § Privacy | PASS | API keys from env vars only; never committed/logged. Every review node calls the shared `redact_secrets()` utility on finding text before it enters state, and the same redaction is applied to all review output, logs and error messages, including secrets found within reviewed code. Redaction masks known secret shapes and any literal value, quoted or unquoted, assigned to a credential-named key (FR-013); it is pattern-based, so a secret of no known shape that is not assigned to a credential-named key can pass through unmasked. ZDR toggle via both `provider.zdr: true` and `provider.data_collection: "deny"` in the OpenRouter request body when enabled; a stderr warning is printed on every run where ZDR is off, per FR-021. Config file `.veritas/config.toml` has no keys; `.veritas/config.local.toml` (gitignored) for local overrides. |
 | **Suppression** | Dev Workflow § Suppression | PASS | `.veritas/suppressions.json` git-tracked. Fingerprint: SHA-256 of (file + category + normalized snippet). Add + remove supported. |
 | **Licensing Discipline** | Principle II (SAST tool) | PASS | OpenGrep LGPL-2.1, no paid tier. All Python deps permissive (MIT/BSD-3-Clause/Apache-2.0). httpx used instead of PyGithub/python-gitlab to avoid LGPL. See `research.md` § 6 for full license table. |
 
@@ -158,8 +158,8 @@ veritas/
 │   └── summary.py                   # compute_summary() — verdict + counts aggregation (T041a)
 └── utils/
     ├── __init__.py
-    ├── logging.py                    # Structured logging (Principle VIII)
-    ├── redaction.py                  # Shared redact_secrets() utility (constitution Privacy & Data Handling) — called by every review node on finding text before it enters state
+    ├── logging.py                    # Structured logging (Principle VIII); redacts every line it writes
+    ├── redaction.py                  # Shared redact_secrets() utility (constitution Privacy & Data Handling) — called by every review node on finding text before it enters state, and by Log on every log and error line
     ├── languages.py                  # Supported-language detection + skip logic
     ├── paths.py                      # Path matching helpers for exclusion patterns (FR-029, T075)
     └── project_context.py            # Manifest/convention/NL-rule parsing (FR-009–011, T056)

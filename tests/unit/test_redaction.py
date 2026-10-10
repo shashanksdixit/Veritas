@@ -21,6 +21,12 @@ _AWS_SECRET_ACCESS_KEY = fake_secret("wJalrXUtnFEMI/", "K7MDENG/bPxRfiCYEXAMPLEK
 _GOOGLE_KEY = fake_secret("AIza", "SyA0123456789abcdefghijklmnopqrstuv")
 _SLACK_BOT_TOKEN = fake_secret("xoxb-", "123456789012-abcdefABCDEF0123")
 _SLACK_USER_TOKEN = fake_secret("xoxp-", "123456789012-abcdefABCDEF0123")
+# T104: values of no known shape, unquoted.
+_SHORT_PASSWORD = fake_secret("hunter", "2")
+_ENV_PASSWORD = fake_secret("S3cr3t", "Value")
+_YAML_API_KEY = fake_secret("abcd1234", "efgh5678")
+_PLAIN_WORD_PASSWORD = fake_secret("correct", "horse")
+_LETTERS_ONLY_TOKEN = fake_secret("letters", "only")
 _PEM_BLOCK = fake_secret(
     "-----BEGIN ", "RSA PRIVATE KEY-----\\nMIIEowIBAAKCA\\n-----END RSA PRIVATE KEY-----"
 )
@@ -133,6 +139,28 @@ MUST_REDACT = [
         _PEM_BLOCK,
     ),
     ("token_named_secret", 'SECRET_TOKEN = "abc12345secret6789"', "abc12345secret6789"),
+    # T104: unquoted literals assigned to credential-named keys.
+    ("unquoted_password", f"password={_SHORT_PASSWORD}", _SHORT_PASSWORD),
+    ("dotenv_password", f"DB_PASSWORD={_ENV_PASSWORD}", _ENV_PASSWORD),
+    ("yaml_api_key", f"api_key: {_YAML_API_KEY}", _YAML_API_KEY),
+    (
+        "unquoted_value_inside_a_string",
+        f'log.info("api_key: {_YAML_API_KEY}")',
+        _YAML_API_KEY,
+    ),
+    (
+        "unquoted_password_in_log_line",
+        f"[error] login failed for bob password={_SHORT_PASSWORD} host=db1",
+        _SHORT_PASSWORD,
+    ),
+    # A .env line holds only literals, so a plain word is masked there too.
+    ("dotenv_plain_word", f"DB_PASSWORD={_PLAIN_WORD_PASSWORD}", _PLAIN_WORD_PASSWORD),
+    ("dotenv_letters_only", f"API_TOKEN={_LETTERS_ONLY_TOKEN}", _LETTERS_ONLY_TOKEN),
+    (
+        "dotenv_line_in_a_file",
+        f"DEBUG=true\nDB_PASSWORD={_PLAIN_WORD_PASSWORD}\nPORT=5432\n",
+        _PLAIN_WORD_PASSWORD,
+    ),
 ]
 
 
@@ -151,6 +179,19 @@ MUST_NOT_REDACT = [
     ("f_string", 'raise RuntimeError(f"missing api_key for {model}")'),
     ("dict_lookup", 'token = os.environ["TOKEN"]'),
     ("plain_code", "def add(a, b):\n    return a + b\nprint(add(1, 2))"),
+    # T104: unquoted values that are code, not literals (FR-013).
+    ("type_hint", "password: str"),
+    ("numeric_setting", "token_ttl: 3600"),
+    ("variable_copy", "self.password = password"),
+    ("comparison", "if password == expected2:"),
+    ("keyword_argument_last", "connect(host, password=db_password2)"),
+    ("walrus", "token := next(tokens)"),
+    ("yaml_env_name", "api_key: VERITAS_API_KEY"),
+    ("prose_with_colon", "Missing api_key: set VERITAS_API_KEY"),
+    ("dotenv_braced_reference", "DB_PASSWORD=${VAULT_DB_PASSWORD}"),
+    ("dotenv_reference", "API_TOKEN=$CI_API_TOKEN"),
+    ("dotenv_non_credential_key", "LOG_LEVEL=debug"),
+    ("spaced_assignment_plain_word", "API_TOKEN = default_token"),
 ]
 
 

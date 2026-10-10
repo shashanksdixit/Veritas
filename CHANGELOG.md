@@ -8,6 +8,22 @@ constitution Principle VIII / FR-016.
 
 ## [Unreleased]
 
+### Security
+- Redaction masks unquoted secrets (constitution 6.0.0/6.0.1, FR-013, T104):
+  a literal value assigned to a credential-named key is now masked when
+  unquoted (`password=hunter2`, `api_key: abcd1234efgh5678`), not only when
+  quoted, and in a .env-style line at the start of a line
+  (`DB_PASSWORD=correcthorse`) every unquoted value is masked except a
+  `$VAR` / `${VAR}` reference. Elsewhere a plain word, a number, a dotted name
+  or an environment-variable name is treated as code and left alone, so
+  `password = correcthorse` outside a .env-style line is still not masked.
+  Migration: some text that appeared in reports and logs before is now shown as
+  `[REDACTED]`; no report schema change.
+- Every log line, including the `--verbose` structured payload, and every CLI
+  error message on stderr now passes through `redact_secrets()` in one place
+  (`Log`). Uncaught-exception tracebacks no longer print local variables;
+  their text is not redacted, and neither are Click's own usage errors.
+
 ### Added
 - Report schema **1.8.0**: adds `Report.failed_batches`, one `FailedBatch`
   record (review type, batch, total, files, reason) per failed LLM batch call,
@@ -25,6 +41,12 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- The verification-failure note in the Markdown report says the reviewer's
+  citation could not be confirmed (the quoted code was not found at the cited
+  lines), instead of the claim.
+- Spec and plan aligned with constitution 6.0.0: verification confirms the
+  citation, not the claim (FR-013); SAST reproducibility is stated against the
+  rules content, and the rules source is recorded (FR-025).
 - Project, module and file reviews record an input revision (FR-024):
   `sha256:` + the hex SHA-256 of the reviewed files after exclusion (sorted by
   path; path, NUL, content, NUL per file), shown in the report header in place

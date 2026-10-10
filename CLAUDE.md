@@ -1,7 +1,7 @@
 # Veritas: working notes for Claude Code
 
 Veritas is a Python CLI code reviewer (LangGraph/LangChain). Specs: specs/001-code-review/
-(spec.md, data-model.md, tasks.md, contracts/). Constitution: .specify/memory/constitution.md (v5.1.0).
+(spec.md, data-model.md, tasks.md, contracts/). Constitution: .specify/memory/constitution.md (v6.0.1).
 
 ## Environment
 - Windows, Git Bash. Corporate SSL inspection: use `uv run --native-tls ...`; curl needs `--ssl-no-revoke`.

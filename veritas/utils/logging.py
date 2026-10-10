@@ -17,6 +17,8 @@ import threading
 import time
 from typing import Any, TextIO
 
+from veritas.utils.redaction import redact_secrets
+
 
 class Log:
     """Minimal dependency-free structured logger writing to stderr.
@@ -27,6 +29,9 @@ class Log:
     Every line is written atomically — one ``write`` call carrying the full line
     plus its newline, under a lock — so lines emitted concurrently by parallel
     review nodes never interleave.
+
+    Every line, structured payload included, passes through ``redact_secrets()``
+    before it is written (FR-013), so no caller has to remember to redact.
     """
 
     def __init__(self, stream: TextIO | None = None, verbose: bool = False) -> None:
@@ -47,7 +52,7 @@ class Log:
                 line += " " + json.dumps(structured, default=str, sort_keys=True)
         else:
             line = f"[{level}] {message}"
-        payload = line + "\n"
+        payload = redact_secrets(line) + "\n"
         with self._lock:
             self.stream.write(payload)
             self.stream.flush()

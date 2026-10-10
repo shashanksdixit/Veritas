@@ -174,7 +174,11 @@ def test_verification_note_present_when_failures_exist():
     heading = "### Verification failures (FR-013)\n\n"
     note_start = "> Each proposed finding must cite a file, line range, and the exact code snippet it refers to."
     assert heading + note_start in md
-    assert "it means the reviewer's claim could not be confirmed." in md
+    assert (
+        "it means the reviewer's citation could not be confirmed: "
+        "the quoted code was not found at the cited lines." in md
+    )
+    assert "claim could not be confirmed" not in md
     assert md.index(note_start) < md.index("| Finding ID | File | Lines | Code | Reason |")
 
 

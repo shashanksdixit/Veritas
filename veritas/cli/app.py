@@ -25,6 +25,9 @@ app = typer.Typer(
     name="veritas",
     help="CLI-based, multi-agent code review tool.",
     no_args_is_help=True,
+    # An uncaught exception must not print local variables (settings carry the
+    # API key); the traceback text itself is not redacted (FR-013).
+    pretty_exceptions_show_locals=False,
 )
 
 _SCOPE_VALUES: dict[str, ReviewScope] = {
@@ -33,6 +36,15 @@ _SCOPE_VALUES: dict[str, ReviewScope] = {
     "file": ReviewScope.FILE,
     "pr": ReviewScope.PR,
 }
+
+
+def _error(message: str) -> None:
+    """Write ``[error] message`` to stderr through Log, which redacts it (FR-013).
+
+    A new Log per call binds to the current ``sys.stderr``, so a stream swapped
+    in after import (a test runner, for example) still receives the line.
+    """
+    Log().error(message)
 
 
 def _configure_console() -> None:
@@ -71,23 +83,17 @@ def review(
     scope_lower = scope.lower()
     scope_val = _SCOPE_VALUES.get(scope_lower)
     if scope_val is None:
-        print(
-            "[error] Invalid scope. Use one of: project, module, file, pr.",
-            file=sys.stderr,
-        )
+        _error("Invalid scope. Use one of: project, module, file, pr.")
         raise typer.Exit(1)
     try:
         settings = load_settings(config)
     except ValidationError as exc:
         for problem in exc.errors():
             field = ".".join(str(part) for part in problem["loc"])
-            print(
-                f"[error] invalid configuration: {field}: {problem['msg']}",
-                file=sys.stderr,
-            )
+            _error(f"invalid configuration: {field}: {problem['msg']}")
         raise typer.Exit(1) from None
     except ValueError as exc:
-        print(f"[error] invalid configuration: {exc}", file=sys.stderr)
+        _error(f"invalid configuration: {exc}")
         raise typer.Exit(1) from None
     try:
         outcome = run_review(
@@ -99,7 +105,7 @@ def review(
             verbose=verbose,
         )
     except ReviewFatalError as exc:
-        print(f"[error] {exc}", file=sys.stderr)
+        _error(str(exc))
         raise typer.Exit(1) from exc
     raise typer.Exit(outcome.exit_code)
 
@@ -114,7 +120,7 @@ def suppress(
     """Suppress a finding by ID or filename+line (FR-017)."""
     report = _load_last_report()
     if report is None:
-        print("[error] No previous review found (missing .veritas/last-report.json). Run `veritas review` first.", file=sys.stderr)
+        _error("No previous review found (missing .veritas/last-report.json). Run `veritas review` first.")
         raise typer.Exit(1)
 
     if finding_id:
@@ -122,20 +128,19 @@ def suppress(
     elif file and line is not None:
         resolution = resolve_by_location(report, file, line)
     elif file or line is not None:
-        print("[error] --file requires --line and vice versa (or use --finding-id).", file=sys.stderr)
+        _error("--file requires --line and vice versa (or use --finding-id).")
         raise typer.Exit(1)
     else:
-        print("[error] Provide --finding-id, or --file with --line.", file=sys.stderr)
+        _error("Provide --finding-id, or --file with --line.")
         raise typer.Exit(1)
 
     if resolution.status == "no_match":
-        print("[error] No finding matched the given reference; nothing was suppressed.", file=sys.stderr)
+        _error("No finding matched the given reference; nothing was suppressed.")
         raise typer.Exit(1)
     if resolution.status == "ambiguous":
         lines = "\n".join(f"  - {f.id}: {f.file}:{f.line_range.start_line} {f.title}" for f in resolution.candidates)
-        print(
-            f"[error] Ambiguous: {len(resolution.candidates)} findings match. Nothing suppressed. Candidates:\n{lines}",
-            file=sys.stderr,
+        _error(
+            f"Ambiguous: {len(resolution.candidates)} findings match. Nothing suppressed. Candidates:\n{lines}"
         )
         raise typer.Exit(1)
 
@@ -164,7 +169,7 @@ def unsuppress(
     if store.remove(fingerprint):
         print(f"Un-suppressed: fingerprint {fingerprint}")
         return
-    print("[error] No matching suppression entry found.", file=sys.stderr)
+    _error("No matching suppression entry found.")
     raise typer.Exit(1)
 
 
