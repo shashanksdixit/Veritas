@@ -76,6 +76,13 @@ class ReportStatus(str, Enum):
     INCOMPLETE = "incomplete"
 
 
+class SastStatus(str, Enum):
+    """Whether the SAST scanner ran for a review (FR-012)."""
+
+    RAN = "ran"
+    NOT_RUN = "not_run"
+
+
 class Verdict(str, Enum):
     """Overall report verdict, derived per FR-015 from the collected findings."""
 
@@ -107,6 +114,14 @@ class ReviewRun(BaseModel):
     # directory); None when the run never reached SAST, so a report written
     # before this field existed still validates.
     sast_rules: str | None = None
+    # Report.schema_version 1.9.0 (FR-012): whether SAST ran, how many results
+    # it reported for reviewed files (set only when it ran), and the one-line
+    # reason it did not run or ran degraded (e.g. unmapped results). All None
+    # when the run never reached SAST, so a report written before 1.9.0 still
+    # validates.
+    sast_status: SastStatus | None = None
+    sast_result_count: int | None = None
+    sast_reason: str | None = None
 
 
 class LineRange(BaseModel):

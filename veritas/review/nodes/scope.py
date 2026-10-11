@@ -24,7 +24,7 @@ from veritas.config.constants import MAX_SCOPE_FILES
 from veritas.hosting.github import GitHubClient
 from veritas.hosting.gitlab import GitLabClient
 from veritas.hosting.resolver import UnresolvableTarget, parse_pr_target
-from veritas.models.entities import ExcludedFile, ReviewRun, ReviewScope
+from veritas.models.entities import ExcludedFile, ReviewRun, ReviewScope, SastStatus
 from veritas.review import ReviewFatalError, ReviewNotFoundError
 from veritas.review.batching import plan_batches
 from veritas.review.requirements_source import (
@@ -412,6 +412,11 @@ def make_scope_node(runtime) -> Callable[[ReviewState], dict]:
                 # The rules source SAST ran with, recorded in the report
                 # (schema 1.7.0); None only when the run never reached SAST.
                 "sast_rules": sast.rules,
+                # Whether it ran, its result count and the reason it did not
+                # run or ran degraded (schema 1.9.0, FR-012).
+                "sast_status": SastStatus.RAN if sast.ran else SastStatus.NOT_RUN,
+                "sast_result_count": len(sast.findings) if sast.ran else None,
+                "sast_reason": sast.degraded,
             }
         )
         return {

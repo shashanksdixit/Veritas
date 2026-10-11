@@ -9,6 +9,15 @@ constitution Principle VIII / FR-016.
 ## [Unreleased]
 
 ### Security
+- `--config` can no longer bypass the committed-config secret check (FR-020,
+  T108): when the file passed with `--config` is `.veritas/config.toml` itself,
+  under any spelling (`./.veritas/config.toml`, an absolute path, `..`
+  segments, a different letter case on Windows, or a link to it), a key in it
+  is refused with the same `[error] invalid configuration: ...` line and exit 1
+  as without `--config`. Paths are compared by file identity, not by text. A
+  `--config` file anywhere else may still hold keys. Migration: move a key out
+  of `.veritas/config.toml` into `.veritas/config.local.toml` or a `VERITAS_*`
+  variable.
 - A key or token in the committed `.veritas/config.toml` is now refused
   (FR-020, T107): if it sets `api_key`, `github_token` or `gitlab_token`,
   `veritas review` exits 1 with `[error] invalid configuration: ...` naming the
@@ -41,6 +50,19 @@ constitution Principle VIII / FR-016.
   their text is not redacted, and neither are Click's own usage errors.
 
 ### Added
+- Report schema **1.9.0**: adds `ReviewRun.sast_status` (`"ran"` or
+  `"not_run"`), `ReviewRun.sast_result_count` (results mapped to reviewed
+  files, set only when the scan ran) and `ReviewRun.sast_reason` (one line, set
+  when the scan did not run or ran degraded, e.g. `1 result(s) unmapped`)
+  (FR-012, T109). `sast_rules` is unchanged: the configured rules source. The
+  report header's `- **SAST rules**: ...` line is replaced by one line,
+  `- **SAST**: ran with `<rules>` — <n> result(s)` (plus `; <reason>` when
+  degraded) or `- **SAST**: not run — <reason> (rules configured: `<rules>`)`,
+  and the compact stdout summary gains `SAST: ran (<n> result(s))` or
+  `SAST: not run — <reason>`. Before this, a missing OpenGrep was only logged
+  and the report did not say SAST had not run. Migration: reports written
+  before 1.9.0 still validate, with the three fields null; readers or scripts
+  that matched the `SAST rules` header line should match `- **SAST**:` instead.
 - Report schema **1.8.0**: adds `Report.failed_batches`, one `FailedBatch`
   record (review type, batch, total, files, reason) per failed LLM batch call,
   and a collapsible "Failed batches" table in the Markdown report after

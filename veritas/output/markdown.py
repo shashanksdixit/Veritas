@@ -15,6 +15,8 @@ from veritas.models.entities import (
     FailedBatch,
     Report,
     RequirementStatus,
+    ReviewRun,
+    SastStatus,
     Severity,
     Summary,
     VerificationFailure,
@@ -281,6 +283,21 @@ def _render_coverage(out: list[str], coverage: Coverage) -> None:
     )
 
 
+def sast_header_line(run: ReviewRun) -> str | None:
+    """The report header's one SAST line (FR-012), or None when SAST was never reached.
+
+    Ran: the rules source and the result count, then the reason when it ran
+    degraded (unmapped results). Not run: the specific reason, then the rules
+    source that was configured.
+    """
+    if run.sast_status is None:
+        return None
+    if run.sast_status is SastStatus.RAN:
+        line = f"- **SAST**: ran with `{run.sast_rules}` — {run.sast_result_count} result(s)"
+        return f"{line}; {run.sast_reason}" if run.sast_reason else line
+    return f"- **SAST**: not run — {run.sast_reason} (rules configured: `{run.sast_rules}`)"
+
+
 def render_markdown(report: Report) -> str:
     """Render the full report as GFM Markdown (SC-007)."""
     run = report.run
@@ -293,8 +310,9 @@ def render_markdown(report: Report) -> str:
     out.append(f"- **Scope**: `{run.scope.value}`")
     out.append(f"- **Model**: `{run.model_name}`")
     out.append(f"- **Prompt version**: `{run.prompt_version}`")
-    if run.sast_rules:
-        out.append(f"- **SAST rules**: `{run.sast_rules}`")
+    sast_line = sast_header_line(run)
+    if sast_line:
+        out.append(sast_line)
     out.append(f"- **Input revision**: `{run.input_revision or 'n/a'}`")
     out.append(f"- **Report status**: `{run.report_status.value}`")
     if run.error:

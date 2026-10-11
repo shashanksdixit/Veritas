@@ -11,6 +11,7 @@ from veritas.models.entities import (
     RequirementStatus,
     ReviewRun,
     ReviewScope,
+    SastStatus,
     Severity,
     Summary,
     Verdict,
@@ -184,3 +185,40 @@ def test_coverage_line_counts_an_empty_run():
     assert "Coverage: 0 reviewed (0 split), 0 excluded, 0 not reviewed; 0/8 batches" in render_compact(
         report
     )
+
+
+# --- one SAST line says whether the scan ran, and why not (T109, FR-012) ---
+
+
+def _sast_lines(**fields) -> list[str]:
+    report = _report()
+    report.run = report.run.model_copy(update={"sast_rules": "p/owasp-top-ten", **fields})
+    return [line for line in render_compact(report).splitlines() if line.startswith("SAST")]
+
+
+def test_sast_line_when_the_scan_ran():
+    assert _sast_lines(sast_status=SastStatus.RAN, sast_result_count=3) == [
+        "SAST: ran (3 result(s))"
+    ]
+
+
+def test_sast_line_when_the_scan_ran_with_zero_results():
+    assert _sast_lines(sast_status=SastStatus.RAN, sast_result_count=0) == [
+        "SAST: ran (0 result(s))"
+    ]
+
+
+def test_sast_line_when_the_scan_ran_degraded_keeps_the_reason():
+    assert _sast_lines(
+        sast_status=SastStatus.RAN, sast_result_count=1, sast_reason="1 result(s) unmapped"
+    ) == ["SAST: ran (1 result(s)) — 1 result(s) unmapped"]
+
+
+def test_sast_line_when_the_scan_did_not_run():
+    assert _sast_lines(
+        sast_status=SastStatus.NOT_RUN, sast_reason="OpenGrep not found on PATH"
+    ) == ["SAST: not run — OpenGrep not found on PATH"]
+
+
+def test_no_sast_line_when_sast_was_never_reached():
+    assert _sast_lines() == []

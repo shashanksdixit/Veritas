@@ -13,6 +13,7 @@ from veritas.models.entities import (
     RequirementStatus,
     ReviewRun,
     ReviewScope,
+    SastStatus,
     Severity,
     Summary,
     Verdict,
@@ -80,7 +81,7 @@ def _report(**overrides) -> Report:
 
 def test_schema_version_comment_top():
     md = render_markdown(_report())
-    assert md.startswith("<!-- veritas-report-schema: 1.8.0 -->")
+    assert md.startswith("<!-- veritas-report-schema: 1.9.0 -->")
 
 
 def test_sections_present():
@@ -862,13 +863,48 @@ def test_citation_verified_explanatory_sentence_under_code_findings():
     assert "## Code Findings\n\n" + sentence in render_markdown(_report())
 
 
-def test_sast_rules_line_rendered_when_recorded():
+# --- the SAST header line states whether it ran, and why not (T109, FR-012) ---
+
+
+def _with_sast(**fields) -> Report:
     report = _report()
-    report.run = report.run.model_copy(update={"sast_rules": "r/corp-pack"})
-    md = render_markdown(report)
-    assert "- **SAST rules**: `r/corp-pack`" in md
+    report.run = report.run.model_copy(update={"sast_rules": "r/corp-pack", **fields})
+    return report
 
 
-def test_sast_rules_line_absent_when_sast_did_not_run():
-    assert "- **SAST rules**" not in render_markdown(_report())
+def test_sast_line_when_the_scan_ran_clean():
+    md = render_markdown(_with_sast(sast_status=SastStatus.RAN, sast_result_count=0))
+    assert "- **SAST**: ran with `r/corp-pack` — 0 result(s)" in md.splitlines()
+    assert "SAST rules" not in md
+
+
+def test_sast_line_when_the_scan_ran_degraded_appends_the_reason():
+    md = render_markdown(
+        _with_sast(
+            sast_status=SastStatus.RAN,
+            sast_result_count=1,
+            sast_reason="2 result(s) unmapped",
+        )
+    )
+    assert (
+        "- **SAST**: ran with `r/corp-pack` — 1 result(s); 2 result(s) unmapped"
+        in md.splitlines()
+    )
+
+
+def test_sast_line_when_the_scan_did_not_run_states_the_reason():
+    md = render_markdown(
+        _with_sast(sast_status=SastStatus.NOT_RUN, sast_reason="OpenGrep not found on PATH")
+    )
+    assert (
+        "- **SAST**: not run — OpenGrep not found on PATH (rules configured: `r/corp-pack`)"
+        in md.splitlines()
+    )
+    assert "result(s)" not in md
+
+
+def test_no_sast_line_when_sast_was_never_reached():
+    md = render_markdown(_report())
+    assert "**SAST**" not in md
+    assert "SAST rules" not in md
 

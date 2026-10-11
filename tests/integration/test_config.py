@@ -483,3 +483,76 @@ def test_cli_accepts_a_secret_in_the_local_config(monkeypatch):
     assert result.exit_code == 1
     assert "invalid configuration" not in result.stderr
     assert "target directory does not exist" in result.stderr
+
+
+# --- --config naming the committed file is treated as that file (T108) -------
+
+_COMMITTED_CONFIG_MESSAGE = (
+    "api_key must not be set in .veritas/config.toml, which is committed; put it "
+    "in .veritas/config.local.toml or the environment variable VERITAS_API_KEY instead"
+)
+
+
+def _committed_config_spellings() -> list[str]:
+    """Spellings of .veritas/config.toml, built from the sandboxed working directory."""
+    absolute = str(Path.cwd() / ".veritas" / "config.toml")
+    spellings = [
+        "./.veritas/config.toml",
+        absolute,
+        ".veritas/../.veritas/config.toml",
+    ]
+    if os.name == "nt":
+        spellings.append(r".VERITAS\CONFIG.TOML")
+    return spellings
+
+
+def test_config_option_naming_the_committed_file_rejects_its_secret_under_every_spelling():
+    _write_dot_veritas("config.toml", f'[llm]\napi_key = "{_COMMITTED_KEY}"\n')
+
+    spellings = _committed_config_spellings()
+    assert len(spellings) >= 3
+    for spelling in spellings:
+        with pytest.raises(ValueError) as excinfo:
+            load_settings(spelling)
+        assert str(excinfo.value) == _COMMITTED_CONFIG_MESSAGE, spelling
+
+
+@pytest.mark.parametrize("spelling", ["./.veritas/config.toml", "absolute"])
+def test_cli_config_option_naming_the_committed_file_rejects_its_secret(spelling):
+    from typer.testing import CliRunner
+
+    from veritas.cli.app import app
+
+    _write_dot_veritas("config.toml", f'[llm]\napi_key = "{_COMMITTED_KEY}"\n')
+    if spelling == "absolute":
+        spelling = str(Path.cwd() / ".veritas" / "config.toml")
+
+    result = CliRunner().invoke(
+        app, ["review", "--scope", "project", "--target", ".", "--config", spelling]
+    )
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr.strip() == f"[error] invalid configuration: {_COMMITTED_CONFIG_MESSAGE}"
+    assert _COMMITTED_KEY not in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_config_option_naming_the_committed_file_without_secrets_still_loads():
+    _write_dot_veritas("config.toml", '[llm]\nmodel = "openai:committed/model"\n')
+
+    settings = load_settings("./.veritas/config.toml")
+
+    assert settings.model_runtime == "openai:committed/model"
+
+
+def test_a_config_toml_in_another_directory_may_hold_a_secret():
+    """Only the committed file is restricted; same file name elsewhere is not."""
+    _write_dot_veritas("config.toml", '[llm]\nmodel = "openai:committed/model"\n')
+    other = Path("elsewhere") / ".veritas" / "config.toml"
+    other.parent.mkdir(parents=True)
+    other.write_text(f'[llm]\napi_key = "{_COMMITTED_KEY}"\n', encoding="utf-8")
+
+    settings = load_settings(str(other))
+
+    assert settings.api_key == _COMMITTED_KEY

@@ -9,12 +9,13 @@ import pytest
 from tests.conftest import default_fake_llm, fake_secret
 
 from veritas.config.constants import LAST_REPORT_JSON
-from veritas.models.entities import Report, ReviewScope
+from veritas.models.entities import Report, ReviewScope, SastStatus
 from veritas.review.graph import run_review
 from veritas.security.opengrep import (
     OPENGREP_NO_JSON,
     OPENGREP_SCAN_FAILED,
-    OPENGPRE_NOT_FOUND,
+    OPENGREP_NOT_FOUND,
+    SAST_NO_FILES,
     OpengrepResult,
     collect_sast,
     result_to_finding,
@@ -25,7 +26,7 @@ from veritas.security.opengrep import (
 def test_missing_binary_degrades_gracefully(monkeypatch):
     monkeypatch.setattr("veritas.security.opengrep.shutil.which", lambda _bin: None)
     result = run_opengrep("some/dir")
-    assert result.degraded == OPENGPRE_NOT_FOUND
+    assert result.degraded == OPENGREP_NOT_FOUND
     assert result.findings == []
 
 
@@ -239,7 +240,7 @@ def test_no_parseable_json_without_stderr_keeps_the_category_message(
 def test_missing_binary_reason_is_one_line(monkeypatch, tmp_path):
     monkeypatch.setattr("veritas.security.opengrep.shutil.which", lambda _bin: None)
     result = run_opengrep(str(tmp_path))
-    assert _assert_one_line(result.degraded) == OPENGPRE_NOT_FOUND
+    assert _assert_one_line(result.degraded) == OPENGREP_NOT_FOUND
 
 
 # --- the configured rules source reaches the runner and the report (FR-012) ---
@@ -293,7 +294,7 @@ def test_report_records_sast_rules_and_renders_the_line(
     monkeypatch.setattr(
         scope_module,
         "collect_sast",
-        lambda *_args, **kwargs: OpengrepResult(findings=[], rules="r/corp-pack"),
+        lambda *_args, **kwargs: OpengrepResult(findings=[], ran=True, rules="r/corp-pack"),
     )
     outcome = run_review(
         settings, ReviewScope.PROJECT, str(sample_project), llm=default_fake_llm()
@@ -305,7 +306,8 @@ def test_report_records_sast_rules_and_renders_the_line(
     )
     assert report.run.sast_rules == "r/corp-pack"
     md = Path(str(outcome.report_path)).read_text(encoding="utf-8")
-    assert "- **SAST rules**: `r/corp-pack`" in md
+    assert "- **SAST**: ran with `r/corp-pack` — 0 result(s)" in md.splitlines()
+    assert "SAST rules" not in md
 
 
 @pytest.mark.skipif(
@@ -339,6 +341,7 @@ def test_real_opengrep_scans_a_local_rules_file(tmp_path):
 
     result = collect_sast(files, scope_value="project", rules=str(rules))
 
+    assert result.ran is True
     assert result.degraded is None
     assert result.rules == str(rules)
     assert len(result.findings) == 1
@@ -439,3 +442,120 @@ def test_unmapped_result_appends_to_an_existing_degraded_reason(monkeypatch):
     result = collect_sast({"src/target.py": "import os\n"}, scope_value="project")
     assert result.findings == []
     assert result.degraded == f"{OPENGREP_SCAN_FAILED}; 1 result(s) unmapped"
+
+
+# --- the report and stdout state whether SAST ran, and why not (T109, FR-012) ---
+
+
+def _use_real_collect_sast(monkeypatch) -> None:
+    """Undo the conftest stub so the run goes through collect_sast itself."""
+    monkeypatch.setattr("veritas.review.nodes.scope.collect_sast", collect_sast)
+
+
+def _review_outputs(outcome, capsys) -> tuple[Report, list[str], list[str]]:
+    """(last-report.json, Markdown report lines, compact stdout lines) of a run."""
+    report = Report.model_validate_json(Path(LAST_REPORT_JSON).read_text(encoding="utf-8"))
+    md = Path(str(outcome.report_path)).read_text(encoding="utf-8")
+    return report, md.splitlines(), capsys.readouterr().out.splitlines()
+
+
+def test_opengrep_missing_from_path_is_reported_as_not_run(
+    monkeypatch, sample_project, settings, capsys
+):
+    _use_real_collect_sast(monkeypatch)
+    monkeypatch.setattr("veritas.security.opengrep.shutil.which", lambda _bin: None)
+
+    outcome = run_review(
+        settings, ReviewScope.PROJECT, str(sample_project), llm=default_fake_llm()
+    )
+    report, md_lines, stdout_lines = _review_outputs(outcome, capsys)
+
+    assert outcome.exit_code == 0
+    assert report.run.sast_status is SastStatus.NOT_RUN
+    assert report.run.sast_result_count is None
+    assert report.run.sast_reason == OPENGREP_NOT_FOUND
+    assert report.run.sast_rules == "p/owasp-top-ten"
+    assert (
+        "- **SAST**: not run — OpenGrep not found on PATH "
+        "(rules configured: `p/owasp-top-ten`)"
+    ) in md_lines
+    assert "SAST: not run — OpenGrep not found on PATH" in stdout_lines
+
+
+def test_a_clean_scan_with_zero_results_is_reported_as_ran(
+    monkeypatch, fake_scan, sample_project, settings, capsys
+):
+    _use_real_collect_sast(monkeypatch)
+    fake_scan["paths"] = []
+
+    outcome = run_review(
+        settings, ReviewScope.PROJECT, str(sample_project), llm=default_fake_llm()
+    )
+    report, md_lines, stdout_lines = _review_outputs(outcome, capsys)
+
+    assert report.run.sast_status is SastStatus.RAN
+    assert report.run.sast_result_count == 0
+    assert report.run.sast_reason is None
+    assert "- **SAST**: ran with `p/owasp-top-ten` — 0 result(s)" in md_lines
+    assert "SAST: ran (0 result(s))" in stdout_lines
+
+
+def test_a_scan_with_unmapped_results_is_reported_as_ran_with_the_reason(
+    monkeypatch, fake_scan, sample_project, settings, capsys
+):
+    _use_real_collect_sast(monkeypatch)
+    fake_scan["paths"] = ["src/app.py", r"C:\elsewhere\unrelated\main.py"]
+
+    outcome = run_review(
+        settings, ReviewScope.PROJECT, str(sample_project), llm=default_fake_llm()
+    )
+    report, md_lines, stdout_lines = _review_outputs(outcome, capsys)
+
+    assert report.run.sast_status is SastStatus.RAN
+    assert report.run.sast_result_count == 1
+    assert report.run.sast_reason == "1 result(s) unmapped"
+    assert (
+        "- **SAST**: ran with `p/owasp-top-ten` — 1 result(s); 1 result(s) unmapped"
+    ) in md_lines
+    assert "SAST: ran (1 result(s)) — 1 result(s) unmapped" in stdout_lines
+
+
+def test_collect_sast_with_no_files_does_not_run():
+    result = collect_sast({}, scope_value="project")
+    assert result.ran is False
+    assert result.degraded == SAST_NO_FILES == "no files to scan"
+
+
+@pytest.mark.skipif(
+    shutil.which("opengrep") is None, reason="opengrep binary not on PATH"
+)
+def test_real_opengrep_review_reports_ran_with_one_result(
+    monkeypatch, tmp_path, settings, capsys
+):
+    """The real binary end to end: one rule, one matching call, one result."""
+    _use_real_collect_sast(monkeypatch)
+    rules = tmp_path / "rules.yaml"
+    rules.write_text(
+        "rules:\n"
+        "  - id: veritas.test.os-system\n"
+        "    languages: [python]\n"
+        "    severity: ERROR\n"
+        "    message: os.system() call\n"
+        "    pattern: os.system(...)\n",
+        encoding="utf-8",
+    )
+    project = tmp_path / "proj"
+    (project / "src").mkdir(parents=True)
+    (project / "src" / "target.py").write_text(
+        "import os\n\n\ndef run():\n    os.system(input())\n", encoding="utf-8"
+    )
+    configured = settings.model_copy(update={"opengrep_rules": str(rules)})
+
+    outcome = run_review(configured, ReviewScope.PROJECT, str(project), llm=default_fake_llm())
+    report, md_lines, stdout_lines = _review_outputs(outcome, capsys)
+
+    assert report.run.sast_status is SastStatus.RAN
+    assert report.run.sast_result_count == 1
+    assert report.run.sast_reason is None
+    assert f"- **SAST**: ran with `{rules}` — 1 result(s)" in md_lines
+    assert "SAST: ran (1 result(s))" in stdout_lines

@@ -18,9 +18,10 @@ from veritas.config.constants import SUPPORTED_LANGUAGES
 from veritas.utils.logging import get_log
 from veritas.utils.redaction import redact_secrets
 
-OPENGPRE_NOT_FOUND = "OpenGrep not found on PATH"
+OPENGREP_NOT_FOUND = "OpenGrep not found on PATH"
 OPENGREP_SCAN_FAILED = "OpenGrep scan reported an error"
 OPENGREP_NO_JSON = "OpenGrep scan produced no parseable JSON"
+SAST_NO_FILES = "no files to scan"
 
 # A failed scan is reported as ONE line of at most this many characters: the
 # degraded reason and the logged detail are the last non-empty line of the
@@ -55,9 +56,16 @@ def _failure_line(*candidates: str | None) -> str:
 
 @dataclass
 class OpengrepResult:
-    """Raw OpenGrep scan output plus degradation info."""
+    """Raw OpenGrep scan output plus degradation info.
+
+    ``ran`` is True only when OpenGrep finished and its JSON was parsed; then
+    ``findings`` is the complete result set and ``degraded``, if set, says why
+    coverage is still partial (unmapped results). When ``ran`` is False,
+    ``degraded`` is the one-line reason the scan did not run (FR-012).
+    """
 
     findings: list[dict] = field(default_factory=list)
+    ran: bool = False
     degraded: str | None = None
     scan_error: str | None = None
     rules: str = "p/owasp-top-ten"
@@ -80,7 +88,7 @@ def run_opengrep(
 
     resolved_rules = rules or OpengrepResult.rules
     if shutil.which(opengrep_bin) is None:
-        return OpengrepResult(degraded=OPENGPRE_NOT_FOUND, rules=resolved_rules)
+        return OpengrepResult(degraded=OPENGREP_NOT_FOUND, rules=resolved_rules)
 
     out_json = f"{target_dir}/.opengrep-results-{id(object()):x}.json"
     cmd = [
@@ -108,7 +116,7 @@ def run_opengrep(
         if isinstance(exc, subprocess.TimeoutExpired):
             reason = "OpenGrep scan timed out"
         else:
-            reason = OPENGPRE_NOT_FOUND
+            reason = OPENGREP_NOT_FOUND
         return OpengrepResult(degraded=reason, rules=resolved_rules)
 
     if proc.returncode not in (0, 1, 2):
@@ -147,7 +155,7 @@ def run_opengrep(
         if language_of(path) not in SUPPORTED_LANGUAGES:
             continue
         findings.append(result)
-    return OpengrepResult(findings=findings, rules=resolved_rules)
+    return OpengrepResult(findings=findings, ran=True, rules=resolved_rules)
 
 
 def result_to_finding(result: dict) -> dict:
@@ -227,9 +235,9 @@ def collect_sast(
     reason rather than silently dropped.
     """
     if not files:
-        return OpengrepResult(degraded=None, rules=rules or OpengrepResult.rules)
+        return OpengrepResult(degraded=SAST_NO_FILES, rules=rules or OpengrepResult.rules)
     if shutil.which(opengrep_bin) is None:
-        return OpengrepResult(degraded=OPENGPRE_NOT_FOUND, rules=rules or OpengrepResult.rules)
+        return OpengrepResult(degraded=OPENGREP_NOT_FOUND, rules=rules or OpengrepResult.rules)
 
     import os
     import tempfile

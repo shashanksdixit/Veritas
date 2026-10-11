@@ -100,7 +100,7 @@ def test_report_roundtrip_json():
             verdict=V.CLEAN,
         ),
     )
-    assert report.schema_version == "1.8.0"
+    assert report.schema_version == "1.9.0"
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.run.id == report.run.id
 
@@ -364,7 +364,7 @@ def test_sast_rules_round_trips_at_schema_1_7_0():
             verdict=Verdict.CLEAN,
         ),
     )
-    assert report.schema_version == "1.8.0"
+    assert report.schema_version == "1.9.0"
 
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.run.sast_rules == "r/corp-pack"
@@ -382,3 +382,98 @@ def test_a_pre_1_7_run_without_sast_rules_still_validates():
         }
     )
     assert restored.sast_rules is None
+
+
+# --- schema 1.9.0 adds ReviewRun.sast_status, sast_result_count, sast_reason (T109, FR-012) ---
+
+
+def _report_with_run(run: ReviewRun):
+    from veritas.models.entities import Report, Summary
+
+    return Report(
+        run=run,
+        summary=Summary(
+            total_code_findings=0,
+            total_requirement_findings=0,
+            verification_failure_count=0,
+            verdict=Verdict.CLEAN,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "count", "reason"),
+    [
+        ("ran", 0, None),
+        ("ran", 1, "2 result(s) unmapped"),
+        ("not_run", None, "OpenGrep not found on PATH"),
+    ],
+)
+def test_sast_status_fields_round_trip_at_schema_1_9_0(status, count, reason):
+    from veritas.models.entities import Report, SastStatus
+
+    report = _report_with_run(
+        ReviewRun(
+            scope=ReviewScope.PROJECT,
+            target=".",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.0.0",
+            sast_rules="p/owasp-top-ten",
+            sast_status=SastStatus(status),
+            sast_result_count=count,
+            sast_reason=reason,
+        )
+    )
+    assert report.schema_version == "1.9.0"
+
+    dumped = json.loads(report.model_dump_json())
+    assert dumped["schema_version"] == "1.9.0"
+    assert dumped["run"]["sast_status"] == status
+
+    restored = Report.model_validate_json(report.model_dump_json())
+    assert restored.run.sast_status is SastStatus(status)
+    assert restored.run.sast_result_count == count
+    assert restored.run.sast_reason == reason
+    assert restored.run.sast_rules == "p/owasp-top-ten"
+
+
+def test_a_pre_1_9_report_still_validates_with_sast_status_fields_null():
+    """Schema 1.9.0 is additive: a 1.8.0 report has none of the three keys."""
+    from veritas.models.entities import Report
+
+    pre_1_9 = {
+        "schema_version": "1.8.0",
+        "run": {
+            "scope": "project",
+            "target": ".",
+            "config_hash": "h",
+            "model_name": "m",
+            "prompt_version": "1.0.0",
+            "report_status": "complete",
+            "sast_rules": "p/owasp-top-ten",
+        },
+        "code_findings": [],
+        "requirement_findings": [],
+        "summary": {
+            "total_code_findings": 0,
+            "total_requirement_findings": 0,
+            "verification_failure_count": 0,
+            "verdict": "Clean",
+        },
+        "failed_batches": [],
+    }
+
+    restored = Report.model_validate(pre_1_9)
+
+    assert restored.schema_version == "1.8.0"
+    assert restored.run.sast_rules == "p/owasp-top-ten"
+    assert restored.run.sast_status is None
+    assert restored.run.sast_result_count is None
+    assert restored.run.sast_reason is None
+
+
+def test_sast_status_values_are_ran_and_not_run():
+    from veritas.models.entities import SastStatus
+
+    assert [status.value for status in SastStatus] == ["ran", "not_run"]

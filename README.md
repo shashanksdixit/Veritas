@@ -216,7 +216,8 @@ Configuration layers, lowest to highest precedence:
 
 1. Built-in defaults
 2. `.veritas/config.toml` (committed; a run that finds `api_key`, `github_token`
-   or `gitlab_token` in it stops with `[error] invalid configuration: ...` and exit 1)
+   or `gitlab_token` in it stops with `[error] invalid configuration: ...` and exit 1,
+   also when the same file is passed with `--config` under any spelling)
 3. `.veritas/config.local.toml` (gitignored, local overrides; keys and tokens go here
    or in environment variables)
 4. Environment variables `VERITAS_*`
@@ -258,8 +259,10 @@ opengrep_rules = "p/owasp-top-ten"           # default: SAST rules source. A reg
                                              #  existing local rules file or directory.
                                              #  A registry ruleset may change over time;
                                              #  a local rules source makes SAST
-                                             #  reproducible. The value used is recorded
-                                             #  in the report as "- **SAST rules**".
+                                             #  reproducible. The report's "- **SAST**"
+                                             #  line records it with whether the scan
+                                             #  ran, its result count, or the reason it
+                                             #  did not run; stdout prints "SAST: ...".
 ```
 
 ### Environment variables

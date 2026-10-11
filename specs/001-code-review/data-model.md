@@ -99,6 +99,15 @@ class ReviewRun(BaseModel):
     # directory). None when the run never reached SAST, so a report written
     # before this field existed still validates.
     sast_rules: str | None = None
+    # Report.schema_version 1.9.0 (FR-012): sast_status is "ran" (OpenGrep
+    # finished and its JSON was parsed) or "not_run"; sast_result_count is the
+    # number of results mapped to reviewed files, set only when it ran;
+    # sast_reason is one line, set when it did not run or ran degraded (e.g.
+    # "1 result(s) unmapped"). All None when the run never reached SAST, so a
+    # pre-1.9.0 report still validates.
+    sast_status: SastStatus | None = None   # "ran" | "not_run"
+    sast_result_count: int | None = None
+    sast_reason: str | None = None
 ```
 
 ### CodeFinding (spec Key Entity: "Code Finding")
@@ -265,7 +274,7 @@ class FailedBatch(BaseModel):
 
 class Report(BaseModel):
     """The full review deliverable (FR-016)."""
-    schema_version: str = "1.8.0"    # semver; bump on any breaking change to
+    schema_version: str = "1.9.0"    # semver; bump on any breaking change to
                                       # Report/CodeFinding/RequirementFinding shape,
                                       # per CHANGELOG.md (constitution Principle VIII)
     run: ReviewRun

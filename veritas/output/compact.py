@@ -16,6 +16,8 @@ from veritas.models.entities import (
     FailedBatch,
     Report,
     RequirementStatus,
+    ReviewRun,
+    SastStatus,
     Severity,
 )
 
@@ -104,6 +106,19 @@ def _coverage_line(coverage: Coverage) -> str:
     )
 
 
+def _sast_line(run: ReviewRun) -> str | None:
+    """One line saying whether SAST ran (FR-012); None when SAST was never reached.
+
+    A run that ran degraded (unmapped results) keeps its reason on the line.
+    """
+    if run.sast_status is None:
+        return None
+    if run.sast_status is SastStatus.RAN:
+        line = f"SAST: ran ({run.sast_result_count} result(s))"
+        return f"{line} — {run.sast_reason}" if run.sast_reason else line
+    return f"SAST: not run — {run.sast_reason}"
+
+
 def render_compact(report: Report, report_path: str | None = None) -> str:
     """Render the compact stdout summary (FR-016)."""
     summary = report.summary
@@ -132,6 +147,10 @@ def render_compact(report: Report, report_path: str | None = None) -> str:
 
     if report.coverage is not None:
         lines.append(_coverage_line(report.coverage))
+
+    sast_line = _sast_line(report.run)
+    if sast_line:
+        lines.append(sast_line)
 
     source_bits: list[str] = []
     for finding in report.code_findings:

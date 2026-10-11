@@ -205,16 +205,35 @@ def _reject_committed_secrets(committed: dict) -> None:
     )
 
 
+def _is_committed_config(path: Path) -> bool:
+    """True when ``path`` is the committed ``.veritas/config.toml`` under any spelling.
+
+    Compares the files themselves (``samefile``), so ``./.veritas/config.toml``,
+    an absolute path, ``..`` segments, a different letter case on Windows, and a
+    symlink or hard link to it are all recognised. When either file is missing
+    there is nothing to read, so the normalised resolved paths are compared.
+    """
+    committed = Path(CONFIG_PATH)
+    try:
+        return path.samefile(committed)
+    except OSError:
+        return os.path.normcase(path.resolve()) == os.path.normcase(committed.resolve())
+
+
 def load_settings(config_path: str | None = None) -> Settings:
     """Load effective settings, merging TOML files then letting env win.
 
     Without ``config_path``: ``.veritas/config.toml`` (committed, no secrets),
     then ``.veritas/config.local.toml``, then ``VERITAS_*``. With it: that file
-    alone, then ``VERITAS_*``.
+    alone, then ``VERITAS_*``; when that file is ``.veritas/config.toml`` itself
+    (by resolved path), its secrets are refused exactly as without ``--config``.
     """
     merged: dict = {}
     if config_path:
-        merged.update(_flatten_toml(_read_toml(Path(config_path))))
+        explicit = _flatten_toml(_read_toml(Path(config_path)))
+        if _is_committed_config(Path(config_path)):
+            _reject_committed_secrets(explicit)
+        merged.update(explicit)
     else:
         committed = _flatten_toml(_read_toml(Path(CONFIG_PATH)))
         _reject_committed_secrets(committed)
