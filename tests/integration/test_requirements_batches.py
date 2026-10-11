@@ -15,10 +15,9 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import fake_secret
-from veritas.config.settings import Settings
 from veritas.models.entities import RequirementStatus, ReviewScope
 from veritas.review.batching import plan_batches
-from veritas.review.graph import Runtime
+from veritas.review.contexts import ReviewContext
 from veritas.review.nodes.requirements import make_requirements_node
 from veritas.review.requirements_source import Requirement
 from veritas.utils.logging import Log
@@ -82,12 +81,12 @@ class AnswerLLM:
         return json.dumps(payload)
 
 
-def _runtime(llm, events: list[str] | None = None) -> Runtime:
+def _runtime(llm, events: list[str] | None = None) -> ReviewContext:
     log = Log(verbose=False)
     if events is not None:
         log.info = lambda message, **_kw: events.append(f"info: {message}")  # type: ignore[method-assign]
         log.warn = lambda message, **_kw: events.append(f"warn: {message}")  # type: ignore[method-assign]
-    return Runtime(settings=Settings(api_key="test-key"), log=log, llm=llm)
+    return ReviewContext(llm=llm, log=log)
 
 
 def _project(tmp_path: Path) -> dict[str, str]:

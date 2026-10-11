@@ -12,6 +12,7 @@ from tests.conftest import FakeLLM, default_fake_llm, fake_secret
 
 from veritas.config.constants import LAST_REPORT_JSON
 from veritas.config.settings import Settings
+from veritas.hosting.factory import HostingClients
 from veritas.hosting.github import GitHubAPIError
 from veritas.models.entities import Report, ReviewScope
 from veritas.review.graph import run_review
@@ -49,10 +50,10 @@ class ForbiddenHost:
 
 @pytest.fixture
 def host(monkeypatch):
-    from veritas.review.nodes import scope as scope_module
+    from veritas.review import graph as graph_module
 
     fake = ForbiddenHost()
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: scope_module.HostingClients(fake, fake))
+    monkeypatch.setattr(graph_module, "build_hosting_client", lambda _s, _p, _l: HostingClients(fake, fake))
     return fake
 
 

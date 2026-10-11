@@ -1,8 +1,9 @@
-"""Hosting client wiring (T110): fetcher/poster split, token errors pinned.
+"""Hosting client wiring (T110, T111): fetcher/poster split, token errors pinned.
 
-``build_hosting_client`` still checks the token and builds the clients where it
-did before T110; it now returns a ``HostingClients`` pair. The scope node reads
-through the fetcher only and ``--post`` writes through the poster only.
+``build_hosting_client`` (``veritas/hosting/factory.py``) checks the token and
+returns a ``HostingClients`` pair; ``run_review`` calls it before the graph
+(T111). The scope node reads through the fetcher only and ``--post`` writes
+through the poster only.
 """
 
 from __future__ import annotations
@@ -16,8 +17,8 @@ from veritas.hosting.gitlab import GitLabFetcher, GitLabPoster
 from veritas.models.entities import ReviewScope
 from veritas.review import ReviewFatalError
 from veritas.review.graph import run_review
-from veritas.review.nodes import scope as scope_module
-from veritas.review.nodes.scope import HostingClients, build_hosting_client
+from veritas.review import graph as graph_module
+from veritas.hosting.factory import HostingClients, build_hosting_client
 from veritas.utils.logging import Log
 
 from tests.conftest import default_fake_llm
@@ -121,7 +122,7 @@ def test_scope_reads_through_the_fetcher_and_post_goes_through_the_poster(
 ):
     poster = _PostOnlyHost()
     monkeypatch.setattr(
-        scope_module,
+        graph_module,
         "build_hosting_client",
         lambda _s, _p, _l: HostingClients(_ReadOnlyHost(), poster),
     )

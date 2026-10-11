@@ -50,7 +50,7 @@ Options:
 | Code | Meaning |
 |------|---------|
 | 0 | Review completed (findings or not) |
-| 1 | Fatal error (missing args, bad config, target not found, provider unreachable, `VERITAS_ZDR=true` on a non-OpenRouter backend, or --post used with a non-pr scope) |
+| 1 | Fatal error (missing args, bad config, target not found, provider unreachable, `VERITAS_ZDR=true` on a non-OpenRouter backend, --post used with a non-pr scope, or a missing hosting token for `--scope pr`: `VERITAS_GITHUB_TOKEN` / `VERITAS_GITLAB_TOKEN`, checked after the LLM client is built and before any review work starts) |
 | 2 | Partial review (LLM failed mid-run; report written with completed types, marked incomplete per FR-027) |
 
 On exit code 1 for bad configuration (a pydantic validation error or a

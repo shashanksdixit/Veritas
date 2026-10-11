@@ -31,6 +31,7 @@ from veritas.review.nodes.common import (
     llm_requirement_findings,
 )
 from veritas.review.requirements_source import Requirement
+from veritas.review.contexts import ReviewContext
 from veritas.review.state import ReviewState
 
 # The four answers a batch may give (FR-007). Anything else the model returns is
@@ -233,12 +234,12 @@ def _no_documentation_finding() -> RequirementFinding:
     )
 
 
-def make_requirements_node(runtime) -> Callable[[ReviewState], dict]:
+def make_requirements_node(ctx: ReviewContext) -> Callable[[ReviewState], dict]:
     def requirements_node(state: ReviewState) -> dict:
         requirements = state.get("requirements") or []
         if requirements:
-            return _structured_node(runtime, state, requirements)
-        return _free_text_node(runtime, state)
+            return _structured_node(ctx, state, requirements)
+        return _free_text_node(ctx, state)
 
     return requirements_node
 
@@ -254,23 +255,23 @@ def _is_pr_scope(state: ReviewState) -> bool:
 
 
 def _structured_node(
-    runtime, state: ReviewState, requirements: list[Requirement]
+    ctx: ReviewContext, state: ReviewState, requirements: list[Requirement]
 ) -> dict:
     """Evaluate the extracted requirements against every batch (FR-007)."""
     plan = state.get("batch_plan")
     total_batches = len(plan.batches) if plan is not None else 0
     payloads, failed = llm_requirement_answers(
-        runtime.llm,
+        ctx.llm,
         plan,
         requirements,
         state.get("project_context"),
-        log=runtime.log,
+        log=ctx.log,
     )
 
     known = {r.id for r in requirements}
     unknown = sum(1 for payload in payloads if str(payload.get("id", "")).strip() not in known)
     if unknown:
-        runtime.log.info(f"requirements: ignored {unknown} unknown requirement id(s)")
+        ctx.log.info(f"requirements: ignored {unknown} unknown requirement id(s)")
 
     findings = merge_answers(
         requirements,
@@ -283,7 +284,7 @@ def _structured_node(
     counts = {status: 0 for status in RequirementStatus}
     for finding in findings:
         counts[finding.status] += 1
-    runtime.log.info(
+    ctx.log.info(
         f"requirements: {len(findings)} evaluated: "
         f"{counts[RequirementStatus.SATISFIED]} satisfied, "
         f"{counts[RequirementStatus.PARTIAL]} partial, "
@@ -300,17 +301,17 @@ def _structured_node(
     }
 
 
-def _free_text_node(runtime, state: ReviewState) -> dict:
+def _free_text_node(ctx: ReviewContext, state: ReviewState) -> dict:
     """The T038 path: hand the reviewer the documentation and judge it as prose."""
     files = state["files"]
     req_source = find_requirements_source(files)
     if req_source:
-        runtime.log.info("requirements: documentation found in scope")
+        ctx.log.info("requirements: documentation found in scope")
     else:
-        runtime.log.info("requirements: no requirements documentation found")
+        ctx.log.info("requirements: no requirements documentation found")
 
     findings = llm_requirement_findings(
-        runtime.llm,
+        ctx.llm,
         req_source,
         files,
         state["project_context"],
@@ -318,7 +319,7 @@ def _free_text_node(runtime, state: ReviewState) -> dict:
     if not findings and not req_source:
         findings = [_no_documentation_finding()]
     findings = _map_gap_in_pr_scope(findings, _is_pr_scope(state))
-    runtime.log.info(f"requirements: {len(findings)} findings")
+    ctx.log.info(f"requirements: {len(findings)} findings")
     return {"requirement_findings": findings}
 
 

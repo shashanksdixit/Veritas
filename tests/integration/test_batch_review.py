@@ -35,7 +35,8 @@ from veritas.models.entities import (
     Verdict,
 )
 from veritas.review.batching import plan_batches
-from veritas.review.graph import Runtime, run_review
+from veritas.review.contexts import RenderContext, ReviewContext
+from veritas.review.graph import run_review
 from veritas.review.nodes.code_quality import make_code_quality_node
 from veritas.review.nodes.common import load_prompt
 from veritas.review.nodes.performance import make_performance_node
@@ -43,6 +44,7 @@ from veritas.review.nodes.requirements import make_requirements_node
 from veritas.review.nodes.security import make_security_node
 from veritas.review.nodes.test_coverage import make_test_coverage_node
 from veritas.security.opengrep import OpengrepResult
+from veritas.suppression.store import SuppressionStore
 from veritas.utils.logging import Log
 
 _CODE_MARKER = "Code to review:\n\n"
@@ -204,15 +206,32 @@ class SpyLLM:
         return _finding_from_batch(user, f"cf-{index}")
 
 
-def _runtime(llm, *, capture: list[str] | None = None, **settings_kwargs) -> Runtime:
-    """A Runtime whose log appends to ``capture`` so ordering can be asserted."""
+def _log(capture: list[str] | None = None) -> Log:
+    """A Log that appends to ``capture`` so ordering can be asserted."""
     log = Log(verbose=False)
     if capture is not None:
         log.info = lambda message, **_kw: capture.append(f"info: {message}")  # type: ignore[method-assign]
         log.warn = lambda message, **_kw: capture.append(f"warn: {message}")  # type: ignore[method-assign]
-    settings = Settings(api_key="test-key", **settings_kwargs)
-    kwargs = {"report_path": "unused.md"} if not capture else {}
-    return Runtime(settings=settings, log=log, llm=llm, **kwargs)
+    return log
+
+
+def _runtime(llm, *, capture: list[str] | None = None) -> ReviewContext:
+    """The review-node context, with a log that appends to ``capture``."""
+    return ReviewContext(llm=llm, log=_log(capture))
+
+
+def _render_ctx(*, capture: list[str] | None = None) -> RenderContext:
+    """The render-node context, with Settings' default batch budgets."""
+    settings = Settings(api_key="test-key")
+    return RenderContext(
+        log=_log(capture),
+        report_path="unused.md",
+        batch_chars=settings.batch_chars,
+        max_batches=settings.max_batches,
+        store=SuppressionStore(),
+        poster=None,
+        pr=None,
+    )
 
 
 def _state(plan, files: dict[str, str] | None = None) -> dict:
@@ -584,8 +603,7 @@ def test_end_to_end_coverage_is_none_without_a_plan(tmp_path):
         "verified_code_findings": [],
         "verified_requirement_findings": [],
     }
-    runtime = _runtime(SpyLLM(), capture=[])
-    report_out = make_render_node(runtime)(state)
+    report_out = make_render_node(_render_ctx(capture=[]))(state)
     assert report_out["phase"] == "done"
     assert _read_report().coverage is None
 
@@ -890,7 +908,7 @@ def test_render_withholds_non_sast_findings_when_verification_did_not_run(
 
     monkeypatch.setattr("veritas.review.nodes.scope.collect_sast", _stub)
 
-    def _exploding_verify_node(runtime):
+    def _exploding_verify_node(ctx):
         def verify_node(state):
             raise RuntimeError("verification exploded")
 

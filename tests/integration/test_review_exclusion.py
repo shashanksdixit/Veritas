@@ -14,7 +14,8 @@ import pytest
 
 from veritas.config.settings import Settings
 from veritas.models.entities import ReviewRun, ReviewScope
-from veritas.review.graph import Runtime
+from veritas.hosting.resolver import parse_pr_target
+from veritas.review.contexts import ScopeContext
 from veritas.review.nodes import scope as scope_module
 from veritas.review.nodes.scope import make_scope_node
 from veritas.review.state import ReviewState
@@ -58,8 +59,18 @@ def _stub_sast(monkeypatch) -> list[str]:
     return seen
 
 
-def _runtime(exclude: list[str]) -> Runtime:
-    return Runtime(settings=Settings(exclude=exclude), log=Log(verbose=False), llm=None)
+def _runtime(exclude: list[str], *, host=None, **settings_kwargs) -> ScopeContext:
+    """The scope-node context; ``host`` makes it a PR context for acme/widget#3."""
+    settings = Settings(exclude=exclude, **settings_kwargs)
+    return ScopeContext(
+        log=Log(verbose=False),
+        exclude=tuple(settings.exclude),
+        batch_chars=settings.batch_chars,
+        max_batches=settings.max_batches,
+        opengrep_rules=settings.opengrep_rules,
+        fetcher=host,
+        pr=parse_pr_target("acme/widget#3") if host is not None else None,
+    )
 
 
 def _state(target: str, scope: ReviewScope = ReviewScope.PROJECT) -> ReviewState:
@@ -192,10 +203,9 @@ def test_pr_scope_excluded_files_are_never_fetched(monkeypatch):
         "notes.cob": "IDENTIFICATION DIVISION.\n",
     }
     host = FakeHost(contents)
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: scope_module.HostingClients(host, host))
     _stub_sast(monkeypatch)
 
-    runtime = _runtime([".specify/", "spec.md"])
+    runtime = _runtime([".specify/", "spec.md"], host=host)
     target = "acme/widget#3"
     result = make_scope_node(runtime)(_state(target, ReviewScope.PR))
 
@@ -215,10 +225,9 @@ def test_pr_scope_supported_requirements_source_recorded_once(monkeypatch):
     recorded at most once across both PR fetch loops."""
     contents = {"src/app.py": "x = 1\n", "spec.md": "# REQ-1\n"}
     host = FakeHost(contents)
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: scope_module.HostingClients(host, host))
     _stub_sast(monkeypatch)
 
-    runtime = _runtime([".specify/"])
+    runtime = _runtime([".specify/"], host=host)
     target = "acme/widget#3"
     result = make_scope_node(runtime)(_state(target, ReviewScope.PR))
     assert host.fetched == ["src/app.py", "spec.md"]
@@ -228,10 +237,9 @@ def test_pr_scope_supported_requirements_source_recorded_once(monkeypatch):
 def test_pr_scope_requirements_source_excluded_and_not_fetched(monkeypatch):
     contents = {"src/app.py": "x = 1\n", "docs/requirements.md": "# REQ-1\n"}
     host = FakeHost(contents)
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: scope_module.HostingClients(host, host))
     _stub_sast(monkeypatch)
 
-    runtime = _runtime(["docs/"])
+    runtime = _runtime(["docs/"], host=host)
     target = "acme/widget#3"
     result = make_scope_node(runtime)(_state(target, ReviewScope.PR))
     assert host.fetched == ["src/app.py"]
@@ -241,10 +249,9 @@ def test_pr_scope_requirements_source_excluded_and_not_fetched(monkeypatch):
 def test_pr_scope_unsupported_file_under_excluded_dir_not_recorded(monkeypatch):
     contents = {"src/app.py": "x = 1\n", ".specify/data.cob": "IDENTIFICATION DIVISION.\n"}
     host = FakeHost(contents)
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: scope_module.HostingClients(host, host))
     _stub_sast(monkeypatch)
 
-    runtime = _runtime([".specify/"])
+    runtime = _runtime([".specify/"], host=host)
     target = "acme/widget#3"
     result = make_scope_node(runtime)(_state(target, ReviewScope.PR))
     assert result["excluded_files"] == []
@@ -315,9 +322,7 @@ def test_excluded_files_are_not_batched(exclusion_tree, monkeypatch):
 
 def test_batch_plan_returned_with_expected_budgets(exclusion_tree, monkeypatch):
     _stub_sast(monkeypatch)
-    runtime = _runtime([])
-    runtime.settings.batch_chars = 4000
-    runtime.settings.max_batches = 3
+    runtime = _runtime([], batch_chars=4000, max_batches=3)
     result = make_scope_node(runtime)(_state(str(exclusion_tree)))
     plan = result["batch_plan"]
     assert plan is not None
@@ -329,9 +334,7 @@ def test_batch_plan_returned_with_expected_budgets(exclusion_tree, monkeypatch):
 def test_batching_info_log_line(exclusion_tree, monkeypatch):
     _stub_sast(monkeypatch)
     events: list[str] = []
-    runtime = _runtime([".specify/"])
-    runtime.settings.batch_chars = 4000
-    runtime.settings.max_batches = 8
+    runtime = _runtime([".specify/"], batch_chars=4000, max_batches=8)
     monkeypatch.setattr(runtime.log, "info", lambda msg, **_kw: events.append(msg))
     plan = make_scope_node(runtime)(_state(str(exclusion_tree)))["batch_plan"]
     expected = (
@@ -346,8 +349,7 @@ def test_batching_warning_logged_at_warn(exclusion_tree, monkeypatch):
     _stub_sast(monkeypatch)
     warnings: list[str] = []
     (exclusion_tree / "src" / "long_line.py").write_text("y" * 6000 + "\n", encoding="utf-8")
-    runtime = _runtime([])
-    runtime.settings.batch_chars = 4000
+    runtime = _runtime([], batch_chars=4000)
     monkeypatch.setattr(runtime.log, "warn", lambda msg, **_kw: warnings.append(msg))
     make_scope_node(runtime)(_state(str(exclusion_tree)))
     assert (

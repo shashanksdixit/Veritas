@@ -28,6 +28,7 @@ from veritas.models.entities import (
 from veritas.output.compact import ERROR_SUMMARY_LIMIT, render_compact, summarize_errors
 from veritas.output.markdown import render_markdown
 from veritas.output.summary import compute_summary
+from veritas.review.contexts import RenderContext
 from veritas.review.nodes.common import snippet_for
 from veritas.review.state import ReviewState
 from veritas.review.tools.write_tools import (
@@ -89,7 +90,7 @@ def _finalize_run(
     )
 
 
-def _coverage(state: ReviewState, runtime) -> Coverage | None:
+def _coverage(state: ReviewState, ctx: RenderContext) -> Coverage | None:
     """Coverage describing the batch plan (FR-029), or None when there is none.
 
     Coverage describes WHICH code the plan covered (budgets, batches used,
@@ -104,8 +105,8 @@ def _coverage(state: ReviewState, runtime) -> Coverage | None:
     if plan is None:
         return None
     return Coverage(
-        batch_chars=runtime.settings.batch_chars,
-        max_batches=runtime.settings.max_batches,
+        batch_chars=ctx.batch_chars,
+        max_batches=ctx.max_batches,
         batches_used=len(plan.batches),
         reviewed_files=list(plan.reviewed_files),
         split_files=list(plan.split_files),
@@ -131,32 +132,30 @@ def _post_failure_reason(exc: Exception) -> str:
         return f"HTTP {status}"
 
 
-def _post_report(runtime, report: Report) -> None:
-    clients = getattr(runtime, "hosting", None)
-    parsed = getattr(runtime, "pr_parsed", None)
-    if clients is None or parsed is None:
-        runtime.log.warn("--post set but no hosting client available; skipped")
-        return
+def _post_report(ctx: RenderContext, report: Report) -> None:
+    # Called only when ctx.poster is set, which run_review does only for
+    # --post, and --post is only accepted with --scope pr, so ctx.pr is set too.
+    parsed = ctx.pr
     # Redacted as it is sent (FR-013), like every other finished output.
     body = redact_secrets(report.markdown_content or render_markdown(report))
-    host = clients.poster
+    host = ctx.poster
     try:
         if parsed.provider == "github":
             host.post_comment(parsed.owner, parsed.repo, parsed.number, body)
         else:
             host.post_note(parsed.owner, parsed.repo, parsed.number, body)
-        runtime.log.info(f"Report posted as {parsed.provider} comment on {parsed.ref}")
+        ctx.log.info(f"Report posted as {parsed.provider} comment on {parsed.ref}")
     except Exception as exc:  # noqa: BLE001 - FR-028: posting failure is non-fatal
         # The exit code is untouched: run_review derives it from the report
         # status alone (FR-016), whatever happened here.
-        runtime.log.warn(
+        ctx.log.warn(
             f"Failed to post report as {parsed.provider} comment: "
             f"{_post_failure_reason(exc)}; "
-            f"report saved to {runtime.report_path}"
+            f"report saved to {ctx.report_path}"
         )
 
 
-def make_render_node(runtime) -> Callable[[ReviewState], dict]:
+def make_render_node(ctx: RenderContext) -> Callable[[ReviewState], dict]:
     def node(state: ReviewState) -> dict:
         # FR-013: the verified channels are the only authority on what may be
         # published. They are None when verification never ran, and a list when it
@@ -199,7 +198,7 @@ def make_render_node(runtime) -> Callable[[ReviewState], dict]:
         failed = list(state.get("failed_batches") or [])
         run = _finalize_run(state, [*state.get("errors", []), *withheld_errors], failed)
 
-        code = _apply_suppressions(code, state.get("files", {}), runtime.suppressions)
+        code = _apply_suppressions(code, state.get("files", {}), ctx.store)
 
         summary = compute_summary(
             code,
@@ -215,20 +214,20 @@ def make_render_node(runtime) -> Callable[[ReviewState], dict]:
             code_findings=code,
             requirement_findings=req,
             summary=summary,
-            coverage=_coverage(state, runtime),
+            coverage=_coverage(state, ctx),
             failed_batches=failed,
         )
         # Each finished output is redacted where it is written or sent (FR-013).
         markdown = redact_secrets(render_markdown(report))
 
-        path = write_report(runtime.report_path, report, runtime.log)
+        path = write_report(ctx.report_path, report, ctx.log)
         persist_last_report_json(report, LAST_REPORT_JSON)
 
         compact = redact_secrets(render_compact(report, report_path=path))
         print(compact, file=sys.stdout, flush=True)
 
-        if runtime.post:
-            _post_report(runtime, report)
+        if ctx.poster is not None:
+            _post_report(ctx, report)
 
         return {
             "report_path": str(path),

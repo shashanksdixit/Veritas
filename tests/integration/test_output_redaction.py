@@ -16,6 +16,7 @@ from tests.conftest import APP_CONTENT, FakeLLM, canned_code_findings, fake_secr
 
 from veritas.cli.app import app
 from veritas.config.constants import LAST_REPORT_JSON, SUPPRESSIONS_PATH
+from veritas.hosting.factory import HostingClients
 from veritas.models.entities import Report, ReviewScope
 from veritas.review.graph import run_review
 from veritas.utils.redaction import redact_json_strings
@@ -69,10 +70,10 @@ def _mr_llm() -> FakeLLM:
 
 
 def test_credentialed_mr_url_token_appears_in_no_output(monkeypatch, settings, capsys):
-    from veritas.review.nodes import scope as scope_module
+    from veritas.review import graph as graph_module
 
     host = FakeGitLab()
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: scope_module.HostingClients(host, host))
+    monkeypatch.setattr(graph_module, "build_hosting_client", lambda _s, _p, _l: HostingClients(host, host))
 
     outcome = run_review(settings, ReviewScope.PR, MR_URL, post=True, llm=_mr_llm())
     captured = capsys.readouterr()
@@ -104,9 +105,9 @@ def test_credentialed_mr_url_token_appears_in_no_output(monkeypatch, settings, c
 
 
 def test_redacted_last_report_still_validates_and_keeps_hex_values(monkeypatch, settings):
-    from veritas.review.nodes import scope as scope_module
+    from veritas.review import graph as graph_module
 
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: scope_module.HostingClients(FakeGitLab(), FakeGitLab()))
+    monkeypatch.setattr(graph_module, "build_hosting_client", lambda _s, _p, _l: HostingClients(FakeGitLab(), FakeGitLab()))
     run_review(settings, ReviewScope.PR, MR_URL, llm=_mr_llm())
 
     report = Report.model_validate_json(Path(LAST_REPORT_JSON).read_text(encoding="utf-8"))

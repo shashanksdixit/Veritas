@@ -15,7 +15,7 @@ from veritas.models.entities import (
     Verdict,
 )
 from veritas.review.graph import run_review
-from veritas.review.nodes.scope import HostingClients
+from veritas.hosting.factory import HostingClients
 
 
 def test_project_review_succeeds_and_writes_report(sample_project, settings):
@@ -78,7 +78,7 @@ def test_bare_pr_number_is_fatal(settings):
 
 
 def test_pr_review_posts_when_requested(monkeypatch, settings):
-    from veritas.review.nodes import scope as scope_module
+    from veritas.review import graph as graph_module
     from veritas.review.nodes.scope import _normalize_rel
 
     class FakeHost:
@@ -102,7 +102,7 @@ def test_pr_review_posts_when_requested(monkeypatch, settings):
             self.posted.append(body)
 
     host = FakeHost()
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: scope_module.HostingClients(host, host))
+    monkeypatch.setattr(graph_module, "build_hosting_client", lambda _s, _p, _l: HostingClients(host, host))
 
     llm = default_fake_llm()
     outcome = run_review(
@@ -278,7 +278,7 @@ def test_a_pr_that_implements_nothing_reports_not_addressed_and_stays_clean(
     _stub_sast(monkeypatch)
     files = {"src/app.py": _APP, "specs/demo/spec.md": _SPEC}
     monkeypatch.setattr(
-        "veritas.review.nodes.scope.build_hosting_client",
+        "veritas.review.graph.build_hosting_client",
         lambda _s, _p, _l: HostingClients(_PrHost(files), _PrHost(files)),
     )
 

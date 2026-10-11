@@ -253,7 +253,7 @@ def test_zdr_false_sends_no_provider_block(echo_server, no_proxy, monkeypatch):
 def _no_work_spies(monkeypatch) -> dict:
     """Record every attempt to reach a hosting provider or an LLM."""
     from veritas.llm import client as client_module
-    from veritas.review.nodes import scope as scope_module
+    from veritas.review import graph as graph_module
 
     calls: dict[str, list] = {"hosting": [], "llm_client": [], "llm_call": []}
 
@@ -269,7 +269,7 @@ def _no_work_spies(monkeypatch) -> dict:
         calls["llm_call"].append(args)
         raise AssertionError("an LLM call was made on a refused run")
 
-    monkeypatch.setattr(scope_module, "build_hosting_client", fake_hosting)
+    monkeypatch.setattr(graph_module, "build_hosting_client", fake_hosting)
     monkeypatch.setattr(client_module, "init_chat_model", fake_init_chat_model)
     monkeypatch.setattr(client_module.LLMClient, "complete", fake_complete)
     return calls
@@ -295,7 +295,7 @@ def test_cli_fails_closed_when_zdr_on_a_non_openrouter_backend(
 ):
     """Both non-OpenRouter routes are refused at the real CLI entry point.
 
-    ``--scope pr`` is deliberate: without the gate the scope node WOULD build a
+    ``--scope pr`` is deliberate: without the gate run_review WOULD build a
     hosting client, which is what makes the spy a real assertion rather than a
     vacuous one for a scope that never contacts a hosting provider.
     """

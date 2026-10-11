@@ -11,11 +11,12 @@ import os
 from typing import Callable
 
 from veritas.models.entities import ReviewScope
+from veritas.review.contexts import ReviewContext
 from veritas.review.state import ReviewState
 from veritas.utils.project_context import build_project_context
 
 
-def _context_root(runtime, state: ReviewState) -> str:
+def _context_root(state: ReviewState) -> str:
     target = state["target"]
     scope = state["scope"]
     if scope == ReviewScope.FILE:
@@ -23,7 +24,7 @@ def _context_root(runtime, state: ReviewState) -> str:
     return os.path.abspath(target)
 
 
-def make_context_node(runtime) -> Callable[[ReviewState], dict]:
+def make_context_node(ctx: ReviewContext) -> Callable[[ReviewState], dict]:
     def node(state: ReviewState) -> dict:
         if state["scope"] == ReviewScope.PR:
             ctx_note = (
@@ -31,12 +32,12 @@ def make_context_node(runtime) -> Callable[[ReviewState], dict]:
                 "manifest/conventions access); using generic guidance."
             )
             rendered = f"Note: {ctx_note}"
-            runtime.log.info(ctx_note)
+            ctx.log.info(ctx_note)
         else:
-            ctx = build_project_context(_context_root(runtime, state))
-            for entry in ctx.language_versions:
-                runtime.log.info(f"Detected: {entry}")
-            rendered = ctx.render()
+            project = build_project_context(_context_root(state))
+            for entry in project.language_versions:
+                ctx.log.info(f"Detected: {entry}")
+            rendered = project.render()
         return {"project_context": rendered}
 
     return node

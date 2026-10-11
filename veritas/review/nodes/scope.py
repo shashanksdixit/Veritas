@@ -18,15 +18,13 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
-from typing import Any, Callable, NamedTuple
+from typing import Callable, Sequence
 
 from veritas.config.constants import MAX_SCOPE_FILES
-from veritas.hosting.github import GitHubFetcher, GitHubPoster
-from veritas.hosting.gitlab import GitLabFetcher, GitLabPoster
-from veritas.hosting.resolver import UnresolvableTarget, parse_pr_target
-from veritas.models.entities import ExcludedFile, ReviewRun, ReviewScope, SastStatus
-from veritas.review import ReviewFatalError, ReviewNotFoundError
+from veritas.models.entities import ExcludedFile, ReviewScope, SastStatus
+from veritas.review import ReviewNotFoundError
 from veritas.review.batching import plan_batches
+from veritas.review.contexts import ScopeContext
 from veritas.review.requirements_source import (
     Requirement,
     extract_requirements,
@@ -69,7 +67,7 @@ def _normalize_rel(path: str) -> str:
     return normalized
 
 
-def _is_excluded(path: str, patterns: list[str], excluded: dict[str, str]) -> bool:
+def _is_excluded(path: str, patterns: Sequence[str], excluded: dict[str, str]) -> bool:
     """Record ``path`` in ``excluded`` when a pattern matches it (FR-029).
 
     ``excluded`` maps relative path -> matching pattern and is keyed by path, so
@@ -89,7 +87,7 @@ def _excluded_files(excluded: dict[str, str]) -> list[ExcludedFile]:
     return [ExcludedFile(path=path, pattern=pattern) for path, pattern in excluded.items()]
 
 
-def _log_exclusions(runtime, excluded: dict[str, str]) -> None:
+def _log_exclusions(log, excluded: dict[str, str]) -> None:
     """One info line naming each matching pattern and how many files it caught."""
     if not excluded:
         return
@@ -97,7 +95,7 @@ def _log_exclusions(runtime, excluded: dict[str, str]) -> None:
     for pattern in excluded.values():
         counts[pattern] = counts.get(pattern, 0) + 1
     detail = ", ".join(f"{pattern} ({count})" for pattern, count in counts.items())
-    runtime.log.info(f"scope: excluded {len(excluded)} file(s): {detail}")
+    log.info(f"scope: excluded {len(excluded)} file(s): {detail}")
 
 
 def _requirement_source_paths(files: dict[str, str]) -> list[str]:
@@ -113,7 +111,7 @@ def _requirement_source_paths(files: dict[str, str]) -> list[str]:
 
 
 def _collect_requirement_docs(
-    root: str, patterns: list[str], excluded: dict[str, str]
+    root: str, patterns: Sequence[str], excluded: dict[str, str]
 ) -> dict[str, str]:
     """Capture requirements documentation files (FR-008) into the scope.
 
@@ -178,41 +176,6 @@ def _discover_requirements(log, files: dict[str, str]) -> tuple[list[str], list[
     return sources, requirements
 
 
-class HostingClients(NamedTuple):
-    """The read-only fetcher the scope node uses and the poster ``--post`` uses.
-
-    Interim (T110): both are built here, together, until T111 moves where the
-    token is checked and the clients are built.
-    """
-
-    fetcher: Any
-    poster: Any
-
-
-def build_hosting_client(settings, provider: str, log) -> HostingClients:
-    """Construct the hosting fetcher and poster for the parsed PR provider."""
-    if provider == "github":
-        token = settings.github_token
-        if not token:
-            raise ReviewFatalError(
-                "PR review requires a GitHub token: set VERITAS_GITHUB_TOKEN "
-                "(never commit tokens; see contracts/cli.md)."
-            )
-        return HostingClients(GitHubFetcher(token, log=log), GitHubPoster(token, log=log))
-    if provider == "gitlab":
-        token = settings.gitlab_token
-        if not token:
-            raise ReviewFatalError(
-                "PR review requires a GitLab token: set VERITAS_GITLAB_TOKEN "
-                "(never commit tokens; see contracts/cli.md)."
-            )
-        return HostingClients(
-            GitLabFetcher(token, log=log, base_url=settings.gitlab_url),
-            GitLabPoster(token, log=log, base_url=settings.gitlab_url),
-        )
-    raise ReviewFatalError(f"unsupported hosting provider: {provider}")
-
-
 def local_input_revision(files: dict[str, str]) -> str:
     """The input revision of a local review (FR-024): ``sha256:`` + hex digest.
 
@@ -242,7 +205,7 @@ def _read_local_file(path: str) -> str:
 
 
 def _walk_local_scope(
-    root: str, scope: ReviewScope, patterns: list[str]
+    root: str, scope: ReviewScope, patterns: Sequence[str]
 ) -> tuple[dict[str, str], list[str], list[ExcludedFile]]:
     root_path = Path(root)
     if not root_path.is_dir():
@@ -283,13 +246,13 @@ def _walk_local_scope(
     return files, skipped, _excluded_files(excluded)
 
 
-def _fetch_pr(runtime) -> dict:
-    parsed = parse_pr_target(runtime.target)  # may raise UnresolvableTarget
-    clients = build_hosting_client(runtime.settings, parsed.provider, runtime.log)
-    runtime.hosting = clients
-    host = clients.fetcher
-    runtime.log.info(f"Fetching PR {parsed.ref} from {parsed.provider}")
-    patterns = runtime.settings.exclude
+def _fetch_pr(ctx: ScopeContext) -> dict:
+    # run_review parsed the target and built the read-only fetcher before the
+    # graph existed (T111), so a PR scope always arrives with both.
+    parsed = ctx.pr
+    host = ctx.fetcher
+    ctx.log.info(f"Fetching PR {parsed.ref} from {parsed.provider}")
+    patterns = ctx.exclude
 
     if parsed.provider == "github":
         sha = host.head_sha(parsed.owner, parsed.repo, parsed.number)
@@ -342,7 +305,7 @@ def _fetch_pr(runtime) -> dict:
     }
 
 
-def _run_local(scope: ReviewScope, target: str, patterns: list[str]) -> dict:
+def _run_local(scope: ReviewScope, target: str, patterns: Sequence[str]) -> dict:
     if scope == ReviewScope.FILE:
         # An explicit --scope file target is always reviewed, even when it
         # matches an exclusion pattern (FR-029).
@@ -365,20 +328,19 @@ def _run_local(scope: ReviewScope, target: str, patterns: list[str]) -> dict:
     }
 
 
-def make_scope_node(runtime) -> Callable[[ReviewState], dict]:
+def make_scope_node(ctx: ScopeContext) -> Callable[[ReviewState], dict]:
     def node(state: ReviewState) -> dict:
         scope: ReviewScope = state["scope"]
         target: str = state["target"]
-        runtime.target = target
-        runtime.log.info(f"Scanning target in scope: {target}", scope=scope.value)
+        ctx.log.info(f"Scanning target in scope: {target}", scope=scope.value)
 
         if scope == ReviewScope.PR:
-            result = _fetch_pr(runtime)
+            result = _fetch_pr(ctx)
         else:
-            result = _run_local(scope, target, runtime.settings.exclude)
+            result = _run_local(scope, target, ctx.exclude)
 
         _log_exclusions(
-            runtime, {entry.path: entry.pattern for entry in result["excluded_files"]}
+            ctx.log, {entry.path: entry.pattern for entry in result["excluded_files"]}
         )
 
         # FR-029: batch the post-exclusion, supported-language source files only.
@@ -387,14 +349,14 @@ def make_scope_node(runtime) -> Callable[[ReviewState], dict]:
         source_files = {path: text for path, text in result["files"].items() if is_supported(path)}
         plan, warnings = plan_batches(
             source_files,
-            batch_chars=runtime.settings.batch_chars,
-            max_batches=runtime.settings.max_batches,
+            batch_chars=ctx.batch_chars,
+            max_batches=ctx.max_batches,
         )
         for warning in warnings:
-            runtime.log.warn(warning)
-        runtime.log.info(
+            ctx.log.warn(warning)
+        ctx.log.info(
             f"batching: {len(plan.reviewed_files)} file(s) in {len(plan.batches)} batch(es) "
-            f"of up to {runtime.settings.batch_chars} chars; {len(plan.split_files)} split, "
+            f"of up to {ctx.batch_chars} chars; {len(plan.split_files)} split, "
             f"{len(plan.not_reviewed_files)} not reviewed"
         )
 
@@ -402,7 +364,7 @@ def make_scope_node(runtime) -> Callable[[ReviewState], dict]:
         # batch carries an index of the tests ranked for the code it holds. Excluded
         # files are absent from the index by construction, which is the point.
         test_indexes, index_stats = build_batch_test_indexes(source_files, plan)
-        runtime.log.info(
+        ctx.log.info(
             f"test index: {index_stats['test_files']} test file(s), "
             f"{index_stats['test_names']} test name(s); "
             f"up to {index_stats['max_chars']} chars per batch; "
@@ -411,15 +373,15 @@ def make_scope_node(runtime) -> Callable[[ReviewState], dict]:
         )
 
         files: dict[str, str] = result["files"]
-        requirement_sources, requirements = _discover_requirements(runtime.log, files)
+        requirement_sources, requirements = _discover_requirements(ctx.log, files)
         # SAST scans exactly the post-exclusion file set (FR-029).
-        sast = collect_sast(files, scope_value=scope.value, rules=runtime.opengrep_rules)
+        sast = collect_sast(files, scope_value=scope.value, rules=ctx.opengrep_rules)
         if sast.degraded:
-            runtime.log.warn(sast.degraded)
+            ctx.log.warn(sast.degraded)
             # The detail is the same single line as the reason when the reason
             # came from stderr; log it only when it adds something.
             if sast.scan_error and sast.scan_error != sast.degraded:
-                runtime.log.warn(f"OpenGrep scan detail: {sast.scan_error}")
+                ctx.log.warn(f"OpenGrep scan detail: {sast.scan_error}")
 
         run = state["run"].model_copy(
             update={

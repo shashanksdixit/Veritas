@@ -79,6 +79,22 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- Each graph node gets its own frozen context instead of the shared, mutable
+  `Runtime` object, which is removed (T111, FR-026): the analysis nodes get a
+  `ReviewContext` (LLM client, log), the scope node a `ScopeContext` (exclusion
+  patterns, batch budgets, SAST rules source, read-only hosting fetcher and
+  parsed PR) and the render node a `RenderContext` (report path, batch
+  budgets, suppression store, parsed PR, and the hosting poster only with
+  `--post`). The hosting clients are now built in `run_review`
+  (`veritas/hosting/factory.py`) after the LLM client and before the graph,
+  not inside the scope node. Visible change: on a PR review with a missing
+  `VERITAS_GITHUB_TOKEN` / `VERITAS_GITLAB_TOKEN`, the `[info] Scanning target
+  in scope: ...` line no longer appears before the error. The ZDR warning, the
+  `[error] PR review requires a ... token` line and exit code 1 are unchanged,
+  and a missing API key still wins over a missing token. `LLMClient` no longer
+  keeps the `Settings` object, only the output-token limit. The OpenGrep
+  result mapping (`result_to_finding`) moved to
+  `veritas/security/sast_results.py`. No report schema change.
 - Internal, no user-visible change (T110): each hosting provider's client is
   split into a read-only fetcher (`GitHubFetcher`, `GitLabFetcher`) and a
   poster (`GitHubPoster`, `GitLabPoster`); `GitHubClient` and `GitLabClient`

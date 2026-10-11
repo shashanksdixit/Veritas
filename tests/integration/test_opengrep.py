@@ -18,9 +18,9 @@ from veritas.security.opengrep import (
     SAST_NO_FILES,
     OpengrepResult,
     collect_sast,
-    result_to_finding,
     run_opengrep,
 )
+from veritas.security.sast_results import result_to_finding
 
 
 def test_missing_binary_degrades_gracefully(monkeypatch):
@@ -247,7 +247,7 @@ def test_missing_binary_reason_is_one_line(monkeypatch, tmp_path):
 
 
 def test_runner_passes_configured_rules_after_config(sample_project, tmp_path, monkeypatch):
-    """`--config` -> Settings.opengrep_rules -> Runtime -> collect_sast(rules=...)."""
+    """`--config` -> Settings.opengrep_rules -> ScopeContext -> collect_sast(rules=...)."""
     from typer.testing import CliRunner
 
     import veritas.cli.app as cli_app

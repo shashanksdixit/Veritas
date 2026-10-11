@@ -39,7 +39,8 @@ from veritas.models.entities import (
     Verdict,
 )
 from veritas.models.entities import compute_fingerprint
-from veritas.review.graph import Runtime, run_review
+from veritas.review.contexts import ReviewContext, ScopeContext
+from veritas.review.graph import run_review
 from veritas.review.nodes import scope as scope_module
 from veritas.review.nodes.code_quality import make_code_quality_node
 from veritas.review.nodes.common import load_prompt, llm_findings
@@ -124,11 +125,22 @@ def _stub_sast(monkeypatch) -> None:
     )
 
 
-def _runtime(llm, **settings_kwargs) -> Runtime:
-    return Runtime(
-        settings=Settings(api_key="test-key", **settings_kwargs),
+def _runtime(llm) -> ReviewContext:
+    """The review-node context (review nodes read no settings)."""
+    return ReviewContext(llm=llm, log=Log(verbose=False))
+
+
+def _scope_ctx(**settings_kwargs) -> ScopeContext:
+    """The scope-node context for a local scope, built from ``Settings``."""
+    settings = Settings(api_key="test-key", **settings_kwargs)
+    return ScopeContext(
         log=Log(verbose=False),
-        llm=llm,
+        exclude=tuple(settings.exclude),
+        batch_chars=settings.batch_chars,
+        max_batches=settings.max_batches,
+        opengrep_rules=settings.opengrep_rules,
+        fetcher=None,
+        pr=None,
     )
 
 
@@ -202,7 +214,7 @@ def _scoped(
 ) -> dict:
     """Run the real scope node and return the state a review node would receive."""
     _stub_sast(monkeypatch)
-    runtime = _runtime(RecordingLLM(), exclude=exclude or [], batch_chars=batch_chars)
+    runtime = _scope_ctx(exclude=exclude or [], batch_chars=batch_chars)
     result = make_scope_node(runtime)(_state(str(project_tree)))
     return {**_state(str(project_tree)), **result}
 
@@ -257,7 +269,7 @@ def test_scope_indexes_exclude_excluded_test_files(project_tree, monkeypatch):
 def test_scope_sets_indexes_to_none_when_the_scope_has_no_tests(tmp_path, monkeypatch):
     (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
     _stub_sast(monkeypatch)
-    result = make_scope_node(_runtime(RecordingLLM()))(_state(str(tmp_path)))
+    result = make_scope_node(_scope_ctx())(_state(str(tmp_path)))
 
     assert result["test_indexes"] is None
 
@@ -265,7 +277,7 @@ def test_scope_sets_indexes_to_none_when_the_scope_has_no_tests(tmp_path, monkey
 def test_test_index_log_line(project_tree, monkeypatch):
     _stub_sast(monkeypatch)
     events: list[str] = []
-    runtime = _runtime(RecordingLLM(), batch_chars=_BATCH_CHARS)
+    runtime = _scope_ctx(batch_chars=_BATCH_CHARS)
     monkeypatch.setattr(runtime.log, "info", lambda message, **_kw: events.append(message))
     make_scope_node(runtime)(_state(str(project_tree)))
 
@@ -283,7 +295,7 @@ def test_test_index_log_line_counts_truncated_batches(crowded_tree, monkeypatch)
         partial(build_batch_test_indexes, max_chars=250),
     )
     events: list[str] = []
-    runtime = _runtime(RecordingLLM(), batch_chars=_BATCH_CHARS)
+    runtime = _scope_ctx(batch_chars=_BATCH_CHARS)
     monkeypatch.setattr(runtime.log, "info", lambda message, **_kw: events.append(message))
     result = make_scope_node(runtime)(_state(str(crowded_tree)))
 
@@ -402,7 +414,7 @@ def test_an_empty_batch_extra_dict_changes_nothing(project_tree, monkeypatch):
 def test_test_coverage_sends_each_batch_its_own_index(project_tree, monkeypatch):
     state = _scoped(project_tree, monkeypatch)
     llm = RecordingLLM()
-    make_test_coverage_node(_runtime(llm, batch_chars=_BATCH_CHARS))(state)
+    make_test_coverage_node(_runtime(llm))(state)
 
     users = llm.batch_order()
     assert len(users) == 2
@@ -424,7 +436,7 @@ def test_test_coverage_sends_the_index_when_there_is_only_one_batch(project_tree
     assert len(state["batch_plan"].batches) == 1
 
     llm = RecordingLLM()
-    make_test_coverage_node(_runtime(llm, batch_chars=50_000))(state)
+    make_test_coverage_node(_runtime(llm))(state)
 
     assert len(llm.users()) == 1
     assert INDEX_HEADER in llm.users()[0]
@@ -439,7 +451,7 @@ def test_other_review_types_are_not_sent_any_index(project_tree, monkeypatch, fa
     state = _scoped(project_tree, monkeypatch)
 
     llm = RecordingLLM()
-    factory(_runtime(llm, batch_chars=_BATCH_CHARS))(state)
+    factory(_runtime(llm))(state)
 
     assert llm.calls, "the node should have reviewed the two batches"
     for user in llm.users():
@@ -457,7 +469,7 @@ def test_no_tests_in_scope_tells_the_reviewer_so(tmp_path, monkeypatch):
     assert state["test_indexes"] is None
 
     llm = RecordingLLM()
-    make_test_coverage_node(_runtime(llm, batch_chars=_BATCH_CHARS))(state)
+    make_test_coverage_node(_runtime(llm))(state)
 
     assert llm.calls
     for user in llm.users():
@@ -473,7 +485,7 @@ def test_a_state_without_the_indexes_key_does_not_raise(tmp_path, monkeypatch):
     state.pop("test_indexes")
 
     llm = RecordingLLM()
-    result = make_test_coverage_node(_runtime(llm, batch_chars=_BATCH_CHARS))(state)
+    result = make_test_coverage_node(_runtime(llm))(state)
 
     assert result["code_findings"] == []
     assert NO_TEST_FILES_NOTICE in llm.users()[0]
@@ -482,7 +494,7 @@ def test_a_state_without_the_indexes_key_does_not_raise(tmp_path, monkeypatch):
 def test_the_indexes_survive_a_node_that_finds_nothing(project_tree, monkeypatch):
     state = _scoped(project_tree, monkeypatch)
     llm = RecordingLLM()
-    result = make_test_coverage_node(_runtime(llm, batch_chars=_BATCH_CHARS))(state)
+    result = make_test_coverage_node(_runtime(llm))(state)
 
     assert result == {"code_findings": [], "errors": [], "failed_batches": []}
     assert set(state["test_indexes"]) == {1, 2}, "the node must not clear shared state"
@@ -550,7 +562,7 @@ def _capped_run(project_tree, monkeypatch, severities, *, log=None) -> tuple[lis
     ``log`` collects the node's info lines, so a test can assert on what it said.
     """
     state = _scoped(project_tree, monkeypatch)
-    runtime = _runtime(SeveritiesLLM(severities), batch_chars=_BATCH_CHARS)
+    runtime = _runtime(SeveritiesLLM(severities))
     lines: list[str] = log if log is not None else []
     runtime.log.info = lambda message, **_kw: lines.append(message)  # type: ignore[method-assign]
     findings = make_test_coverage_node(runtime)(state)["code_findings"]
@@ -616,7 +628,7 @@ def test_an_error_from_another_review_type_is_not_capped(project_tree, monkeypat
         def complete(self, system: str, user: str) -> str:
             return _finding_payload("error")
 
-    findings = factory(_runtime(OneError(), batch_chars=_BATCH_CHARS))(
+    findings = factory(_runtime(OneError()))(
         _scoped(project_tree, monkeypatch)
     )["code_findings"]
 

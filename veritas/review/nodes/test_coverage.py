@@ -23,6 +23,7 @@ from typing import Callable
 
 from veritas.models.entities import Category, CodeFinding, Severity
 from veritas.review.nodes.common import llm_findings
+from veritas.review.contexts import ReviewContext
 from veritas.review.state import ReviewState
 from veritas.review.test_index import NO_TEST_FILES_NOTICE
 
@@ -55,18 +56,18 @@ def _cap_severity(findings: list[CodeFinding], log) -> tuple[list[CodeFinding], 
     return capped, lowered
 
 
-def make_test_coverage_node(runtime) -> Callable[[ReviewState], dict]:
+def make_test_coverage_node(ctx: ReviewContext) -> Callable[[ReviewState], dict]:
     def test_coverage_node(state: ReviewState) -> dict:
         # get(), not []: a state built without the scope node's output means the
         # same as an empty index - nothing known about the tests.
         indexes = state.get("test_indexes")
         findings, failed = llm_findings(
-            runtime.llm,
+            ctx.llm,
             state["batch_plan"],
             "test_coverage",
             state["project_context"],
             category=Category.TEST_COVERAGE,
-            log=runtime.log,
+            log=ctx.log,
             # No index at all is a different statement from an empty one: there
             # were no test files in scope, which is not the same as having none.
             extra=NO_TEST_FILES_NOTICE if indexes is None else "",
@@ -74,8 +75,8 @@ def make_test_coverage_node(runtime) -> Callable[[ReviewState], dict]:
         )
         # FR-004: capped in code, after the review, before verification or the
         # summary counts it - so nothing downstream ever sees an error here.
-        findings, _lowered = _cap_severity(findings, runtime.log)
-        runtime.log.info(f"test-coverage: {len(findings)} findings")
+        findings, _lowered = _cap_severity(findings, ctx.log)
+        ctx.log.info(f"test-coverage: {len(findings)} findings")
         # Each failed batch rides the shared FR-027 errors channel (any recorded
         # error makes the run's report status incomplete) and failed_batches,
         # which keeps the per-batch detail for the report.

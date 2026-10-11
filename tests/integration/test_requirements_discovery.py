@@ -15,7 +15,8 @@ import pytest
 
 from veritas.config.settings import Settings
 from veritas.models.entities import ReviewRun, ReviewScope
-from veritas.review.graph import Runtime
+from veritas.hosting.resolver import parse_pr_target
+from veritas.review.contexts import ReviewContext, ScopeContext
 from veritas.review.nodes import scope as scope_module
 from veritas.review.nodes.requirements import make_requirements_node
 from veritas.review.nodes.scope import make_scope_node
@@ -70,12 +71,22 @@ def _stub_sast(monkeypatch) -> None:
     )
 
 
-def _runtime(exclude: list[str] | None = None, llm=None) -> Runtime:
-    return Runtime(
-        settings=Settings(exclude=exclude or [], api_key="test-key"),
+def _runtime(exclude: list[str] | None = None, *, host=None) -> ScopeContext:
+    """The scope-node context; ``host`` makes it a PR context for acme/widget#3."""
+    settings = Settings(exclude=exclude or [], api_key="test-key")
+    return ScopeContext(
         log=Log(verbose=False),
-        llm=llm,
+        exclude=tuple(settings.exclude),
+        batch_chars=settings.batch_chars,
+        max_batches=settings.max_batches,
+        opengrep_rules=settings.opengrep_rules,
+        fetcher=host,
+        pr=parse_pr_target("acme/widget#3") if host is not None else None,
     )
+
+
+def _review_ctx(llm) -> ReviewContext:
+    return ReviewContext(llm=llm, log=Log(verbose=False))
 
 
 def _state(target: str, scope: ReviewScope = ReviewScope.PROJECT) -> dict:
@@ -208,9 +219,8 @@ def test_pr_scope_fetches_a_feature_spec_and_not_a_checklist(monkeypatch):
             "README.md": "# Demo\n",
         }
     )
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda *a, **k: scope_module.HostingClients(host, host))
 
-    result = make_scope_node(_runtime())(_state("acme/widget#3", ReviewScope.PR))
+    result = make_scope_node(_runtime(host=host))(_state("acme/widget#3", ReviewScope.PR))
 
     assert "specs/001-a/spec.md" in host.fetched
     assert "specs/001-a/checklists/requirements.md" not in host.fetched
@@ -221,9 +231,8 @@ def test_pr_scope_fetches_a_feature_spec_and_not_a_checklist(monkeypatch):
 def test_pr_scope_does_not_fetch_a_requirements_file_the_pr_did_not_touch(monkeypatch):
     _stub_sast(monkeypatch)
     host = FakeHost({"src/app.py": "print('hello')\n"})
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda *a, **k: scope_module.HostingClients(host, host))
 
-    result = make_scope_node(_runtime())(_state("acme/widget#3", ReviewScope.PR))
+    result = make_scope_node(_runtime(host=host))(_state("acme/widget#3", ReviewScope.PR))
 
     assert set(result["files"]) == {"src/app.py"}
     assert host.fetched == ["src/app.py"]
@@ -233,9 +242,8 @@ def test_pr_scope_does_not_fetch_a_requirements_file_the_pr_did_not_touch(monkey
 def test_pr_scope_does_not_fetch_an_excluded_spec(monkeypatch):
     _stub_sast(monkeypatch)
     host = FakeHost({"src/app.py": "x = 1\n", "specs/001-a/spec.md": _SPEC_TEXT})
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda *a, **k: scope_module.HostingClients(host, host))
 
-    result = make_scope_node(_runtime(["specs/"]))(_state("acme/widget#3", ReviewScope.PR))
+    result = make_scope_node(_runtime(["specs/"], host=host))(_state("acme/widget#3", ReviewScope.PR))
 
     assert "specs/001-a/spec.md" not in host.fetched
     assert result["requirement_sources"] == []
@@ -257,14 +265,14 @@ def test_the_free_text_path_runs_unchanged_when_nothing_was_extracted():
 
     files = {"src/app.py": "print('hello')\n", "spec.md": _FREE_TEXT_SPEC}
     llm = NullLLM()
-    free_text = make_requirements_node(_runtime(llm=llm))(
+    free_text = make_requirements_node(_review_ctx(llm))(
         {"files": files, "project_context": None}
     )
     # The requirements source is still chosen and handed over whole.
     assert len(llm.calls) == 1
     assert _FREE_TEXT_SPEC in llm.calls[0][1]
 
-    fallback = make_requirements_node(_runtime(llm=NullLLM()))(
+    fallback = make_requirements_node(_review_ctx(NullLLM()))(
         {"files": {"src/app.py": "x = 1\n"}, "project_context": None}
     )["requirement_findings"]
     assert len(fallback) == 1

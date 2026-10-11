@@ -12,6 +12,7 @@ from pathlib import Path
 from tests.conftest import default_fake_llm
 
 from veritas.config.constants import LAST_REPORT_JSON
+from veritas.hosting.factory import HostingClients
 from veritas.models.entities import Report, ReviewScope
 from veritas.review.graph import run_review
 from veritas.review.nodes.scope import _run_local, local_input_revision
@@ -94,7 +95,7 @@ def test_revision_appears_in_the_report_header(sample_project, settings):
 
 
 def test_pr_scope_keeps_the_head_commit_sha(monkeypatch, settings):
-    from veritas.review.nodes import scope as scope_module
+    from veritas.review import graph as graph_module
 
     class Host:
         provider = "github"
@@ -108,7 +109,7 @@ def test_pr_scope_keeps_the_head_commit_sha(monkeypatch, settings):
         def get_file_contents(self, owner, repo, path, ref):
             return "def f():\n    return 1\n"
 
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: scope_module.HostingClients(Host(), Host()))
+    monkeypatch.setattr(graph_module, "build_hosting_client", lambda _s, _p, _l: HostingClients(Host(), Host()))
     outcome = run_review(settings, ReviewScope.PR, "acme/widget#3", llm=default_fake_llm())
 
     markdown = Path(str(outcome.report_path)).read_text(encoding="utf-8")

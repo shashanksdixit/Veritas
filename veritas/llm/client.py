@@ -321,7 +321,9 @@ class LLMClient:
         *,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        self.settings = settings
+        # Only the limit the truncation warning names is kept; the client holds
+        # no reference to Settings, so it cannot read tokens or keys (T111).
+        self._max_output_tokens = settings.max_output_tokens
         self.log = log or Log()
         self._sleep = sleep
         self._model = build_chat_model(settings)
@@ -374,7 +376,7 @@ class LLMClient:
             finish_reason = metadata.get("finish_reason")
             if finish_reason in ("length", "max_tokens"):
                 self.log.warn(
-                    f"llm: response truncated at max_output_tokens ({self.settings.max_output_tokens}); raise [llm] max_output_tokens if findings are missing"
+                    f"llm: response truncated at max_output_tokens ({self._max_output_tokens}); raise [llm] max_output_tokens if findings are missing"
                 )
             usage = metadata.get("token_usage") or metadata.get("usage") or {}
             self.log.llm_call(

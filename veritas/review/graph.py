@@ -5,11 +5,18 @@ END``. Review nodes are guarded (FR-027 partial-review path); the render node is
 the ONLY node with write reachability, and there is NO edge leading back into
 the review path (constitution Read-Only Safety Boundary). Scoped files are read
 only through in-memory state populated by the scope node.
+
+Each node factory receives only its own frozen context (T111, FR-026): the
+scope node a ``ScopeContext`` (read-only fetcher), the render node a
+``RenderContext`` (report path, suppression store, poster), and every other
+node a ``ReviewContext`` (LLM client and log). All three are built in
+``run_review`` before the graph, so a missing hosting token fails before any
+node runs.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -17,11 +24,13 @@ from langgraph.graph import END, START, StateGraph
 
 from veritas.config.constants import REPORT_PATTERN, SCHEMA_VERSION
 from veritas.config.settings import Settings
+from veritas.hosting.factory import build_hosting_client
 from veritas.hosting.resolver import UnresolvableTarget, parse_pr_target
 from veritas.llm.client import LLMClient, split_model_string
 from veritas.llm.zdr import backend_is_openrouter, zdr_warning_text
 from veritas.models.entities import ReviewRun, ReviewScope
 from veritas.review import ReviewFatalError
+from veritas.review.contexts import RenderContext, ReviewContext, ScopeContext
 from veritas.review.nodes import (  # noqa: F401  (node factories registered below)
     code_quality,
     context,
@@ -41,47 +50,38 @@ from veritas.utils.redaction import redact_secrets
 
 
 @dataclass
-class Runtime:
-    settings: Settings
-    log: Log
-    llm: LLMClient
-    suppressions: SuppressionStore | None = None
-    report_path: str = ""
-    post: bool = False
-    opengrep_rules: str | None = None
-    hosting: Any = None
-    pr_parsed: Any = None
-    target: str = ""
-
-    def __post_init__(self) -> None:
-        if self.suppressions is None:
-            self.suppressions = SuppressionStore()
-
-
-@dataclass
 class ReviewOutcome:
     exit_code: int
     report_path: str | None = None
 
 
-def build_graph(runtime: Runtime):
+def build_graph(review: ReviewContext, scope_ctx: ScopeContext, render_ctx: RenderContext):
     """Construct the compiled review graph (structural boundary enforced by
-    module imports: write_tools is only imported inside render.py)."""
+    module imports: write_tools is only imported inside render.py).
+
+    Each factory gets only its own context. ``veritas_role`` marks the one node
+    that reads input (scope) and the one that produces output (render); the
+    review nodes carry no role.
+    """
     graph = StateGraph(ReviewState)
 
-    graph.add_node("scope", scope.make_scope_node(runtime))
-    graph.add_node("context", context.make_context_node(runtime))
     graph.add_node(
-        "code_quality", guarded(code_quality.make_code_quality_node(runtime))
+        "scope", scope.make_scope_node(scope_ctx), metadata={"veritas_role": "input"}
     )
-    graph.add_node("security", guarded(security.make_security_node(runtime)))
-    graph.add_node("requirements", guarded(requirements.make_requirements_node(runtime)))
+    graph.add_node("context", context.make_context_node(review))
     graph.add_node(
-        "test_coverage", guarded(test_coverage.make_test_coverage_node(runtime))
+        "code_quality", guarded(code_quality.make_code_quality_node(review))
     )
-    graph.add_node("performance", guarded(performance.make_performance_node(runtime)))
-    graph.add_node("verify", guarded(verification.make_verify_node(runtime)))
-    graph.add_node("render", render.make_render_node(runtime))
+    graph.add_node("security", guarded(security.make_security_node(review)))
+    graph.add_node("requirements", guarded(requirements.make_requirements_node(review)))
+    graph.add_node(
+        "test_coverage", guarded(test_coverage.make_test_coverage_node(review))
+    )
+    graph.add_node("performance", guarded(performance.make_performance_node(review)))
+    graph.add_node("verify", guarded(verification.make_verify_node(review)))
+    graph.add_node(
+        "render", render.make_render_node(render_ctx), metadata={"veritas_role": "output"}
+    )
 
     graph.add_edge(START, "scope")
     graph.add_edge("scope", "context")
@@ -230,24 +230,42 @@ def run_review(
             raise ReviewFatalError(
                 f"failed to initialize the LLM client for {settings.model_runtime}: {exc}"
             ) from exc
-    runtime = Runtime(
-        settings=settings,
+
+    # After the LLM client, so a run missing both the API key and the hosting
+    # token still fails on the API key first; before the graph, so a missing
+    # token fails before any node runs (T111).
+    clients = (
+        build_hosting_client(settings, parsed.provider, log) if parsed is not None else None
+    )
+
+    review_ctx = ReviewContext(llm=llm, log=log)
+    scope_ctx = ScopeContext(
         log=log,
-        llm=llm,
-        report_path=report_path,
-        post=post,
-        pr_parsed=parsed,
+        exclude=tuple(settings.exclude),
+        batch_chars=settings.batch_chars,
+        max_batches=settings.max_batches,
         # [security] opengrep_rules (FR-012): the configured rules source, so
         # collect_sast/run_opengrep scan with what the config asked for.
         opengrep_rules=settings.opengrep_rules,
+        fetcher=clients.fetcher if clients is not None else None,
+        pr=parsed,
     )
-    runtime.target = target
+    render_ctx = RenderContext(
+        log=log,
+        report_path=report_path,
+        batch_chars=settings.batch_chars,
+        max_batches=settings.max_batches,
+        store=SuppressionStore(),
+        # Only --post gives the render node a poster (FR-028).
+        poster=clients.poster if (post and clients is not None) else None,
+        pr=parsed,
+    )
 
     run = ReviewRun(
         scope=scope_val,
         # A PR URL can carry credentials (https://user:token@host/...); the run
         # record is published, so it keeps the redacted form (FR-013). The raw
-        # target stays on runtime for the hosting API call.
+        # target was parsed into ``parsed`` above for the hosting API calls.
         target=redact_secrets(target),
         config_hash=settings.config_hash,
         model_name=llm.model_name,
@@ -255,7 +273,7 @@ def run_review(
         started_at=datetime.now(),
     )
 
-    compiled = build_graph(runtime)
+    compiled = build_graph(review_ctx, scope_ctx, render_ctx)
     initial = _initial_state(scope_val, target, run, report_path)
     result = compiled.invoke(initial)
 

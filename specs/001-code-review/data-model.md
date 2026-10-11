@@ -319,6 +319,25 @@ class ReviewState(TypedDict):
 
 ---
 
+## Node contexts
+
+Each graph node factory receives exactly one context (FR-026), defined in
+`veritas/review/contexts.py`. All three are `@dataclass(frozen=True,
+slots=True)`: built once in `run_review` before the graph, never assigned to
+during the run, and without a `__dict__`.
+
+| Context | Given to | Fields |
+|---------|----------|--------|
+| `ReviewContext` | context, code_quality, security, requirements, test_coverage, performance, verify | `llm: LLMClient`, `log: Log` |
+| `ScopeContext` | scope (graph metadata `veritas_role: "input"`) | `log: Log`, `exclude: tuple[str, ...]`, `batch_chars: int`, `max_batches: int`, `opengrep_rules: str`, `fetcher: GitHubFetcher \| GitLabFetcher \| None`, `pr: ParsedPR \| None` |
+| `RenderContext` | render (graph metadata `veritas_role: "output"`) | `log: Log`, `report_path: str`, `batch_chars: int`, `max_batches: int`, `store: SuppressionStore`, `poster: GitHubPoster \| GitLabPoster \| None`, `pr: ParsedPR \| None` |
+
+`fetcher` and `pr` are set only for `--scope pr`; `poster` only when `--post`
+is set as well. Only `RenderContext` holds the suppression store and the
+poster.
+
+---
+
 ## Relationships
 
 ```

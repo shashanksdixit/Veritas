@@ -56,6 +56,7 @@ from veritas.models.entities import (
     compute_fingerprint,
 )
 from veritas.review.nodes.common import snippet_for
+from veritas.review.contexts import ReviewContext
 from veritas.review.state import ReviewState
 from veritas.utils.redaction import redact_secrets
 
@@ -451,8 +452,8 @@ def merge_duplicate_findings(
     return (merged, duplicates)
 
 
-def make_verify_node(runtime) -> Callable[[ReviewState], dict]:
-    log = runtime.log
+def make_verify_node(ctx: ReviewContext) -> Callable[[ReviewState], dict]:
+    log = ctx.log
 
     def _warn(message: str) -> None:
         if log is not None:
