@@ -18,11 +18,11 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, NamedTuple
 
 from veritas.config.constants import MAX_SCOPE_FILES
-from veritas.hosting.github import GitHubClient
-from veritas.hosting.gitlab import GitLabClient
+from veritas.hosting.github import GitHubFetcher, GitHubPoster
+from veritas.hosting.gitlab import GitLabFetcher, GitLabPoster
 from veritas.hosting.resolver import UnresolvableTarget, parse_pr_target
 from veritas.models.entities import ExcludedFile, ReviewRun, ReviewScope, SastStatus
 from veritas.review import ReviewFatalError, ReviewNotFoundError
@@ -178,8 +178,19 @@ def _discover_requirements(log, files: dict[str, str]) -> tuple[list[str], list[
     return sources, requirements
 
 
-def build_hosting_client(settings, provider: str, log):
-    """Construct the hosting client for the parsed PR provider."""
+class HostingClients(NamedTuple):
+    """The read-only fetcher the scope node uses and the poster ``--post`` uses.
+
+    Interim (T110): both are built here, together, until T111 moves where the
+    token is checked and the clients are built.
+    """
+
+    fetcher: Any
+    poster: Any
+
+
+def build_hosting_client(settings, provider: str, log) -> HostingClients:
+    """Construct the hosting fetcher and poster for the parsed PR provider."""
     if provider == "github":
         token = settings.github_token
         if not token:
@@ -187,7 +198,7 @@ def build_hosting_client(settings, provider: str, log):
                 "PR review requires a GitHub token: set VERITAS_GITHUB_TOKEN "
                 "(never commit tokens; see contracts/cli.md)."
             )
-        return GitHubClient(token, log=log)
+        return HostingClients(GitHubFetcher(token, log=log), GitHubPoster(token, log=log))
     if provider == "gitlab":
         token = settings.gitlab_token
         if not token:
@@ -195,7 +206,10 @@ def build_hosting_client(settings, provider: str, log):
                 "PR review requires a GitLab token: set VERITAS_GITLAB_TOKEN "
                 "(never commit tokens; see contracts/cli.md)."
             )
-        return GitLabClient(token, log=log, base_url=settings.gitlab_url)
+        return HostingClients(
+            GitLabFetcher(token, log=log, base_url=settings.gitlab_url),
+            GitLabPoster(token, log=log, base_url=settings.gitlab_url),
+        )
     raise ReviewFatalError(f"unsupported hosting provider: {provider}")
 
 
@@ -271,8 +285,9 @@ def _walk_local_scope(
 
 def _fetch_pr(runtime) -> dict:
     parsed = parse_pr_target(runtime.target)  # may raise UnresolvableTarget
-    host = build_hosting_client(runtime.settings, parsed.provider, runtime.log)
-    runtime.hosting = host
+    clients = build_hosting_client(runtime.settings, parsed.provider, runtime.log)
+    runtime.hosting = clients
+    host = clients.fetcher
     runtime.log.info(f"Fetching PR {parsed.ref} from {parsed.provider}")
     patterns = runtime.settings.exclude
 

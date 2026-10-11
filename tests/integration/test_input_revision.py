@@ -108,7 +108,7 @@ def test_pr_scope_keeps_the_head_commit_sha(monkeypatch, settings):
         def get_file_contents(self, owner, repo, path, ref):
             return "def f():\n    return 1\n"
 
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: Host())
+    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: scope_module.HostingClients(Host(), Host()))
     outcome = run_review(settings, ReviewScope.PR, "acme/widget#3", llm=default_fake_llm())
 
     markdown = Path(str(outcome.report_path)).read_text(encoding="utf-8")

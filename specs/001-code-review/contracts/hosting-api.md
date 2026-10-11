@@ -4,6 +4,19 @@
 
 Minimal REST surface for PR fetching (FR-002) and comment posting. All calls use `httpx` (BSD-3-Clause) with bearer-token auth.
 
+## Client roles: fetcher and poster
+
+Each provider has two clients, built from the same token:
+
+| Provider | Fetcher (read-only) | Poster |
+|----------|---------------------|--------|
+| GitHub | `GitHubFetcher`: `pull_details`, `head_sha`, `list_pr_files`, `get_file_contents`, `close` | `GitHubPoster`: `post_comment`, `close` |
+| GitLab | `GitLabFetcher`: `project_id`, `mr_details`, `head_sha`, `list_mr_changes`, `get_file_at_ref`, `close` | `GitLabPoster`: `post_note`, `close` |
+
+**GET-only request hook**: a fetcher's HTTP client allows only `GET` and `HEAD`. Its `httpx` request event hook (`_reject_writes`) runs before the request reaches the transport, so any other method fails before any network I/O with the provider's API error, status 0: `github API error: 0 — blocked: POST on read-only fetcher` (`gitlab API error: ...` for GitLab). Apart from the hook, fetcher and poster clients are the same `httpx.Client(base_url=..., headers=..., timeout=30.0)` with no `transport`, so certificate verification (`verify=True`, honouring `SSL_CERT_FILE` / `SSL_CERT_DIR`) and environment proxies (`HTTP(S)_PROXY`, `ALL_PROXY`, `NO_PROXY`) are httpx's defaults for both. (Passing `transport=` would turn environment proxies off; only tests pass one.)
+
+Both clients share the retry and error behaviour in "Error Handling Contract" below.
+
 ---
 
 ## GitHub REST API v3

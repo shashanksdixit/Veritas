@@ -15,6 +15,7 @@ from veritas.models.entities import (
     Verdict,
 )
 from veritas.review.graph import run_review
+from veritas.review.nodes.scope import HostingClients
 
 
 def test_project_review_succeeds_and_writes_report(sample_project, settings):
@@ -101,7 +102,7 @@ def test_pr_review_posts_when_requested(monkeypatch, settings):
             self.posted.append(body)
 
     host = FakeHost()
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: host)
+    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: scope_module.HostingClients(host, host))
 
     llm = default_fake_llm()
     outcome = run_review(
@@ -278,7 +279,7 @@ def test_a_pr_that_implements_nothing_reports_not_addressed_and_stays_clean(
     files = {"src/app.py": _APP, "specs/demo/spec.md": _SPEC}
     monkeypatch.setattr(
         "veritas.review.nodes.scope.build_hosting_client",
-        lambda _s, _p, _l: _PrHost(files),
+        lambda _s, _p, _l: HostingClients(_PrHost(files), _PrHost(files)),
     )
 
     outcome = run_review(settings, ReviewScope.PR, "acme/widget#3", llm=_silent_code_findings(_ANSWERS))

@@ -208,7 +208,7 @@ def test_pr_scope_fetches_a_feature_spec_and_not_a_checklist(monkeypatch):
             "README.md": "# Demo\n",
         }
     )
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda *a, **k: host)
+    monkeypatch.setattr(scope_module, "build_hosting_client", lambda *a, **k: scope_module.HostingClients(host, host))
 
     result = make_scope_node(_runtime())(_state("acme/widget#3", ReviewScope.PR))
 
@@ -221,7 +221,7 @@ def test_pr_scope_fetches_a_feature_spec_and_not_a_checklist(monkeypatch):
 def test_pr_scope_does_not_fetch_a_requirements_file_the_pr_did_not_touch(monkeypatch):
     _stub_sast(monkeypatch)
     host = FakeHost({"src/app.py": "print('hello')\n"})
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda *a, **k: host)
+    monkeypatch.setattr(scope_module, "build_hosting_client", lambda *a, **k: scope_module.HostingClients(host, host))
 
     result = make_scope_node(_runtime())(_state("acme/widget#3", ReviewScope.PR))
 
@@ -233,7 +233,7 @@ def test_pr_scope_does_not_fetch_a_requirements_file_the_pr_did_not_touch(monkey
 def test_pr_scope_does_not_fetch_an_excluded_spec(monkeypatch):
     _stub_sast(monkeypatch)
     host = FakeHost({"src/app.py": "x = 1\n", "specs/001-a/spec.md": _SPEC_TEXT})
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda *a, **k: host)
+    monkeypatch.setattr(scope_module, "build_hosting_client", lambda *a, **k: scope_module.HostingClients(host, host))
 
     result = make_scope_node(_runtime(["specs/"]))(_state("acme/widget#3", ReviewScope.PR))
 

@@ -79,6 +79,17 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- Internal, no user-visible change (T110): each hosting provider's client is
+  split into a read-only fetcher (`GitHubFetcher`, `GitLabFetcher`) and a
+  poster (`GitHubPoster`, `GitLabPoster`); `GitHubClient` and `GitLabClient`
+  are removed. The fetcher's HTTP client refuses every method other than GET
+  and HEAD before any network I/O (`github|gitlab API error: 0 — blocked:
+  <METHOD> on read-only fetcher`). TLS verification, certificates and
+  environment proxies are unchanged: the guard is an httpx request event
+  hook (`_reject_writes`) on an otherwise unchanged `httpx.Client`, so httpx
+  builds its transports and proxy mounts exactly as before. Token checks,
+  error messages, endpoints and request bodies are unchanged; no report schema
+  change.
 - The verification-failure note in the Markdown report says the reviewer's
   citation could not be confirmed (the quoted code was not found at the cited
   lines), instead of the claim.

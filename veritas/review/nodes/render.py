@@ -132,13 +132,14 @@ def _post_failure_reason(exc: Exception) -> str:
 
 
 def _post_report(runtime, report: Report) -> None:
-    host = getattr(runtime, "hosting", None)
+    clients = getattr(runtime, "hosting", None)
     parsed = getattr(runtime, "pr_parsed", None)
-    if host is None or parsed is None:
+    if clients is None or parsed is None:
         runtime.log.warn("--post set but no hosting client available; skipped")
         return
     # Redacted as it is sent (FR-013), like every other finished output.
     body = redact_secrets(report.markdown_content or render_markdown(report))
+    host = clients.poster
     try:
         if parsed.provider == "github":
             host.post_comment(parsed.owner, parsed.repo, parsed.number, body)

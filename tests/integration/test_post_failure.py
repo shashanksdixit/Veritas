@@ -1,7 +1,7 @@
 """Integration tests — a failed --post never changes the exit code (T100, FR-028).
 
 The hosting client is a fake whose post_comment raises the real
-GitHubAPIError, exactly as GitHubClient._request does on an HTTP 403.
+GitHubAPIError, exactly as the github request helper does on an HTTP 403.
 """
 
 from pathlib import Path
@@ -52,7 +52,7 @@ def host(monkeypatch):
     from veritas.review.nodes import scope as scope_module
 
     fake = ForbiddenHost()
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: fake)
+    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: scope_module.HostingClients(fake, fake))
     return fake
 
 

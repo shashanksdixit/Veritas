@@ -192,7 +192,7 @@ def test_pr_scope_excluded_files_are_never_fetched(monkeypatch):
         "notes.cob": "IDENTIFICATION DIVISION.\n",
     }
     host = FakeHost(contents)
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: host)
+    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: scope_module.HostingClients(host, host))
     _stub_sast(monkeypatch)
 
     runtime = _runtime([".specify/", "spec.md"])
@@ -215,7 +215,7 @@ def test_pr_scope_supported_requirements_source_recorded_once(monkeypatch):
     recorded at most once across both PR fetch loops."""
     contents = {"src/app.py": "x = 1\n", "spec.md": "# REQ-1\n"}
     host = FakeHost(contents)
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: host)
+    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: scope_module.HostingClients(host, host))
     _stub_sast(monkeypatch)
 
     runtime = _runtime([".specify/"])
@@ -228,7 +228,7 @@ def test_pr_scope_supported_requirements_source_recorded_once(monkeypatch):
 def test_pr_scope_requirements_source_excluded_and_not_fetched(monkeypatch):
     contents = {"src/app.py": "x = 1\n", "docs/requirements.md": "# REQ-1\n"}
     host = FakeHost(contents)
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: host)
+    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: scope_module.HostingClients(host, host))
     _stub_sast(monkeypatch)
 
     runtime = _runtime(["docs/"])
@@ -241,7 +241,7 @@ def test_pr_scope_requirements_source_excluded_and_not_fetched(monkeypatch):
 def test_pr_scope_unsupported_file_under_excluded_dir_not_recorded(monkeypatch):
     contents = {"src/app.py": "x = 1\n", ".specify/data.cob": "IDENTIFICATION DIVISION.\n"}
     host = FakeHost(contents)
-    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: host)
+    monkeypatch.setattr(scope_module, "build_hosting_client", lambda _s, _p, _l: scope_module.HostingClients(host, host))
     _stub_sast(monkeypatch)
 
     runtime = _runtime([".specify/"])
