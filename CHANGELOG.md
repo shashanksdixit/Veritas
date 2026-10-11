@@ -50,6 +50,20 @@ constitution Principle VIII / FR-016.
   their text is not redacted, and neither are Click's own usage errors.
 
 ### Added
+- Tests: a reachability test for the read-only boundary (FR-026, T112).
+  `tests/boundary_walker.py` walks everything a graph node's function can
+  reach (closures, defaults, partials, bound methods, Veritas objects and their
+  methods, containers, the globals a function's code names, including inside
+  lambdas, nested functions and function-body imports, and modules only through
+  the attributes that code uses) and reports every write or execute capability
+  with the path that reached it. `tests/integration/test_read_only_boundary.py`
+  proves the walker on one small setup per path kind (each gap rule is also
+  shown to miss its case when switched off), then walks the real graph built for
+  `--scope pr --post`: the analysis nodes reach nothing that can write or
+  execute, the scope node's only execute routes are the two pinned OpenGrep
+  paths, render is the only output node and its only edge is to the end. The
+  module overrides the integration conftest's `collect_sast` stub so it walks
+  the production scanner. No behaviour change.
 - Report schema **1.9.0**: adds `ReviewRun.sast_status` (`"ran"` or
   `"not_run"`), `ReviewRun.sast_result_count` (results mapped to reviewed
   files, set only when the scan ran) and `ReviewRun.sast_reason` (one line, set
