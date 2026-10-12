@@ -148,6 +148,14 @@ constitution Principle VIII / FR-016.
   contexts, checked by the reachability test.
 
 ### Fixed
+- A `Retry-After` header given as an HTTP date no longer crashes the
+  OpenRouter in-flight-budget retry (FR-019, T114). Two causes: the date parser
+  `parsedate_to_datetime` was never imported (`NameError`, which an
+  unparseable value also hit), and the parsed date carried a timezone while
+  "now" did not, so subtracting them failed and the wait silently became 0
+  seconds. The wait is now the time until that date, capped at 120 seconds;
+  a past date or an unparseable value still means retry immediately. A date
+  written with `-0000` is read as UTC, the same as `GMT`.
 - An `unclear` requirement's evidence is now verified like every other
   status (FR-013, T106). Previously a reference it cited was published
   unchecked; now a reference to a file outside the review or a line past its

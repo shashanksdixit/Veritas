@@ -15,6 +15,7 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Callable
 
 from langchain.chat_models import init_chat_model  # type: ignore[import-untyped]
@@ -284,7 +285,11 @@ def _retry_after_seconds(exc: BaseException) -> float | None:
         pass
     try:
         parsed = parsedate_to_datetime(str(value))
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        # HTTP dates are GMT; RFC 2822 "-0000" (UTC, local zone unknown) parses
+        # without tzinfo, so read it as UTC to compare with an aware "now".
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
         return (parsed - now).total_seconds()
     except (TypeError, ValueError):  # noqa: PERF203 - a malformed header is zero wait
         return 0.0
