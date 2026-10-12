@@ -1,4 +1,4 @@
-"""Contract tests — GitLab REST fetcher and poster vs contracts/hosting-api.md (T030, T110)."""
+"""Contract tests — GitLab REST fetcher and poster vs contracts/hosting-api.md (T030, T110, T115)."""
 
 import base64
 import json
@@ -14,6 +14,7 @@ from veritas.hosting.gitlab import (
     _new_client,
     _reject_writes,
 )
+from veritas.hosting.types import PullRefs, RootEntry
 
 BASE = "https://gitlab.com"
 OWNER, REPO, IID = "group", "project", 7
@@ -177,3 +178,202 @@ def test_production_fetcher_keeps_plain_client_tls_and_env_proxies(monkeypatch):
     context = fetcher.client._transport._pool._ssl_context
     assert context.verify_mode == ssl.CERT_REQUIRED
     assert context.check_hostname is True
+
+
+# -- T115: project-context reads -------------------------------------------
+
+
+def _b64(text: str) -> str:
+    return base64.b64encode(text.encode()).decode()
+
+
+TREE_PATH = "/api/v4/projects/group%2Fproject/repository/tree"
+
+
+def test_pull_refs_returns_head_and_base_sha():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _json_response({"diff_refs": {"head_sha": "headsha", "base_sha": "basesha", "start_sha": "s"}})
+
+    client = _make_fetcher(handler)
+    assert client.pull_refs(OWNER, REPO, IID) == PullRefs(head_sha="headsha", base_sha="basesha")
+    assert client.head_sha(OWNER, REPO, IID) == "headsha"
+
+
+def test_list_root_parses_name_and_type_with_size_none():
+    """GitLab's tree API reports no size, so every entry's size is None;
+    blob is a file, tree a directory, and a submodule (commit) is left out."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return _json_response(
+            [
+                {"id": "1", "name": "docs", "type": "tree", "path": "docs", "mode": "040000"},
+                {"id": "2", "name": "README.md", "type": "blob", "path": "README.md", "mode": "100644"},
+                {"id": "3", "name": "vendored", "type": "commit", "path": "vendored", "mode": "160000"},
+            ]
+        )
+
+    entries = _make_fetcher(handler).list_root(OWNER, REPO, "basesha")
+    assert entries == [
+        RootEntry(name="docs", type="dir", size=None),
+        RootEntry(name="README.md", type="file", size=None),
+    ]
+    assert len(seen) == 1
+    assert seen[0].method == "GET"
+    assert seen[0].url.raw_path.decode().split("?")[0] == TREE_PATH
+    assert dict(seen[0].url.params) == {"ref": "basesha", "per_page": "100", "page": "1"}
+
+
+def test_list_root_follows_x_next_page_across_pages():
+    """A root of 101 entries comes in two pages of per_page=100; the second
+    request asks for page 2 on the same URL and the empty x-next-page ends it."""
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        seen.append(params)
+        if params["page"] == "1":
+            items = [{"name": f"f{i:03}.py", "type": "blob"} for i in range(100)]
+            return httpx.Response(200, json=items, headers={"x-next-page": "2", "x-page": "1"})
+        items = [{"name": "zz", "type": "tree"}]
+        return httpx.Response(200, json=items, headers={"x-next-page": "", "x-page": "2"})
+
+    entries = _make_fetcher(handler).list_root(OWNER, REPO, "basesha")
+    assert len(entries) == 101
+    assert entries[0] == RootEntry(name="f000.py", type="file", size=None)
+    assert entries[-1] == RootEntry(name="zz", type="dir", size=None)
+    assert seen == [
+        {"ref": "basesha", "per_page": "100", "page": "1"},
+        {"ref": "basesha", "per_page": "100", "page": "2"},
+    ]
+
+
+def test_list_root_never_follows_a_link_header_to_another_host():
+    """Pages are requested on the fetcher's own URL, so a Link header naming
+    another host never receives the token."""
+    hosts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hosts.append(request.url.host)
+        page = request.url.params.get("page")
+        headers = {
+            "link": '<https://evil.example/api/v4/projects/x/repository/tree?page=2>; rel="next"',
+            "x-next-page": "2" if page == "1" else "",
+        }
+        return httpx.Response(200, json=[{"name": f"p{page}", "type": "blob"}], headers=headers)
+
+    entries = _make_fetcher(handler).list_root(OWNER, REPO, "basesha")
+    assert [e.name for e in entries] == ["p1", "p2"]
+    assert hosts == ["gitlab.com", "gitlab.com"]
+
+
+def test_list_root_rejects_a_non_list_response():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _json_response({"message": "odd"})
+
+    with pytest.raises(GitLabAPIError) as exc:
+        _make_fetcher(handler).list_root(OWNER, REPO, "basesha")
+    assert "not a list" in str(exc.value)
+
+
+def test_read_optional_returns_decoded_text_on_200():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.raw_path.decode().split("?")[0] == (
+            "/api/v4/projects/group%2Fproject/repository/files/docs%2FSTYLE.md"
+        )
+        assert request.url.params.get("ref") == "basesha"
+        return _json_response({"file_path": "docs/STYLE.md", "encoding": "base64", "content": _b64("No tabs.\n")})
+
+    assert _make_fetcher(handler).read_optional(OWNER, REPO, "docs/STYLE.md", "basesha") == "No tabs.\n"
+
+
+def test_read_optional_returns_none_on_404():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"message": "404 File Not Found"}, request=request)
+
+    assert _make_fetcher(handler).read_optional(OWNER, REPO, "CONTRIBUTING.md", "basesha") is None
+
+
+def test_read_optional_raises_on_502_with_the_status():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, text="Bad Gateway", request=request)
+
+    with pytest.raises(GitLabAPIError) as exc:
+        _make_fetcher(handler).read_optional(OWNER, REPO, "CONTRIBUTING.md", "basesha")
+    assert exc.value.status == 502
+    assert exc.value.path == "CONTRIBUTING.md"
+
+
+def test_read_optional_raises_for_a_directory_response():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _json_response([{"name": "a.md", "type": "blob"}])
+
+    with pytest.raises(GitLabAPIError) as exc:
+        _make_fetcher(handler).read_optional(OWNER, REPO, "docs", "basesha")
+    assert str(exc.value) == "gitlab API error: 200 — path is a directory, not a file (path: docs)"
+
+
+def test_read_optional_raises_for_an_encoding_none_response():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _json_response({"file_path": "big.md", "encoding": "none", "content": ""})
+
+    with pytest.raises(GitLabAPIError) as exc:
+        _make_fetcher(handler).read_optional(OWNER, REPO, "big.md", "basesha")
+    assert str(exc.value) == (
+        'gitlab API error: 200 — file has no content (encoding "none"); it may be too large (path: big.md)'
+    )
+
+
+def test_project_context_reads_send_only_gets_through_the_hooked_client():
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if "/repository/tree" in request.url.path:
+            return _json_response([])
+        if "/merge_requests/" in request.url.path:
+            return _json_response({"diff_refs": {"head_sha": "h", "base_sha": "b"}})
+        return _json_response({"encoding": "base64", "content": _b64("x")})
+
+    client = _make_fetcher(handler)
+    assert client.client.event_hooks["request"] == [_reject_writes]
+    client.pull_refs(OWNER, REPO, IID)
+    client.list_root(OWNER, REPO, "b")
+    client.read_optional(OWNER, REPO, "README.md", "b")
+    assert methods == ["GET", "GET", "GET"]
+
+
+def test_list_root_raises_when_x_next_page_repeats_the_page_just_fetched():
+    """A server that answers x-next-page: 2 for every page loops; list_root
+    stops on page 2 (the repeat) instead of requesting it forever."""
+    pages: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        pages.append(request.url.params["page"])
+        return httpx.Response(200, json=[{"name": "a", "type": "blob"}], headers={"x-next-page": "2"})
+
+    with pytest.raises(GitLabAPIError) as exc:
+        _make_fetcher(handler).list_root(OWNER, REPO, "basesha")
+    assert pages == ["1", "2"]
+    assert exc.value.status == 200
+    assert str(exc.value) == "gitlab API error: 200 — repository tree listing repeated page 2 (x-next-page)"
+
+
+def test_list_root_raises_after_exactly_50_pages_when_more_remain():
+    """x-next-page keeps advancing; list_root fetches pages 1 to 50 and raises
+    because the 50th still names a next page."""
+    pages: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        pages.append(page)
+        return httpx.Response(
+            200, json=[{"name": f"p{page}", "type": "blob"}], headers={"x-next-page": str(page + 1)}
+        )
+
+    with pytest.raises(GitLabAPIError) as exc:
+        _make_fetcher(handler).list_root(OWNER, REPO, "basesha")
+    assert pages == list(range(1, 51))
+    assert exc.value.status == 200
+    assert str(exc.value) == "gitlab API error: 200 — repository tree listing exceeded 50 pages"

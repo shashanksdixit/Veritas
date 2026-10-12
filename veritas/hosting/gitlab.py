@@ -1,4 +1,4 @@
-"""GitLab REST clients (T030, T110) — MR changes, file-at-ref, MR notes.
+"""GitLab REST clients (T030, T110, T115) — MR changes and refs, file-at-ref, root tree, MR notes.
 
 Plain httpx; ``PRIVATE-TOKEN`` auth; project id is the URL-encoded path
 (``group%2Fproject``); instance URL configurable via ``VERITAS_GITLAB_URL``.
@@ -16,11 +16,13 @@ from urllib.parse import quote
 
 import httpx
 
+from veritas.hosting.types import PullRefs, RootEntry
 from veritas.utils.logging import Log
 
 DEFAULT_URL = "https://gitlab.com"
 MAX_RETRIES = 3
 BACKOFF = (1, 2, 4)
+MAX_TREE_PAGES = 50  # list_root's bound: 50 pages of 100 root entries
 
 
 class GitLabAPIError(RuntimeError):
@@ -95,7 +97,8 @@ def _request(
 
 
 class GitLabFetcher:
-    """Read-only GitLab client: MR details, changes, file at ref."""
+    """Read-only GitLab client: MR details and refs, changes, file at ref,
+    root listing."""
 
     def __init__(self, token: str, log: Log | None = None, *, base_url: str = DEFAULT_URL) -> None:
         self.log = log or Log()
@@ -111,9 +114,95 @@ class GitLabFetcher:
         pid = self.project_id(owner, repo)
         return self._request("GET", f"/projects/{pid}/merge_requests/{iid}").json()
 
+    def pull_refs(self, owner: str, repo: str, iid: int) -> PullRefs:
+        """The MR's head and base commit SHAs (``diff_refs.head_sha``,
+        ``diff_refs.base_sha``)."""
+        refs = self.mr_details(owner, repo, iid).get("diff_refs") or {}
+        return PullRefs(head_sha=refs.get("head_sha"), base_sha=refs.get("base_sha"))
+
     def head_sha(self, owner: str, repo: str, iid: int) -> str | None:
-        details = self.mr_details(owner, repo, iid)
-        return (details.get("diff_refs") or {}).get("head_sha")
+        return self.pull_refs(owner, repo, iid).head_sha
+
+    def list_root(self, owner: str, repo: str, ref: str) -> list[RootEntry]:
+        """The files and directories at the repository root at ``ref``.
+
+        Pages through GitLab's tree API at ``per_page=100`` (offset
+        pagination, GitLab's default), asking for the page named by each
+        response's ``x-next-page`` header until it is empty. The next request is
+        built on this client's own URL, so the token never follows a host named
+        by the server. Pagination is bounded: ``GitLabAPIError`` (with the last
+        response's status) is raised when ``x-next-page`` names the page just
+        fetched, or is still set after ``MAX_TREE_PAGES`` pages.
+
+        ``blob`` entries are files and ``tree`` entries are directories;
+        anything else (submodule ``commit`` entries) is left out.
+
+        ``size`` is always None: GitLab's tree API returns only ``id``,
+        ``name``, ``type``, ``path`` and ``mode`` per entry, never a size, so a
+        size limit has to be applied after a file is fetched.
+        """
+        pid = self.project_id(owner, repo)
+        url = f"/projects/{pid}/repository/tree"
+        entries: list[RootEntry] = []
+        page = "1"
+        fetched = 0
+        while True:
+            response = self._request("GET", url, params={"ref": ref, "per_page": "100", "page": page})
+            fetched += 1
+            data = response.json()
+            if not isinstance(data, list):
+                raise GitLabAPIError(response.status_code, "repository tree listing is not a list")
+            for item in data:
+                kind = {"blob": "file", "tree": "dir"}.get(item.get("type"))
+                if kind is not None:
+                    entries.append(RootEntry(name=str(item.get("name", "")), type=kind, size=None))
+            next_page = response.headers.get("x-next-page", "").strip()
+            if not next_page:
+                return entries
+            if next_page == page:
+                raise GitLabAPIError(
+                    response.status_code, f"repository tree listing repeated page {page} (x-next-page)"
+                )
+            if fetched >= MAX_TREE_PAGES:
+                raise GitLabAPIError(
+                    response.status_code, f"repository tree listing exceeded {MAX_TREE_PAGES} pages"
+                )
+            page = next_page
+
+    def read_optional(self, owner: str, repo: str, path: str, ref: str) -> str | None:
+        """A file's text at ``ref``, or None when GitLab answers 404 (absent).
+
+        Every other failure raises ``GitLabAPIError`` unchanged, so "absent"
+        and "failed" stay distinguishable. A response that is not a file
+        object (a list, as for a directory) or has no base64 content (encoding
+        ``"none"`` or anything else) also raises, carrying the response's HTTP
+        status, instead of reading as empty text.
+        """
+        pid = self.project_id(owner, repo)
+        try:
+            response = self._request(
+                "GET",
+                f"/projects/{pid}/repository/files/{quote(path, safe='')}",
+                params={"ref": ref},
+                path=path,
+            )
+        except GitLabAPIError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        status = response.status_code
+        data = response.json()
+        if isinstance(data, list):
+            raise GitLabAPIError(status, "path is a directory, not a file", path=path)
+        if not isinstance(data, dict):
+            raise GitLabAPIError(status, "unexpected file response", path=path)
+        encoding = data.get("encoding")
+        content = data.get("content")
+        if encoding == "none":
+            raise GitLabAPIError(status, 'file has no content (encoding "none"); it may be too large', path=path)
+        if encoding != "base64" or not isinstance(content, str):
+            raise GitLabAPIError(status, f"unexpected file encoding {encoding!r}", path=path)
+        return base64.b64decode(content).decode("utf-8", errors="replace")
 
     def list_mr_changes(self, owner: str, repo: str, iid: int) -> list[dict]:
         pid = self.project_id(owner, repo)

@@ -1,4 +1,4 @@
-"""GitHub REST clients (T029, T110) — PR files, contents, comment posting.
+"""GitHub REST clients (T029, T110, T115) — PR files and refs, contents, root listing, comment posting.
 
 Plain httpx (BSD-3-Clause); bearer-token auth; Link-header pagination; 429
 exponential backoff (1s/2s/4s, max 3) per contracts/hosting-api.md.
@@ -16,6 +16,7 @@ import time
 
 import httpx
 
+from veritas.hosting.types import PullRefs, RootEntry
 from veritas.utils.logging import Log
 
 BASE_URL = "https://api.github.com"
@@ -100,7 +101,8 @@ def _next_link(link_header: str) -> str | None:
 
 
 class GitHubFetcher:
-    """Read-only GitHub client: PR details, changed files, file contents."""
+    """Read-only GitHub client: PR details and refs, changed files, file
+    contents, root listing."""
 
     def __init__(self, token: str, log: Log | None = None, *, base_url: str | None = None) -> None:
         self.log = log or Log()
@@ -128,9 +130,82 @@ class GitHubFetcher:
     def pull_details(self, owner: str, repo: str, number: int) -> dict:
         return self._request("GET", f"/repos/{owner}/{repo}/pulls/{number}").json()
 
-    def head_sha(self, owner: str, repo: str, number: int) -> str | None:
+    def pull_refs(self, owner: str, repo: str, number: int) -> PullRefs:
+        """The PR's head and base commit SHAs (``head.sha``, ``base.sha``)."""
         details = self.pull_details(owner, repo, number)
-        return (details.get("head") or {}).get("sha")
+        return PullRefs(
+            head_sha=(details.get("head") or {}).get("sha"),
+            base_sha=(details.get("base") or {}).get("sha"),
+        )
+
+    def head_sha(self, owner: str, repo: str, number: int) -> str | None:
+        return self.pull_refs(owner, repo, number).head_sha
+
+    def list_root(self, owner: str, repo: str, ref: str) -> list[RootEntry]:
+        """The files and directories at the repository root at ``ref``.
+
+        One request: GitHub's contents listing is not paginated; it returns the
+        whole directory up to its documented limit of 1,000 entries. Entries
+        that are neither files nor directories (symlinks, submodules) are left
+        out. A file's ``size`` is the listing's byte count; a directory's is None.
+        """
+        response = self._request("GET", f"/repos/{owner}/{repo}/contents", params={"ref": ref})
+        data = response.json()
+        if not isinstance(data, list):
+            raise GitHubAPIError(response.status_code, "repository root listing is not a directory listing")
+        entries: list[RootEntry] = []
+        for item in data:
+            kind = item.get("type")
+            if kind not in ("file", "dir"):
+                continue
+            size = item.get("size")
+            entries.append(
+                RootEntry(
+                    name=str(item.get("name", "")),
+                    type=kind,
+                    size=size if kind == "file" and isinstance(size, int) else None,
+                )
+            )
+        return entries
+
+    def read_optional(self, owner: str, repo: str, path: str, ref: str) -> str | None:
+        """A file's text at ``ref``, or None when GitHub answers 404 (absent).
+
+        Every other failure raises ``GitHubAPIError`` unchanged, so "absent"
+        and "failed" stay distinguishable. A directory, a non-file entry and a
+        file too large for the contents API (encoding ``"none"`` with empty
+        content, GitHub's answer for 1-100 MB files) also raise, carrying the
+        response's HTTP status, instead of reading as empty text.
+        """
+        try:
+            response = self._request(
+                "GET",
+                f"/repos/{owner}/{repo}/contents/{path.lstrip('/')}",
+                params={"ref": ref},
+                path=path,
+            )
+        except GitHubAPIError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        status = response.status_code
+        data = response.json()
+        if isinstance(data, list):
+            raise GitHubAPIError(status, "path is a directory, not a file", path=path)
+        if not isinstance(data, dict):
+            raise GitHubAPIError(status, "unexpected contents response", path=path)
+        kind = data.get("type", "file")
+        if kind != "file":
+            raise GitHubAPIError(status, f"path is a {kind}, not a file", path=path)
+        encoding = data.get("encoding")
+        content = data.get("content")
+        if encoding == "none":
+            raise GitHubAPIError(
+                status, 'file too large for the contents API (encoding "none", no content)', path=path
+            )
+        if encoding != "base64" or not isinstance(content, str):
+            raise GitHubAPIError(status, f"unexpected file encoding {encoding!r}", path=path)
+        return base64.b64decode(content).decode("utf-8", errors="replace")
 
     def list_pr_files(self, owner: str, repo: str, number: int) -> list[dict]:
         return self._paginate(f"/repos/{owner}/{repo}/pulls/{number}/files", {"per_page": "100"})

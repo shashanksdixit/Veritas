@@ -93,6 +93,13 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- Internal: the GitHub and GitLab fetchers can now read project context
+  (T115; nothing calls these yet, so reviews are unchanged): `pull_refs`
+  returns a PR/MR's head and base SHAs, `list_root` lists the repository
+  root (name, file or directory, size; GitLab reports no size, so it is
+  None there), and `read_optional` reads a file, returning None only when
+  the provider answers 404 and raising on any other failure. All are
+  read-only GET requests through the existing guarded client.
 - Each graph node gets its own frozen context instead of the shared, mutable
   `Runtime` object, which is removed (T111, FR-026): the analysis nodes get a
   `ReviewContext` (LLM client, log), the scope node a `ScopeContext` (exclusion
