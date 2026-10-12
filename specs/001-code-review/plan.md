@@ -17,7 +17,7 @@ Build Veritas: a CLI-based, multi-agent code review tool that fetches PRs remote
 **Primary Dependencies**:
 | Dependency | Version | License | Purpose |
 |-----------|---------|---------|---------|
-| LangGraph | latest stable (resolve and record actual version in lockfile at install time — do not hardcode a version here that hasn't been verified against the live package index) | MIT | Review orchestration (StateGraph, ToolNode) |
+| LangGraph | latest stable (resolve and record actual version in lockfile at install time — do not hardcode a version here that hasn't been verified against the live package index) | MIT | Review orchestration (StateGraph) |
 | langchain-core | latest | MIT | LLM provider abstraction |
 | langchain-openai | latest | MIT | OpenAI-compatible provider integration for init_chat_model (covers OpenRouter default + OpenAI) |
 | langchain-anthropic | latest | MIT | Anthropic native provider integration, installed when a user configures a Claude key directly (FR-020) |
@@ -52,7 +52,7 @@ Build Veritas: a CLI-based, multi-agent code review tool that fetches PRs remote
 
 | Gate | Principle | Status | Design Mapping |
 |------|-----------|--------|----------------|
-| **Read-Only Safety Boundary** | Additional Constraints § Read-Only | PASS | Review nodes use `ToolNode(read_only_tools)` only; write nodes (`ToolNode(write_tools)`) are terminal, no back-edges. Structural — tools not in the dict. |
+| **Read-Only Safety Boundary** | Additional Constraints § Read-Only | PASS | No review node uses tools. Each review node receives only a frozen `ReviewContext(llm, log)` and reads the scoped files from graph state. The scope node receives a `ScopeContext` whose hosting client is a GET-only fetcher. Only the terminal render node receives a `RenderContext` holding the suppression store and the poster, and its only edge is to `END`. `tests/integration/test_read_only_boundary.py` walks every node of the compiled graph and fails if a non-output node can reach a write capability (or, for review nodes, an execute capability). The LLM endpoint is the only outbound call a review node makes. |
 | **Grounded Verification** | Principle I | PASS | Dedicated verification node re-reads the cited file and lines for every non-SAST finding and confirms the quoted code is there, after whitespace normalisation and redaction of both sides (FR-013). It confirms the citation, not the claim, and the report states this limit. Per-finding exemption by actual source — LLM-identified security findings go through re-check. |
 | **SAST-Grounded & Verified Security** | Principle II | PASS | OpenGrep subprocess (LGPL-2.1, no paid tier) produces ground-truth findings (`source="sast"`). LLM-identified security findings (`source="llm-verified"`) pass verification. Every security finding labeled by source. |
 | **Requirement Traceability** | Principle III | PASS | Review checks code against project requirements (spec-kit or freeform). Findings carry status (satisfied/partial/gap/unclear/not_addressed, per FR-007; not_addressed is PR scope only) + evidence citations. |
@@ -106,6 +106,7 @@ veritas/
 │   ├── __init__.py
 │   ├── github.py                    # GitHub REST via httpx (PR files, contents, comments)
 │   ├── gitlab.py                    # GitLab REST via httpx
+│   ├── factory.py                   # HostingClients(fetcher, poster), build_hosting_client (T111)
 │   └── resolver.py                  # Parse --target PR ref → provider + owner/repo/id
 ├── llm/
 │   ├── __init__.py
@@ -115,6 +116,7 @@ veritas/
 ├── review/
 │   ├── __init__.py
 │   ├── graph.py                     # LangGraph StateGraph definition
+│   ├── contexts.py                  # Frozen node contexts: ReviewContext, ScopeContext, RenderContext (T111)
 │   ├── state.py                     # ReviewState TypedDict
 │   ├── batching.py                  # Deterministic batch planner for code-review inputs (FR-029, T076/T083)
 │   ├── test_index.py                # Test-file identification + relevance-ordered per-batch test index (FR-004, T081/T082/T084)
@@ -133,8 +135,7 @@ veritas/
 │   │   └── render.py                # Report file + stdout summary (WRITE — post-review)
 │   ├── tools/
 │   │   ├── __init__.py
-│   │   ├── read_only.py             # read_file, list_dir, grep_code, get_ast
-│   │   └── write_tools.py           # write_report, update_suppressions (WRITE)
+│   │   └── write_tools.py           # write_report, persist_last_report_json (WRITE; render node only)
 │   └── prompts/
 │       ├── __init__.py
 │       ├── code_quality.md
@@ -145,7 +146,8 @@ veritas/
 │       └── performance.md
 ├── security/
 │   ├── __init__.py
-│   └── opengrep.py                  # OpenGrep subprocess invocation + JSON parsing
+│   ├── opengrep.py                  # OpenGrep subprocess invocation + JSON parsing
+│   └── sast_results.py              # Pure mapping of OpenGrep results to finding dicts (T111)
 ├── suppression/
 │   ├── __init__.py
 │   ├── fingerprint.py               # compute_fingerprint() per data-model.md

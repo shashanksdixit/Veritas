@@ -139,6 +139,14 @@ constitution Principle VIII / FR-016.
   for 40 identical failures).
 - Operational polish: [llm] max_concurrency, a single retry for OpenRouter's in-flight 402, atomic log lines, UTF-8 console output on Windows, friendly configuration errors, LF line endings, README setup notes.
 
+### Removed
+- Unused internal tools (T113; internal, no user-visible change): the module
+  `veritas/review/tools/read_only.py` (`read_file`, `list_dir`, `grep_code`,
+  `get_ast`, `scoped_files`), which no node ever used, and `update_suppressions`
+  from `veritas/review/tools/write_tools.py`, which nothing called. The plan's
+  read-only boundary description now matches the real design: frozen per-node
+  contexts, checked by the reachability test.
+
 ### Fixed
 - An `unclear` requirement's evidence is now verified like every other
   status (FR-013, T106). Previously a reference it cited was published

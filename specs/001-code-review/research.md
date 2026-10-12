@@ -100,6 +100,8 @@ Use **plain `httpx` (BSD-3-Clause)** for both GitHub and GitLab REST APIs direct
 
 ## 4. LangGraph Architecture — Read-Only Review Boundary
 
+> **Superseded by T111–T113.** The `ToolNode` design below was never wired (T010 wrote the tools, but no node bound them; T113 removed them) and is kept as history. The actual design: no node uses tools. Each review node receives only a frozen `ReviewContext(llm, log)` and reads scoped files from graph state; scope gets a `ScopeContext` with a GET-only hosting fetcher; only the terminal render node gets a `RenderContext` holding the suppression store and poster. `tests/integration/test_read_only_boundary.py` proves by reachability that no non-output node can reach a write capability (see plan.md, Read-Only Safety Boundary gate).
+
 ### Decision
 Build a `StateGraph` with separate `ToolNode` instances for read-only review tools vs. post-review write tools. Review agent nodes call `model.bind_tools(read_only_tools)` and route to a `ToolNode(read_only_tools)`. Write tools (report file, suppression file) live in a separate `ToolNode(write_tools)` reached only after the review+verify path completes — never reachable from within review nodes. No back-edges from write to review.
 
