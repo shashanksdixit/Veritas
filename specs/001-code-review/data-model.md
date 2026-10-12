@@ -317,6 +317,29 @@ class ReviewState(TypedDict):
     phase: str  # "scope" | "review" | "verify" | "write" | "done"
 ```
 
+### Project sources (T116)
+
+`project_sources: ProjectSources | None` is an overwrite channel written only
+by the scope node; it starts as None and stays None for `--scope pr`. The
+context node renders project context from it and never reads the filesystem.
+
+`ProjectSources` (in `veritas/review/state.py`) is
+`@dataclass(frozen=True, slots=True)`:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `origin` | `str` | Where the files were read from: the local directory today |
+| `files` | `tuple[tuple[str, str], ...]` | `(relative name, text)` pairs in read order, for example `("pyproject.toml", "...")` or `(".veritas/rules.md", "...")`; names are unique; `text(name)` returns one or None |
+| `problems` | `tuple[str, ...]` | Reading problems worth reporting; empty today |
+
+`files` is a tuple of pairs rather than a mapping so that nothing can change
+it after the scope node builds it and so it compares, copies and pickles like
+any other state value. The scope node reads, from one directory (the target,
+or the file's directory for `--scope file`; no walk-up): the named manifests,
+`*.csproj` files, the conventions files up to the first non-empty one, and
+`.veritas/rules.md`. A missing or unreadable file, or one over 200,000 bytes
+(pyproject.toml has no limit), is left out.
+
 ---
 
 ## Node contexts

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from operator import add
 from typing import Annotated, TypedDict
 
@@ -18,6 +19,43 @@ from veritas.models.entities import (
 )
 from veritas.review.batching import BatchPlan
 from veritas.review.requirements_source import Requirement
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectSources:
+    """The project-context files the scope node read, for the context node (T116).
+
+    ``origin`` says where they came from (today the local directory they were
+    read from). ``files`` holds ``(relative name, text)`` pairs in the order
+    they were read. It is a tuple of pairs rather than a dict, or a
+    ``MappingProxyType`` over one, because a tuple cannot be changed in place
+    by anyone, compares and hashes by value, and can be copied or pickled like
+    any other state value, which a ``MappingProxyType`` cannot. The file count
+    is a handful, so looking a name up with ``text()`` by a linear scan costs
+    nothing. ``problems`` is for reading problems worth reporting (empty
+    today).
+    """
+
+    origin: str
+    files: tuple[tuple[str, str], ...]
+    problems: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        # Coerce to tuples so a caller passing lists still gets an object
+        # nothing can change afterwards.
+        files = tuple((name, text) for name, text in self.files)
+        names = [name for name, _text in files]
+        if len(set(names)) != len(names):
+            raise ValueError(f"duplicate project source names: {names}")
+        object.__setattr__(self, "files", files)
+        object.__setattr__(self, "problems", tuple(self.problems))
+
+    def text(self, name: str) -> str | None:
+        """The text read for ``name``, or None when it was not read."""
+        for candidate, text in self.files:
+            if candidate == name:
+                return text
+        return None
 
 
 class ReviewState(TypedDict):
@@ -67,6 +105,10 @@ class ReviewState(TypedDict):
     # (FR-008), each with its own file and line so it can be cited as evidence.
     # Empty when every source is free text.
     requirements: list[Requirement]
+    # Project-context files (manifests, conventions, rules) read by the scope
+    # node, the only writer (T116). None for a PR review, and before the scope
+    # node runs; the context node renders it without touching the filesystem.
+    project_sources: ProjectSources | None
     project_context: str | None
     degraded_sast: str | None
     sast_findings: list[dict]

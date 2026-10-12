@@ -93,6 +93,15 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- Internal: project-context files are now read by the scope node instead of
+  the context node (T116; no user-visible change). The scope node reads the
+  same manifests, conventions file and `.veritas/rules.md` from the same
+  directory as before into a new `project_sources` state channel, and the
+  context node renders them without touching the filesystem. For a PR review
+  the channel is empty and the note is unchanged. The prompt text and the
+  `[info] Detected: ...` lines are byte-for-byte the same, including today's
+  silent skip of files over 200,000 bytes and the 4,000-character cut of
+  conventions and rules.
 - Internal: the GitHub and GitLab fetchers can now read project context
   (T115; nothing calls these yet, so reviews are unchanged): `pull_refs`
   returns a PR/MR's head and base SHAs, `list_root` lists the repository

@@ -3,6 +3,10 @@
 Detects language/framework versions from real manifest files, project
 conventions (AGENTS.md-equivalent), and natural-language custom rules. When
 nothing is detectable a ``note`` records that project context is unavailable.
+
+Since T116 nothing here touches the filesystem: the scope node reads the files
+into ``ProjectSources`` and the parsers below take text. The names to read and
+the size limit live here so the reader and the parsers agree on them.
 """
 
 from __future__ import annotations
@@ -10,9 +14,27 @@ from __future__ import annotations
 import re
 import tomllib
 from dataclasses import dataclass, field
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from veritas.config.constants import CONVENTIONS_FILENAMES, NATURAL_LANGUAGE_RULES_GLOB
+
+if TYPE_CHECKING:
+    from veritas.review.state import ProjectSources
+
+# Manifests probed by exact name directly in the project directory, in the
+# order their versions are listed. ``*.csproj`` files follow them.
+MANIFEST_NAMES = (
+    "pyproject.toml",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "package.json",
+    "go.mod",
+    "Cargo.toml",
+)
+CSPROJ_SUFFIX = ".csproj"
+# Every file but pyproject.toml larger than this is skipped unread.
+MAX_SOURCE_BYTES = 200_000
 
 _MAVEN_COMPILER = re.compile(
     r"<maven\.compiler\.(?:source|target)>\s*(\d[\w.]*)\s*</maven\.compiler\.(?:source|target)>"
@@ -58,11 +80,10 @@ class ProjectContext:
         return "\n".join(lines)
 
 
-def _parse_pyproject(path: Path) -> list[str] | None:
+def _parse_pyproject(text: str) -> list[str] | None:
     try:
-        with path.open("rb") as fh:
-            data = tomllib.load(fh)
-    except (tomllib.TOMLDecodeError, OSError):
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
         return None
     parts: list[str] = []
     requires_python = data.get("project", {}).get("requires-python")
@@ -81,8 +102,7 @@ def _parse_pyproject(path: Path) -> list[str] | None:
     return parts or None
 
 
-def _parse_pom(path: Path) -> str | None:
-    text = _read_text(path)
+def _parse_pom(text: str) -> str | None:
     if not text:
         return None
     match = _MAVEN_JAVA.search(text) or _MAVEN_COMPILER.search(text)
@@ -91,8 +111,7 @@ def _parse_pom(path: Path) -> str | None:
     return None
 
 
-def _parse_gradle(path: Path) -> str | None:
-    text = _read_text(path)
+def _parse_gradle(text: str) -> str | None:
     if not text:
         return None
     match = _GRADLE_JAVA_VERSION.search(text)
@@ -104,8 +123,7 @@ def _parse_gradle(path: Path) -> str | None:
     return None
 
 
-def _parse_package_json(path: Path) -> str | None:
-    text = _read_text(path)
+def _parse_package_json(text: str) -> str | None:
     if not text:
         return None
     match = _NODE_ENGINES.search(text)
@@ -114,8 +132,7 @@ def _parse_package_json(path: Path) -> str | None:
     return None
 
 
-def _parse_go_mod(path: Path) -> str | None:
-    text = _read_text(path)
+def _parse_go_mod(text: str) -> str | None:
     if not text:
         return None
     match = _GO_VERSION.search(text)
@@ -124,8 +141,7 @@ def _parse_go_mod(path: Path) -> str | None:
     return None
 
 
-def _parse_cargo(path: Path) -> str | None:
-    text = _read_text(path)
+def _parse_cargo(text: str) -> str | None:
     if not text:
         return None
     match = _CARGO_EDITION.search(text)
@@ -134,8 +150,7 @@ def _parse_cargo(path: Path) -> str | None:
     return None
 
 
-def _parse_csproj(path: Path) -> str | None:
-    text = _read_text(path)
+def _parse_csproj(text: str) -> str | None:
     if not text:
         return None
     match = _CSHARP_TFM.search(text)
@@ -144,60 +159,33 @@ def _parse_csproj(path: Path) -> str | None:
     return None
 
 
-def _read_text(path: Path, limit: int = 200_000) -> str | None:
-    try:
-        if path.stat().st_size > limit:
-            return None
-        return path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
+_MANIFEST_PARSERS = {
+    "pyproject.toml": _parse_pyproject,
+    "pom.xml": _parse_pom,
+    "build.gradle": _parse_gradle,
+    "build.gradle.kts": _parse_gradle,
+    "package.json": _parse_package_json,
+    "go.mod": _parse_go_mod,
+    "Cargo.toml": _parse_cargo,
+}
 
 
-def _manifest_parsers() -> dict[str, object]:
-    return {
-        "pyproject.toml": _parse_pyproject,
-        "pom.xml": _parse_pom,
-        "build.gradle": _parse_gradle,
-        "build.gradle.kts": _parse_gradle,
-        "package.json": _parse_package_json,
-        "go.mod": _parse_go_mod,
-        "Cargo.toml": _parse_cargo,
-        "*.csproj": _parse_csproj,
-    }
+def is_csproj(name: str) -> bool:
+    """A ``*.csproj`` name, in any letter case (the reader's glob is case-blind on Windows)."""
+    return name.lower().endswith(CSPROJ_SUFFIX)
 
 
-def detect_language_versions(root: str) -> list[str]:
-    """Parse manifest files under ``root`` (top-level scan).
-
-    Python 3.12 pathlib.glob lacks `{}` brace alternation, so named manifests
-    are probed explicitly and ``*.csproj`` via a plain suffix glob.
-    """
+def detect_language_versions(sources: ProjectSources) -> list[str]:
+    """Versions from the manifests in ``sources``: named ones first, then ``*.csproj`` in read order."""
     versions: list[str] = []
-    root_path = Path(root)
-    if not root_path.is_dir():
-        return versions
-    parsers = _manifest_parsers()
-    classic = [
-        "pyproject.toml",
-        "pom.xml",
-        "build.gradle",
-        "build.gradle.kts",
-        "package.json",
-        "go.mod",
-        "Cargo.toml",
-    ]
-    for name in classic:
-        path = root_path / name
-        if not path.is_file():
+    for name in MANIFEST_NAMES:
+        text = sources.text(name)
+        if text is None:
             continue
-        handler = parsers.get(name)
-        if handler is None:
-            continue
-        _append_versions(parsed := handler(path), versions)
-    for path in sorted(root_path.glob("*.csproj")):
-        if not path.is_file():
-            continue
-        _append_versions(parsers.get("*.csproj")(path), versions)
+        _append_versions(_MANIFEST_PARSERS[name](text), versions)
+    for name, text in sources.files:
+        if is_csproj(name):
+            _append_versions(_parse_csproj(text), versions)
     return versions
 
 
@@ -212,36 +200,29 @@ def _append_versions(parsed: object, versions: list[str]) -> None:
         versions.append(parsed)
 
 
-def detect_conventions(root: str) -> str | None:
-    """Load project conventions/AGENTS.md-equivalent (FR-010)."""
-    root_path = Path(root)
-    if not root_path.is_dir():
-        return None
+def detect_conventions(sources: ProjectSources) -> str | None:
+    """Project conventions/AGENTS.md-equivalent (FR-010): the first non-empty one."""
     for name in CONVENTIONS_FILENAMES:
-        candidate = root_path / name
-        if candidate.is_file():
-            text = _read_text(candidate)
-            if text:
-                return text.strip()
-    return None
-
-
-def detect_natural_language_rules(root: str) -> str | None:
-    """Load natural-language-only custom rules (FR-011)."""
-    candidate = Path(root) / NATURAL_LANGUAGE_RULES_GLOB
-    if candidate.is_file():
-        text = _read_text(candidate)
+        text = sources.text(name)
         if text:
             return text.strip()
     return None
 
 
-def build_project_context(root: str) -> ProjectContext:
-    """Gather all project context for a local target directory."""
+def detect_natural_language_rules(sources: ProjectSources) -> str | None:
+    """Natural-language-only custom rules (FR-011)."""
+    text = sources.text(NATURAL_LANGUAGE_RULES_GLOB)
+    if text:
+        return text.strip()
+    return None
+
+
+def build_project_context(sources: ProjectSources) -> ProjectContext:
+    """Gather all project context from the files the scope node read."""
     ctx = ProjectContext()
-    ctx.language_versions = detect_language_versions(root)
-    ctx.conventions = detect_conventions(root)
-    ctx.rules = detect_natural_language_rules(root)
+    ctx.language_versions = detect_language_versions(sources)
+    ctx.conventions = detect_conventions(sources)
+    ctx.rules = detect_natural_language_rules(sources)
     if ctx.is_empty:
         ctx.note = "Project context unavailable (no detectable manifests, conventions, or custom rules); using generic guidance."
     return ctx

@@ -1,0 +1,53 @@
+{
+  "a": {
+    "context": "Detected manifest language/framework versions:\n  - Python >=3.12\n  - langgraph >=0.2.60\n  - langchain >=1.0\n  - langchain-core >=0.3.0\n  - langchain-openai >=0.2.0\n  - httpx >=0.28.0,<0.29\n  - typer >=0.16.0\n  - pydantic >=2.0\n  - pydantic-settings >=2.0",
+    "log": [
+      "[info] Detected: Python >=3.12",
+      "[info] Detected: langgraph >=0.2.60",
+      "[info] Detected: langchain >=1.0",
+      "[info] Detected: langchain-core >=0.3.0",
+      "[info] Detected: langchain-openai >=0.2.0",
+      "[info] Detected: httpx >=0.28.0,<0.29",
+      "[info] Detected: typer >=0.16.0",
+      "[info] Detected: pydantic >=2.0",
+      "[info] Detected: pydantic-settings >=2.0"
+    ]
+  },
+  "b": {
+    "context": "Detected manifest language/framework versions:\n  - Python >=3.12\n  - pydantic >=2.0\n  - httpx >=0.27,<1\nProject conventions to honor:\nPrefer early returns.\nNo print() in library code.\nProject-specific natural-language review rules:\nFlag any eval() usage.",
+    "log": [
+      "[info] Detected: Python >=3.12",
+      "[info] Detected: pydantic >=2.0",
+      "[info] Detected: httpx >=0.27,<1"
+    ]
+  },
+  "c": {
+    "context": "Detected manifest language/framework versions:\n  - Node >=20\n  - Go 1.22",
+    "log": [
+      "[info] Detected: Node >=20",
+      "[info] Detected: Go 1.22"
+    ]
+  },
+  "d": {
+    "context": "Detected manifest language/framework versions:\n  - .NET net8.0\nProject conventions to honor:\nRule 0000: keep functions short.\nRule 0001: keep functions short.\nRule 0002: keep functions short.\nRule 0003: keep functions short.\nRule 0004: keep functions short.\nRule 0005: keep functions short.\nRule 0006: keep functions short.\nRule 0007: keep functions short.\nRule 0008: keep functions short.\nRule 0009: keep functions short.\nRule 0010: keep functions short.\nRule 0011: keep functions short.\nRule 0012: keep functions short.\nRule 0013: keep functions short.\nRule 0014: keep functions short.\nRule 0015: keep functions short.\nRule 0016: keep functions short.\nRule 0017: keep functions short.\nRule 0018: keep functions short.\nRule 0019: keep functions short.\nRule 0020: keep functions short.\nRule 0021: keep functions short.\nRule 0022: keep functions short.\nRule 0023: keep functions short.\nRule 0024: keep functions short.\nRule 0025: keep functions short.\nRule 0026: keep functions short.\nRule 0027: keep functions short.\nRule 0028: keep functions short.\nRule 0029: keep functions short.\nRule 0030: keep functions short.\nRule 0031: keep functions short.\nRule 0032: keep functions short.\nRule 0033: keep functions short.\nRule 0034: keep functions short.\nRule 0035: keep functions short.\nRule 0036: keep functions short.\nRule 0037: keep functions short.\nRule 0038: keep functions short.\nRule 0039: keep functions short.\nRule 0040: keep functions short.\nRule 0041: keep functions short.\nRule 0042: keep functions short.\nRule 0043: keep functions short.\nRule 0044: keep functions short.\nRule 0045: keep functions short.\nRule 0046: keep functions short.\nRule 0047: keep functions short.\nRule 0048: keep functions short.\nRule 0049: keep functions short.\nRule 0050: keep functions short.\nRule 0051: keep functions short.\nRule 0052: keep functions short.\nRule 0053: keep functions short.\nRule 0054: keep functions short.\nRule 0055: keep functions short.\nRule 0056: keep functions short.\nRule 0057: keep functions short.\nRule 0058: keep functions short.\nRule 0059: keep functions short.\nRule 0060: keep functions short.\nRule 0061: keep functions short.\nRule 0062: keep functions short.\nRule 0063: keep functions short.\nRule 0064: keep functions short.\nRule 0065: keep functions short.\nRule 0066: keep functions short.\nRule 0067: keep functions short.\nRule 0068: keep functions short.\nRule 0069: keep functions short.\nRule 0070: keep functions short.\nRule 0071: keep functions short.\nRule 0072: keep functions short.\nRule 0073: keep functions short.\nRule 0074: keep functions short.\nRule 0075: keep functions short.\nRule 0076: keep functions short.\nRule 0077: keep functions short.\nRule 0078: keep functions short.\nRule 0079: keep functions short.\nRule 0080: keep functions short.\nRule 0081: keep functions short.\nRule 0082: keep functions short.\nRule 0083: keep functions short.\nRule 0084: keep functions short.\nRule 0085: keep functions short.\nRule 0086: keep functions short.\nRule 0087: keep functions short.\nRule 0088: keep functions short.\nRule 0089: keep functions short.\nRule 0090: keep functions short.\nRule 0091: keep functions short.\nRule 0092: keep functions short.\nRule 0093: keep functions short.\nRule 0094: keep functions short.\nRule 0095: keep functions short.\nRule 0096: keep functions short.\nRule 0097: keep functions short.\nRule 0098: keep functions short.\nRule 0099: keep functions short.\nRule 0100: keep functions short.\nRule 0101: keep functions short.\nRule 0102: keep functions short.\nRule 0103: keep functions short.\nRule 0104: keep functions short.\nRule 0105: keep functions short.\nRule 0106: keep functions short.\nRule 0107: keep functions short.\nRule 0108: keep functions short.\nRule 0109: keep functions short.\nRule 0110: keep functions short.\nRule 0111: keep functions short.\nRule 0112: keep functions short.\nRule 0113: keep functions short.\nRule 0114: keep functions short.\nRule 0115: keep functions short.\nRule 0116: keep functions short.\nRule 0117: keep functions short.\nRule 0118: keep functions short.\nRule 0119: keep functions short.\nRule 0120: keep functions short.\nRule 01",
+    "log": [
+      "[info] Detected: .NET net8.0"
+    ]
+  },
+  "e": {
+    "context": "Detected manifest language/framework versions:\n  - Go 1.21",
+    "log": [
+      "[info] Detected: Go 1.21"
+    ]
+  },
+  "f": {
+    "context": "Note: Project context unavailable (no detectable manifests, conventions, or custom rules); using generic guidance.",
+    "log": []
+  },
+  "g": {
+    "context": "Note: Project context unavailable for a remote PR review (no local manifest/conventions access); using generic guidance.",
+    "log": [
+      "[info] Project context unavailable for a remote PR review (no local manifest/conventions access); using generic guidance."
+    ]
+  }
+}

@@ -129,6 +129,7 @@ def _initial_state(
         "test_indexes": None,
         "requirement_sources": [],
         "requirements": [],
+        "project_sources": None,
         "project_context": None,
         "degraded_sast": None,
         "sast_findings": [],

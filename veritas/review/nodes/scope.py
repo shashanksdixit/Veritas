@@ -20,7 +20,11 @@ import os
 from pathlib import Path
 from typing import Callable, Sequence
 
-from veritas.config.constants import MAX_SCOPE_FILES
+from veritas.config.constants import (
+    CONVENTIONS_FILENAMES,
+    MAX_SCOPE_FILES,
+    NATURAL_LANGUAGE_RULES_GLOB,
+)
 from veritas.models.entities import ExcludedFile, ReviewScope, SastStatus
 from veritas.review import ReviewNotFoundError
 from veritas.review.batching import plan_batches
@@ -31,11 +35,12 @@ from veritas.review.requirements_source import (
     is_requirements_source,
     source_priority,
 )
-from veritas.review.state import ReviewState
+from veritas.review.state import ProjectSources, ReviewState
 from veritas.review.test_index import build_batch_test_indexes
 from veritas.security.opengrep import collect_sast
 from veritas.utils.languages import is_supported
 from veritas.utils.paths import matching_exclusion
+from veritas.utils.project_context import CSPROJ_SUFFIX, MANIFEST_NAMES, MAX_SOURCE_BYTES
 
 _SKIP_DIRS = {
     ".git",
@@ -202,6 +207,83 @@ def _read_local_file(path: str) -> str:
         return candidate.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         raise ReviewNotFoundError(f"cannot read target file {path}: {exc}") from exc
+
+
+def _project_context_root(scope: ReviewScope, target: str) -> str:
+    """The one directory project context is read from: the file's directory
+    for ``--scope file``, else the target itself (no walk-up yet)."""
+    if scope == ReviewScope.FILE:
+        return os.path.dirname(os.path.abspath(target)) or os.getcwd()
+    return os.path.abspath(target)
+
+
+def _read_capped_text(path: Path) -> str | None:
+    """The file's text, or None when it is over ``MAX_SOURCE_BYTES`` or unreadable.
+
+    Both are silent for now; T118 reports them.
+    """
+    try:
+        if path.stat().st_size > MAX_SOURCE_BYTES:
+            return None
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _read_pyproject_text(path: Path) -> str | None:
+    """pyproject.toml has no size limit and is decoded as strict UTF-8, as
+    ``tomllib.load`` did before T116: invalid UTF-8 raises
+    ``UnicodeDecodeError``, an unreadable file is None."""
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    return raw.decode()
+
+
+def _read_project_sources(root: str) -> ProjectSources:
+    """Read the project-context files from ``root`` (T116, FR-009/FR-010/FR-011).
+
+    The same files, from the same one directory, that the context node read
+    itself before T116: each manifest in ``MANIFEST_NAMES`` then every
+    ``*.csproj`` (sorted), the conventions files in ``CONVENTIONS_FILENAMES``
+    order up to the first non-empty one, and ``.veritas/rules.md``. A file that
+    is missing, unreadable or over the size limit is left out.
+    """
+    root_path = Path(root)
+    files: list[tuple[str, str]] = []
+    if root_path.is_dir():
+        for name in MANIFEST_NAMES:
+            path = root_path / name
+            if not path.is_file():
+                continue
+            if name == "pyproject.toml":
+                text = _read_pyproject_text(path)
+            else:
+                text = _read_capped_text(path)
+            if text is not None:
+                files.append((name, text))
+        for path in sorted(root_path.glob(f"*{CSPROJ_SUFFIX}")):
+            if not path.is_file():
+                continue
+            text = _read_capped_text(path)
+            if text is not None:
+                files.append((path.name, text))
+        for name in CONVENTIONS_FILENAMES:
+            path = root_path / name
+            if not path.is_file():
+                continue
+            text = _read_capped_text(path)
+            if text is not None:
+                files.append((name, text))
+            if text:
+                break
+    rules = root_path / NATURAL_LANGUAGE_RULES_GLOB
+    if rules.is_file():
+        text = _read_capped_text(rules)
+        if text is not None:
+            files.append((NATURAL_LANGUAGE_RULES_GLOB, text))
+    return ProjectSources(origin=str(root_path), files=tuple(files))
 
 
 def _walk_local_scope(
@@ -396,6 +478,13 @@ def make_scope_node(ctx: ScopeContext) -> Callable[[ReviewState], dict]:
                 "sast_reason": sast.degraded,
             }
         )
+        # FR-009/FR-010/FR-011: read last, so the log up to here is unchanged.
+        # A PR review has no local files to read (T119 fetches them).
+        project_sources = (
+            None
+            if scope == ReviewScope.PR
+            else _read_project_sources(_project_context_root(scope, target))
+        )
         return {
             "files": files,
             "skipped_languages": result["skipped_languages"],
@@ -404,6 +493,7 @@ def make_scope_node(ctx: ScopeContext) -> Callable[[ReviewState], dict]:
             "test_indexes": test_indexes,
             "requirement_sources": requirement_sources,
             "requirements": requirements,
+            "project_sources": project_sources,
             "degraded_sast": sast.degraded,
             "sast_findings": sast.findings,
             "run": run,
