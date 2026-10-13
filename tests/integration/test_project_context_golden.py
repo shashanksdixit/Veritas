@@ -12,6 +12,10 @@ no longer hides STYLE.md; conventions are redacted). Here the scope node reads
 the files into ``project_sources`` and the context node renders that, and both
 must match the captures byte for byte.
 
+Cases l to o (T119) walk up from a module or file target to a project root
+marked by ``.git``. They are new behaviour, so their expected context, log,
+sources and origin are written by hand below rather than captured.
+
 Case ``a`` reviews this repository, so its golden follows the repository's own
 ``pyproject.toml``: a dependency change there means recapturing it.
 """
@@ -20,15 +24,22 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
-from tests.integration.project_context_cases import CASE_K_SECRET, PR_TARGET, REPO_ROOT, TMP_CASES
+from tests.integration.project_context_cases import (
+    CASE_K_SECRET,
+    PR_TARGET,
+    REPO_ROOT,
+    TMP_CASES,
+    WALK_UP_CASES,
+)
 from veritas.config.settings import Settings
 from veritas.hosting.resolver import parse_pr_target
-from veritas.models.entities import ReviewRun, ReviewScope
+from veritas.models.entities import ProjectContextStatus, ReviewRun, ReviewScope
 from veritas.review.contexts import ReviewContext, ScopeContext
 from veritas.review.nodes.context import make_context_node
 from veritas.review.nodes.scope import make_scope_node
@@ -77,16 +88,20 @@ def _state(scope: ReviewScope, target: str) -> dict:
     return {"messages": [], "scope": scope, "target": target, "run": run, "files": {}}
 
 
-def _scope_then_context(scope: ReviewScope, target: str, *, fetcher=None) -> dict:
-    """Run the scope node, then the context node on the state it produced.
-
-    Only the context node's log is captured, as in the golden capture.
-    """
+def _run_scope_then_context(scope: ReviewScope, target: str, *, fetcher=None) -> tuple[dict, ReviewRun]:
+    """Run the scope node, then the context node on the state it produced:
+    the context string and log (as in the golden capture: only the context
+    node's log), and the ``run`` the context node returned."""
     state = _state(scope, target)
     state.update(make_scope_node(_scope_ctx(fetcher=fetcher))(state))
     stream = io.StringIO()
     result = make_context_node(ReviewContext(llm=None, log=Log(stream=stream)))(state)
-    return {"context": result["project_context"], "log": stream.getvalue().splitlines()}
+    captured = {"context": result["project_context"], "log": stream.getvalue().splitlines()}
+    return captured, result["run"]
+
+
+def _scope_then_context(scope: ReviewScope, target: str, *, fetcher=None) -> dict:
+    return _run_scope_then_context(scope, target, fetcher=fetcher)[0]
 
 
 def test_golden_a_this_repository(monkeypatch):
@@ -100,6 +115,118 @@ def test_golden_tmp_project(case, tmp_path):
     root.mkdir()
     scope, target = TMP_CASES[case](root)
     assert _scope_then_context(scope, target) == GOLDEN[case]
+
+
+# --- T119: walking up to the project root (cases l to o) ----------------------
+#
+# Written by hand from the case layouts in project_context_cases.py, not
+# captured from the implementation. The integration conftest makes tmp_path
+# the working directory, so the project root tmp_path/project shows as
+# "project".
+
+_B_CONTEXT = (
+    "Detected manifest language/framework versions:\n"
+    "  - Python >=3.12\n"
+    "  - pydantic >=2.0\n"
+    "  - httpx >=0.27,<1\n"
+    "Project conventions to honor:\n"
+    "Prefer early returns.\n"
+    "No print() in library code.\n"
+    "Project-specific natural-language review rules:\n"
+    "Flag any eval() usage."
+)
+_B_LOG = [
+    "[info] Detected: Python >=3.12",
+    "[info] Detected: pydantic >=2.0",
+    "[info] Detected: httpx >=0.27,<1",
+]
+
+WALK_UP_EXPECTED = {
+    # --scope module src: the root's pyproject.toml, AGENTS.md and rules, as in b.
+    "l": {
+        "context": _B_CONTEXT,
+        "log": _B_LOG,
+        "sources": ["pyproject.toml", "AGENTS.md", ".veritas/rules.md"],
+        "origin": "project",
+    },
+    # --scope file src/pkg/mod.py: the same, two levels down.
+    "m": {
+        "context": _B_CONTEXT,
+        "log": _B_LOG,
+        "sources": ["pyproject.toml", "AGENTS.md", ".veritas/rules.md"],
+        "origin": "project",
+    },
+    # --scope module src/pkg: the package's pyproject.toml only (no Node from
+    # the root's package.json, no Python >=3.12 or pins from the root's
+    # pyproject.toml); conventions and rules from the root.
+    "n": {
+        "context": (
+            "Detected manifest language/framework versions:\n"
+            "  - Python >=3.13\n"
+            "Project conventions to honor:\n"
+            "Prefer early returns.\n"
+            "No print() in library code.\n"
+            "Project-specific natural-language review rules:\n"
+            "Flag any eval() usage."
+        ),
+        "log": ["[info] Detected: Python >=3.13"],
+        "sources": ["src/pkg/pyproject.toml", "AGENTS.md", ".veritas/rules.md"],
+        "origin": "project",
+    },
+    # .git is a file; the blank src/pkg/AGENTS.md is passed over for the root's STYLE.md.
+    "o": {
+        "context": (
+            "Detected manifest language/framework versions:\n"
+            "  - Go 1.22\n"
+            "Project conventions to honor:\n"
+            "Use four-space indentation.\n"
+            "Project-specific natural-language review rules:\n"
+            "Never log request bodies."
+        ),
+        "log": ["[info] Detected: Go 1.22"],
+        "sources": ["src/pkg/go.mod", "STYLE.md", ".veritas/rules.md"],
+        "origin": "project",
+    },
+}
+
+
+@pytest.mark.parametrize("case", sorted(WALK_UP_CASES))
+def test_golden_walk_up(case, tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    scope, target = WALK_UP_CASES[case](root)
+    captured, run = _run_scope_then_context(scope, target)
+    expected = WALK_UP_EXPECTED[case]
+    assert captured == {"context": expected["context"], "log": expected["log"]}
+    assert run.project_context_status is ProjectContextStatus.DETECTED
+    assert run.project_context_reason is None
+    assert run.project_context_sources == expected["sources"]
+    assert run.project_context_origin == expected["origin"]
+
+
+def test_walk_up_cases_l_and_m_render_exactly_case_b():
+    """The hand-written expectation agrees with b's capture from before T116."""
+    assert GOLDEN["b"]["context"] == _B_CONTEXT
+    assert GOLDEN["b"]["log"] == _B_LOG
+
+
+def test_no_ancestor_of_tmp_path_is_a_project_root(tmp_path):
+    """Guard (T119): the goldens without a marker (case f, and b to k reading
+    only their own directory) assume nothing above tmp_path marks a project
+    root. If this fails, pytest's temporary directory sits inside a git
+    checkout or a directory with .veritas/config.toml (check TMP, TEMP or
+    --basetemp), the walk-up would stop there and read that project's files,
+    and case f's golden would no longer match. Point the temporary directory
+    outside any project."""
+    for directory in (tmp_path, *tmp_path.parents):
+        assert not os.path.lexists(directory / ".git"), (
+            f"{directory} holds .git: the no-marker goldens (case f) depend on no "
+            "ancestor of tmp_path being a project root"
+        )
+        assert not (directory / ".veritas" / "config.toml").is_file(), (
+            f"{directory} holds .veritas/config.toml: the no-marker goldens (case f) "
+            "depend on no ancestor of tmp_path being a project root"
+        )
 
 
 def test_golden_g_pr_keeps_the_hard_coded_note():

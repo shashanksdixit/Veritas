@@ -1,4 +1,4 @@
-"""Project-context golden cases (T116, T118).
+"""Project-context golden cases (T116, T118, T119).
 
 Each builder lays out one project under ``root`` and returns the scope and the
 target a review would be given. The goldens a to g in
@@ -8,6 +8,11 @@ tests prove the refactor left what the model receives byte-for-byte unchanged.
 T118 added one ``[warn]`` line to the logs of d (truncation) and e (file too
 large), leaving every ``context`` string as it was, and added cases h to k for
 the problems and fixes it introduced.
+
+T119 added cases l to o (``WALK_UP_CASES``) for the walk up to the project
+root. Each marks its project root with ``.git``, so the walk stops there. Their
+expectations are written by hand in ``test_project_context_golden.py``, not
+captured, because they are new behaviour.
 """
 
 from __future__ import annotations
@@ -118,6 +123,47 @@ def case_k(root: Path) -> tuple[ReviewScope, str]:
     return ReviewScope.PROJECT, str(root)
 
 
+def case_l(root: Path) -> tuple[ReviewScope, str]:
+    """Case f with a ``.git`` directory at the root (T119): ``--scope module src``
+    walks up to the root and finds b's pyproject.toml, AGENTS.md and rules."""
+    case_f(root)
+    (root / ".git").mkdir()
+    return ReviewScope.MODULE, str(root / "src")
+
+
+def case_m(root: Path) -> tuple[ReviewScope, str]:
+    """Case l's layout, reviewing one file two levels below the root (T119)."""
+    case_l(root)
+    return ReviewScope.FILE, str(root / "src" / "pkg" / "mod.py")
+
+
+def case_n(root: Path) -> tuple[ReviewScope, str]:
+    """Case l plus src/pkg/pyproject.toml and a root package.json (T119): the
+    package's own pyproject.toml supplies every manifest, so neither the root's
+    Python >=3.12 nor its Node >=20 is mixed in; conventions and rules still
+    come from the root."""
+    case_l(root)
+    _write(
+        root / "src" / "pkg" / "pyproject.toml",
+        '[project]\nname = "pkg"\nrequires-python = ">=3.13"\n',
+    )
+    _write(root / "package.json", '{"name": "tooling", "engines": {"node": ">=20"}}\n')
+    return ReviewScope.MODULE, str(root / "src" / "pkg")
+
+
+def case_o(root: Path) -> tuple[ReviewScope, str]:
+    """A ``.git`` file at the root, as in a git worktree or submodule (T119):
+    src/pkg/go.mod, a blank src/pkg/AGENTS.md passed over for the root's
+    STYLE.md, and the root's rules."""
+    _write(root / ".git", "gitdir: ../.git/worktrees/project\n")
+    _write(root / "STYLE.md", "Use four-space indentation.\n")
+    _write(root / ".veritas" / "rules.md", "Never log request bodies.\n")
+    _write(root / "src" / "pkg" / "go.mod", "module example.com/pkg\n\ngo 1.22\n")
+    _write(root / "src" / "pkg" / "AGENTS.md", " \n\n")
+    _write(root / "src" / "pkg" / "main.go", "package main\n")
+    return ReviewScope.MODULE, str(root / "src" / "pkg")
+
+
 PR_TARGET = "https://github.com/owner/repo/pull/1"
 
 TMP_CASES = {
@@ -130,4 +176,12 @@ TMP_CASES = {
     "i": case_i,
     "j": case_j,
     "k": case_k,
+}
+
+# T119: expectations hand-written in the golden test, not in the JSON.
+WALK_UP_CASES = {
+    "l": case_l,
+    "m": case_m,
+    "n": case_n,
+    "o": case_o,
 }

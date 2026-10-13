@@ -133,10 +133,12 @@ class ReviewRun(BaseModel):
     # Report.schema_version 1.10.0 (FR-009): whether the review used project
     # context, set by the context node. project_context_sources names the files
     # that actually contributed (a manifest that parsed to nothing does not
-    # count); project_context_reason is one line, set when context is partial or
-    # unavailable; project_context_origin is where the files were read from, as
-    # shown in the report (relative to the working directory, never an absolute
-    # path). All None/empty when the run never reached the context node, so a
+    # count), each by its path relative to project_context_origin with "/"
+    # separators (T119); project_context_reason is one line, set when context is
+    # partial or unavailable; project_context_origin is the project root the
+    # reader walked up to (the start directory when it found none), as shown in
+    # the report (relative to the working directory, never an absolute path).
+    # All None/empty when the run never reached the context node, so a
     # report written before 1.10.0 still validates.
     project_context_status: ProjectContextStatus | None = None
     project_context_sources: list[str] = Field(default_factory=list)

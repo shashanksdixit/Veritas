@@ -50,6 +50,21 @@ constitution Principle VIII / FR-016.
   their text is not redacted, and neither are Click's own usage errors.
 
 ### Added
+- A local review finds project context above its target (FR-009, FR-010,
+  FR-011, T119). From the start directory (the target, or a file target's
+  directory) Veritas walks up to the project root: the first directory holding
+  `.git` (a directory, or a file as in a git worktree or submodule) or a
+  `.veritas/config.toml` file. A bare `.veritas/` directory is not a marker.
+  Nothing above the root is read. The nearest directory holding any manifest
+  supplies all manifests, never mixing levels, so a package's own
+  pyproject.toml is not combined with the root's package.json; a manifest
+  there that cannot be used still decides the directory and is stated. The
+  conventions file and `.veritas/rules.md` are each the nearest whose text is
+  not blank, so a module review now uses the repository root's AGENTS.md and
+  rules. With no marker up to the filesystem root, or within 32 levels, only
+  the start directory is read, as before. `--scope module src` in a git
+  repository whose root holds pyproject.toml now reports that file instead of
+  "no manifest, conventions file or rules file found". No schema change.
 - Report schema **1.10.0**: the report states the project context the review
   used (FR-009, T117). `ReviewRun` gains `project_context_status`
   (`"detected"`, `"partial"` or `"unavailable"`), `project_context_sources`
@@ -112,6 +127,15 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- Project-context sources are named by their path relative to the project
+  root, with `/` separators (FR-009, T119), and `project_context_origin` is
+  that root (the start directory when no root was found). A file at the root
+  keeps its bare name (`pyproject.toml`, `AGENTS.md`, `.veritas/rules.md`);
+  one below it reads `src/pkg/pyproject.toml`, and so do the problems about
+  it (`src/pkg/pyproject.toml is not valid TOML`). Blank conventions and rules
+  files that were passed over are no longer kept in the scope node's
+  `ProjectSources`; they never contributed, so nothing in the report changes.
+  No schema change: the values change, not the fields.
 - Project-context problems are stated, not silent (FR-009, T118). A file
   over 200,000 bytes (pyproject.toml now included; it had no limit), a file
   that cannot be read, a pyproject.toml that is not valid UTF-8 or not valid

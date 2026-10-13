@@ -113,8 +113,10 @@ class ReviewRun(BaseModel):
     # project_context_sources names the files that contributed to the context
     # the model received (a manifest that parsed to nothing does not count);
     # project_context_reason is one line, set for partial and unavailable (an
-    # absent file is never a reason by itself); project_context_origin is where
-    # the files were read from as the report shows it: relative to the working
+    # absent file is never a reason by itself); project_context_origin is the
+    # project root the files were read from (T119; the start directory when no
+    # root was found), each source named relative to it, as the report shows
+    # it: relative to the working
     # directory ("." for the directory itself), or only the directory name when
     # it lies outside it, never an absolute path; None for a PR review. All
     # None/empty when the run never reached the context node, so a pre-1.10.0
@@ -344,22 +346,33 @@ it also records the `ReviewRun.project_context_*` fields from it (T117).
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `origin` | `str` | Where the files were read from: the local directory today |
-| `files` | `tuple[tuple[str, str], ...]` | `(relative name, text)` pairs in read order, for example `("pyproject.toml", "...")` or `(".veritas/rules.md", "...")`; names are unique; `text(name)` returns one or None |
-| `problems` | `tuple[str, ...]` | One short line per file the reader had to skip, in read order (T118): `<name> over 200000 bytes, skipped`, `<name> could not be read, skipped`, `pyproject.toml is not valid UTF-8, skipped` |
+| `origin` | `str` | The project root the reader walked up to, or the start directory when it found none (T119) |
+| `files` | `tuple[tuple[str, str], ...]` | `(name, text)` pairs in read order, each name the path relative to `origin` with `/` separators, for example `("src/pkg/pyproject.toml", "...")`, `("AGENTS.md", "...")` or `(".veritas/rules.md", "...")`; names are unique; `text(name)` returns one or None by exact name; `role(key)` returns the `(name, text)` whose name is `key` or ends with `/key`, or None; at most one file plays each role key (each manifest name, each conventions name and `.veritas/rules.md`; `*.csproj` files are exempt), else `ValueError` |
+| `problems` | `tuple[str, ...]` | One short line per file the reader had to skip, in read order (T118): `<name> over 200000 bytes, skipped`, `<name> could not be read, skipped`, `<name> is not valid UTF-8, skipped` (pyproject.toml), each `<name>` relative to `origin` |
 
 `files` is a tuple of pairs rather than a mapping so that nothing can change
 it after the scope node builds it and so it compares, copies and pickles like
-any other state value. The scope node reads, from one directory (the target,
-or the file's directory for `--scope file`; no walk-up): the named manifests,
-`*.csproj` files, the conventions files up to the first one whose text is not
-blank, and `.veritas/rules.md`. A missing file is left out silently. A file
+any other state value. The scope node reads from the start directory (the
+target, or the file's directory for `--scope file`, by `os.path.abspath`, links
+not resolved) up to the project root (T119): the first directory at or above
+it holding `.git` (a directory or a file) or a `.veritas/config.toml` file; a
+bare `.veritas/` directory is not a marker. Nothing above the root is read.
+With no marker before the filesystem root or within 32 levels
+(`MAX_WALK_UP`), only the start directory is read, with no reason and no log
+line. The nearest directory holding any manifest supplies all of them (the
+named manifests, then `*.csproj` files sorted), never mixed across levels; a
+manifest that exists there but cannot be used still decides the directory and
+its problem is stated. The conventions file (AGENTS.md, CONVENTIONS.md,
+STYLE.md in that order within a directory) and `.veritas/rules.md` are each
+the nearest whose text is not blank; blank files are passed over, in the same
+directory and then upward, and are not kept. A missing file is left out silently. A file
 over 200,000 bytes (pyproject.toml included), an unreadable one, or a
 pyproject.toml that is not valid UTF-8 is left out with a line in `problems`.
 pyproject.toml is decoded as `utf-8-sig`, so a leading byte-order mark is
 dropped. `project_context_problems` (in `veritas/utils/project_context.py`)
-adds what only parsing can tell, `pyproject.toml is not valid TOML` or
-`pyproject.toml has an unexpected [project] layout` (`[project]` not a table,
+adds what only parsing can tell, `<name> is not valid TOML` or
+`<name> has an unexpected [project] layout` for the pyproject.toml read
+(`src/pkg/pyproject.toml is not valid TOML`; `[project]` not a table,
 `requires-python` not a string, `dependencies` not a list; non-string items in
 the list are skipped), and a
 `<name> truncated to 4000 characters` line for conventions or rules longer

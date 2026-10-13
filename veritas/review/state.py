@@ -19,15 +19,18 @@ from veritas.models.entities import (
 )
 from veritas.review.batching import BatchPlan
 from veritas.review.requirements_source import Requirement
+from veritas.utils.project_context import ROLE_KEYS, plays_role
 
 
 @dataclass(frozen=True, slots=True)
 class ProjectSources:
     """The project-context files the scope node read, for the context node (T116).
 
-    ``origin`` says where they came from (today the local directory they were
-    read from). ``files`` holds ``(relative name, text)`` pairs in the order
-    they were read. It is a tuple of pairs rather than a dict, or a
+    ``origin`` says where they came from: the project root the reader walked
+    up to, or the start directory when it found none (T119). ``files`` holds
+    ``(name, text)`` pairs in the order they were read, each name the file's
+    path relative to ``origin`` with ``/`` separators (``AGENTS.md``,
+    ``src/pkg/pyproject.toml``). It is a tuple of pairs rather than a dict, or a
     ``MappingProxyType`` over one, because a tuple cannot be changed in place
     by anyone, compares and hashes by value, and can be copied or pickled like
     any other state value, which a ``MappingProxyType`` cannot. The file count
@@ -35,6 +38,11 @@ class ProjectSources:
     nothing. ``problems`` holds one short line per file the reader had to
     skip (too large, unreadable, pyproject.toml not valid UTF-8; T118), for
     the report and the log.
+
+    The parsers find a file by its role (``role``): ``pyproject.toml`` is
+    played by ``pyproject.toml`` or ``src/pkg/pyproject.toml``. At most one
+    file may play each role in ``ROLE_KEYS``, so a lookup never has to choose;
+    ``*.csproj`` files are exempt, since several in one directory are normal.
     """
 
     origin: str
@@ -48,6 +56,10 @@ class ProjectSources:
         names = [name for name, _text in files]
         if len(set(names)) != len(names):
             raise ValueError(f"duplicate project source names: {names}")
+        for key in ROLE_KEYS:
+            playing = [name for name in names if plays_role(name, key)]
+            if len(playing) > 1:
+                raise ValueError(f"more than one project source plays {key}: {playing}")
         object.__setattr__(self, "files", files)
         object.__setattr__(self, "problems", tuple(self.problems))
 
@@ -56,6 +68,17 @@ class ProjectSources:
         for candidate, text in self.files:
             if candidate == name:
                 return text
+        return None
+
+    def role(self, key: str) -> tuple[str, str] | None:
+        """The ``(name, text)`` of the file playing role ``key`` (T119), or None.
+
+        ``key`` is a name in ``ROLE_KEYS``; ``__post_init__`` makes sure at
+        most one file plays it.
+        """
+        for name, text in self.files:
+            if plays_role(name, key):
+                return name, text
         return None
 
 

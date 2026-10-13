@@ -7,7 +7,10 @@ Conventions and rules text is redacted before it reaches the model (FR-013).
 
 Since T116 nothing here touches the filesystem: the scope node reads the files
 into ``ProjectSources`` and the parsers below take text. The names to read and
-the size limit live here so the reader and the parsers agree on them.
+the size limit live here so the reader and the parsers agree on them. Since
+T119 the reader walks up to the project root, so a file is named by its path
+relative to that root (``src/pkg/pyproject.toml``) and found by its role
+(``plays_role``), not by an exact name.
 ``display_origin`` reads the current working directory but only does path
 arithmetic on strings.
 """
@@ -38,6 +41,9 @@ MANIFEST_NAMES = (
     "Cargo.toml",
 )
 CSPROJ_SUFFIX = ".csproj"
+# The names a file is looked up by (``ProjectSources.role``). ``*.csproj`` is
+# not one: several may sit side by side and each is found by its suffix.
+ROLE_KEYS = (*MANIFEST_NAMES, *CONVENTIONS_FILENAMES, NATURAL_LANGUAGE_RULES_GLOB)
 # Every file larger than this is skipped unread, and the reader says so (T118).
 MAX_SOURCE_BYTES = 200_000
 # At most this many characters of conventions, and of rules, reach the model.
@@ -87,8 +93,10 @@ class ProjectContext:
         return "\n".join(lines)
 
 
-PYPROJECT_NOT_TOML = "pyproject.toml is not valid TOML"
-PYPROJECT_BAD_LAYOUT = "pyproject.toml has an unexpected [project] layout"
+# What is wrong with a pyproject.toml, stated after its name relative to the
+# project root (T119): "src/pkg/pyproject.toml is not valid TOML".
+PYPROJECT_NOT_TOML = "is not valid TOML"
+PYPROJECT_BAD_LAYOUT = "has an unexpected [project] layout"
 
 
 def _pyproject_project(text: str) -> tuple[dict, str | None]:
@@ -205,6 +213,20 @@ _MANIFEST_PARSERS = {
 }
 
 
+def plays_role(name: str, key: str) -> bool:
+    """Whether the file named ``name`` (relative to the project root, ``/``
+    separators) plays the role ``key`` (T119): it is ``key`` itself, at the
+    root, or ends with ``/key``, below it. ``key`` may have two parts
+    (``.veritas/rules.md``); ``xpyproject.toml`` does not play ``pyproject.toml``.
+    """
+    return name == key or name.endswith("/" + key)
+
+
+def basename(name: str) -> str:
+    """The last part of a relative name: ``src/pkg/go.mod`` gives ``go.mod``."""
+    return name.rsplit("/", 1)[-1]
+
+
 def is_csproj(name: str) -> bool:
     """A ``*.csproj`` name, in any letter case (the reader's glob is case-blind on Windows)."""
     return name.lower().endswith(CSPROJ_SUFFIX)
@@ -214,10 +236,10 @@ def detect_language_versions(sources: ProjectSources) -> list[str]:
     """Versions from the manifests in ``sources``: named ones first, then ``*.csproj`` in read order."""
     versions: list[str] = []
     for name in MANIFEST_NAMES:
-        text = sources.text(name)
-        if text is None:
+        found = sources.role(name)
+        if found is None:
             continue
-        _append_versions(_MANIFEST_PARSERS[name](text), versions)
+        _append_versions(_MANIFEST_PARSERS[name](found[1]), versions)
     for name, text in sources.files:
         if is_csproj(name):
             _append_versions(_parse_csproj(text), versions)
@@ -238,10 +260,10 @@ def _append_versions(parsed: object, versions: list[str]) -> None:
 def _conventions_source(sources: ProjectSources) -> tuple[str, str] | None:
     """The conventions file used: the first in ``CONVENTIONS_FILENAMES`` order
     whose text is not blank (a whitespace-only file is passed over, T118)."""
-    for name in CONVENTIONS_FILENAMES:
-        text = sources.text(name)
-        if text and text.strip():
-            return name, text
+    for key in CONVENTIONS_FILENAMES:
+        found = sources.role(key)
+        if found is not None and found[1].strip():
+            return found
     return None
 
 
@@ -253,9 +275,9 @@ def detect_conventions(sources: ProjectSources) -> str | None:
 
 def detect_natural_language_rules(sources: ProjectSources) -> str | None:
     """Natural-language-only custom rules (FR-011), redacted."""
-    text = sources.text(NATURAL_LANGUAGE_RULES_GLOB)
-    if text and text.strip():
-        return redact_secrets(text.strip())
+    found = sources.role(NATURAL_LANGUAGE_RULES_GLOB)
+    if found is not None and found[1].strip():
+        return redact_secrets(found[1].strip())
     return None
 
 
@@ -274,15 +296,16 @@ def project_context_problems(sources: ProjectSources) -> list[str]:
     not declare a version.
     """
     problems = list(sources.problems)
-    pyproject = sources.text("pyproject.toml")
+    pyproject = sources.role("pyproject.toml")
     if pyproject is not None:
-        _project, problem = _pyproject_project(pyproject)
+        _project, problem = _pyproject_project(pyproject[1])
         if problem is not None:
-            problems.append(problem)
+            problems.append(f"{pyproject[0]} {problem}")
     conventions = _conventions_source(sources)
+    rules = sources.role(NATURAL_LANGUAGE_RULES_GLOB)
     shown = (
         (conventions[0] if conventions else None, detect_conventions(sources)),
-        (NATURAL_LANGUAGE_RULES_GLOB, detect_natural_language_rules(sources)),
+        (rules[0] if rules else None, detect_natural_language_rules(sources)),
     )
     for name, text in shown:
         if name is not None and text is not None and len(text.strip()) > MAX_PROMPT_CHARS:
@@ -303,13 +326,13 @@ def contributing_sources(sources: ProjectSources) -> list[str]:
     conventions = _conventions_source(sources)
     used: list[str] = []
     for name, text in sources.files:
-        if name in _MANIFEST_PARSERS:
-            contributed = bool(_MANIFEST_PARSERS[name](text))
+        if basename(name) in _MANIFEST_PARSERS:
+            contributed = bool(_MANIFEST_PARSERS[basename(name)](text))
         elif is_csproj(name):
             contributed = _parse_csproj(text) is not None
         elif conventions is not None and name == conventions[0]:
             contributed = bool(text.strip())
-        elif name == NATURAL_LANGUAGE_RULES_GLOB:
+        elif plays_role(name, NATURAL_LANGUAGE_RULES_GLOB):
             contributed = bool(text.strip())
         else:
             contributed = False

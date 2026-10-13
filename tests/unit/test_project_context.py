@@ -21,7 +21,12 @@ from veritas.models.entities import ProjectContextStatus, ReviewRun, ReviewScope
 from veritas.review.contexts import ReviewContext
 from veritas.review.nodes import context as context_module
 from veritas.review.nodes.context import make_context_node, project_context_record
-from veritas.review.nodes.scope import _project_context_root, _read_project_sources
+from veritas.review.nodes.scope import (
+    MAX_WALK_UP,
+    _find_project_root,
+    _project_context_start,
+    _read_project_sources,
+)
 from veritas.review.state import ProjectSources
 from veritas.utils.logging import Log
 from veritas.utils.project_context import (
@@ -334,20 +339,23 @@ def test_reader_reads_the_files_in_order(tmp_path):
 
 
 def test_reader_stops_at_the_first_non_empty_conventions_file(tmp_path):
+    """T119: the empty AGENTS.md it passed over is no longer kept."""
     _write(tmp_path / "AGENTS.md", "")
     _write(tmp_path / "CONVENTIONS.md", "Conventions.\n")
     _write(tmp_path / "STYLE.md", "Style.\n")
     sources = _read_project_sources(str(tmp_path))
-    assert sources.files == (("AGENTS.md", ""), ("CONVENTIONS.md", "Conventions.\n"))
+    assert sources.files == (("CONVENTIONS.md", "Conventions.\n"),)
 
 
 def test_reader_keeps_searching_past_a_blank_conventions_file(tmp_path):
-    """T118: whitespace-only text does not stop the search."""
+    """T118: whitespace-only text does not stop the search. T119: the blank
+    files passed over are not kept, so they can never collide with a real
+    conventions file higher up."""
     _write(tmp_path / "AGENTS.md", "  \n\t\n")
     _write(tmp_path / "CONVENTIONS.md", "")
     _write(tmp_path / "STYLE.md", "Style.\n")
     sources = _read_project_sources(str(tmp_path))
-    assert sources.files == (("AGENTS.md", "  \n\t\n"), ("CONVENTIONS.md", ""), ("STYLE.md", "Style.\n"))
+    assert sources.files == (("STYLE.md", "Style.\n"),)
     assert sources.problems == ()
 
 
@@ -478,11 +486,194 @@ def test_reader_of_a_missing_directory_reads_nothing(tmp_path):
     assert _read_project_sources(str(tmp_path / "missing")).files == ()
 
 
-def test_context_root_is_the_files_directory_for_file_scope(tmp_path):
+def test_context_start_is_the_files_directory_for_file_scope(tmp_path):
     target = tmp_path / "src" / "app.py"
-    assert _project_context_root(ReviewScope.FILE, str(target)) == str(tmp_path / "src")
-    assert _project_context_root(ReviewScope.MODULE, str(tmp_path / "src")) == str(tmp_path / "src")
-    assert _project_context_root(ReviewScope.PROJECT, str(tmp_path)) == str(tmp_path)
+    assert _project_context_start(ReviewScope.FILE, str(target)) == str(tmp_path / "src")
+    assert _project_context_start(ReviewScope.MODULE, str(tmp_path / "src")) == str(tmp_path / "src")
+    assert _project_context_start(ReviewScope.PROJECT, str(tmp_path)) == str(tmp_path)
+
+
+# --- T119: walking up to the project root --------------------------------------
+#
+# These rely on no ancestor of tmp_path being a project root, which
+# tests/integration/test_project_context_golden.py guards.
+
+
+def _nested(base: Path, levels: int) -> Path:
+    path = base
+    for _ in range(levels):
+        path = path / "d"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def test_root_is_found_up_to_max_walk_up_levels_and_no_further(tmp_path):
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    _write(project / "pyproject.toml", '[project]\nrequires-python = ">=3.12"\n')
+    at_cap = _nested(project, MAX_WALK_UP)
+    beyond = _nested(project, MAX_WALK_UP + 1)
+    assert _find_project_root(str(at_cap)) == str(project)
+    assert [name for name, _ in _read_project_sources(str(at_cap)).files] == ["pyproject.toml"]
+    # One level more: no root, so only the start directory is read.
+    assert _find_project_root(str(beyond)) is None
+    sources = _read_project_sources(str(beyond))
+    assert sources.origin == str(beyond)
+    assert sources.files == ()
+    assert sources.problems == ()
+
+
+def test_no_marker_up_to_the_filesystem_root_reads_the_start_directory_only(tmp_path):
+    _write(tmp_path / "pyproject.toml", '[project]\nrequires-python = ">=3.12"\n')
+    _write(tmp_path / "AGENTS.md", "Agents.\n")
+    start = tmp_path / "src"
+    _write(start / "go.mod", "go 1.22\n")
+    assert _find_project_root(str(start)) is None
+    sources = _read_project_sources(str(start))
+    assert sources.origin == str(start)
+    assert sources.files == (("go.mod", "go 1.22\n"),)
+    assert sources.problems == ()
+
+
+def test_a_bare_veritas_directory_is_not_a_marker(tmp_path):
+    """Veritas creates .veritas/ wherever it runs, so it cannot mark a project."""
+    project = tmp_path / "project"
+    _write(project / ".veritas" / "rules.md", "Rules.\n")
+    _write(project / "pyproject.toml", '[project]\nrequires-python = ">=3.12"\n')
+    (project / "src").mkdir()
+    assert _find_project_root(str(project / "src")) is None
+    assert _read_project_sources(str(project / "src")).files == ()
+
+
+def test_a_veritas_config_toml_file_is_a_marker(tmp_path):
+    project = tmp_path / "project"
+    _write(project / ".veritas" / "config.toml", "")
+    _write(project / ".veritas" / "rules.md", "Rules.\n")
+    _write(project / "pyproject.toml", '[project]\nrequires-python = ">=3.12"\n')
+    (project / "src").mkdir()
+    assert _find_project_root(str(project / "src")) == str(project)
+    sources = _read_project_sources(str(project / "src"))
+    assert sources.origin == str(project)
+    assert [name for name, _ in sources.files] == ["pyproject.toml", ".veritas/rules.md"]
+
+
+def test_a_git_file_is_a_marker(tmp_path):
+    """A git worktree or submodule has a .git file, not a directory."""
+    project = tmp_path / "project"
+    _write(project / ".git", "gitdir: ../.git/worktrees/project\n")
+    _write(project / "go.mod", "go 1.22\n")
+    (project / "src").mkdir()
+    assert _find_project_root(str(project / "src")) == str(project)
+    assert _read_project_sources(str(project / "src")).files == (("go.mod", "go 1.22\n"),)
+
+
+def test_the_start_directory_itself_can_be_the_root(tmp_path):
+    (tmp_path / ".git").mkdir()
+    assert _find_project_root(str(tmp_path)) == str(tmp_path)
+
+
+def test_nothing_above_the_project_root_is_read(tmp_path):
+    outer = tmp_path / "outer"
+    _write(outer / "pyproject.toml", '[project]\nrequires-python = ">=3.12"\n')
+    _write(outer / "AGENTS.md", "Outer agents.\n")
+    _write(outer / ".veritas" / "rules.md", "Outer rules.\n")
+    project = outer / "project"
+    (project / ".git").mkdir(parents=True)
+    (project / "src").mkdir()
+    sources = _read_project_sources(str(project / "src"))
+    assert sources.origin == str(project)
+    assert sources.files == ()
+
+
+def test_files_are_named_relative_to_the_root_and_found_by_role(tmp_path):
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    _write(project / "src" / "pkg" / "go.mod", "go 1.22\n")
+    _write(project / "src" / "AGENTS.md", "Src agents.\n")
+    _write(project / "AGENTS.md", "Root agents.\n")
+    _write(project / "src" / "pkg" / ".veritas" / "rules.md", "Pkg rules.\n")
+    sources = _read_project_sources(str(project / "src" / "pkg"))
+    assert sources.files == (
+        ("src/pkg/go.mod", "go 1.22\n"),
+        ("src/AGENTS.md", "Src agents.\n"),
+        ("src/pkg/.veritas/rules.md", "Pkg rules.\n"),
+    )
+    assert detect_language_versions(sources) == ["Go 1.22"]
+    assert detect_conventions(sources) == "Src agents."
+    assert detect_natural_language_rules(sources) == "Pkg rules."
+    assert contributing_sources(sources) == ["src/pkg/go.mod", "src/AGENTS.md", "src/pkg/.veritas/rules.md"]
+
+
+def test_a_too_large_nested_pyproject_still_decides_the_manifest_directory(tmp_path):
+    """The nested file exists, so its directory supplies the manifests even
+    though it cannot be used: the root's pyproject.toml is not read."""
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    _write(project / "pyproject.toml", '[project]\nrequires-python = ">=3.12"\n')
+    _write(project / "src" / "pkg" / "pyproject.toml", "#" * 200_001)
+    sources = _read_project_sources(str(project / "src" / "pkg"))
+    assert sources.files == ()
+    assert sources.problems == ("src/pkg/pyproject.toml over 200000 bytes, skipped",)
+    assert detect_language_versions(sources) == []
+
+
+def test_a_nested_invalid_toml_problem_names_the_relative_path(tmp_path):
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    _write(project / "pyproject.toml", '[project]\nrequires-python = ">=3.12"\n')
+    _write(project / "src" / "pkg" / "pyproject.toml", "[project\n")
+    sources = _read_project_sources(str(project / "src" / "pkg"))
+    assert [name for name, _ in sources.files] == ["src/pkg/pyproject.toml"]
+    assert project_context_problems(sources) == ["src/pkg/pyproject.toml is not valid TOML"]
+
+
+def test_a_nested_unexpected_layout_problem_names_the_relative_path():
+    sources = _sources(("src/pkg/pyproject.toml", 'project = "x"\n'))
+    assert project_context_problems(sources) == [
+        "src/pkg/pyproject.toml has an unexpected [project] layout"
+    ]
+
+
+def test_truncation_names_nested_conventions_and_rules_by_their_relative_path():
+    sources = _sources(("src/AGENTS.md", "a" * 4001), ("src/.veritas/rules.md", "r" * 4001))
+    assert project_context_problems(sources) == [
+        "src/AGENTS.md truncated to 4000 characters",
+        "src/.veritas/rules.md truncated to 4000 characters",
+    ]
+
+
+def test_role_matches_the_name_itself_or_a_last_path_part():
+    sources = _sources(("src/pkg/pyproject.toml", "p"), (".veritas/rules.md", "r"))
+    assert sources.role("pyproject.toml") == ("src/pkg/pyproject.toml", "p")
+    assert sources.role(".veritas/rules.md") == (".veritas/rules.md", "r")
+    assert sources.role("go.mod") is None
+    assert _sources(("xpyproject.toml", "p")).role("pyproject.toml") is None
+
+
+@pytest.mark.parametrize(
+    "files, key",
+    [
+        ((("pyproject.toml", "a"), ("src/pkg/pyproject.toml", "b")), "pyproject.toml"),
+        ((("AGENTS.md", "a"), ("src/AGENTS.md", "b")), "AGENTS.md"),
+        ((("src/.veritas/rules.md", "a"), (".veritas/rules.md", "b")), ".veritas/rules.md"),
+    ],
+    ids=["manifest", "conventions", "rules"],
+)
+def test_two_files_playing_one_role_are_rejected(files, key):
+    with pytest.raises(ValueError, match=f"more than one project source plays {key}"):
+        _sources(*files)
+
+
+def test_two_csproj_files_in_one_directory_are_not_a_collision(tmp_path):
+    """*.csproj is found by its suffix, and several side by side are normal."""
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    _write(project / "src" / "Api.csproj", "<TargetFramework>net8.0</TargetFramework>")
+    _write(project / "src" / "Lib.csproj", "<TargetFramework>net6.0</TargetFramework>")
+    sources = _read_project_sources(str(project / "src"))
+    assert [name for name, _ in sources.files] == ["src/Api.csproj", "src/Lib.csproj"]
+    assert detect_language_versions(sources) == [".NET net8.0", ".NET net6.0"]
+    assert contributing_sources(sources) == ["src/Api.csproj", "src/Lib.csproj"]
 
 
 # --- the report states the project context (T117, FR-009) ----------------------

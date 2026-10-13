@@ -38,7 +38,7 @@ PR_NOT_READ_REASON = "not read for PR reviews yet"
 def project_context_record(scope: ReviewScope, sources: ProjectSources | None) -> dict:
     """The ``ReviewRun`` fields stating the project context this review used (FR-009).
 
-    PR review: unavailable (T119 reads the files for PRs). Local review: the
+    PR review: unavailable (T120 reads the files for PRs). Local review: the
     files that contributed, and detected when there are any. Problems (from
     ``project_context_problems``: reading, parsing and truncation) make it
     partial when something was still detected and unavailable when not, with

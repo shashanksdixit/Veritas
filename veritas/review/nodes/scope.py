@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from veritas.config.constants import (
+    CONFIG_PATH,
     CONVENTIONS_FILENAMES,
     MAX_SCOPE_FILES,
     NATURAL_LANGUAGE_RULES_GLOB,
@@ -209,12 +210,43 @@ def _read_local_file(path: str) -> str:
         raise ReviewNotFoundError(f"cannot read target file {path}: {exc}") from exc
 
 
-def _project_context_root(scope: ReviewScope, target: str) -> str:
-    """The one directory project context is read from: the file's directory
-    for ``--scope file``, else the target itself (no walk-up yet)."""
+# How many levels above the start directory the project-root search looks
+# (T119). Reaching the cap without a marker counts as finding no root.
+MAX_WALK_UP = 32
+
+
+def _project_context_start(scope: ReviewScope, target: str) -> str:
+    """The directory the project-context search starts from: the file's
+    directory for ``--scope file``, else the target itself (T119 walks up
+    from here to the project root)."""
     if scope == ReviewScope.FILE:
         return os.path.dirname(os.path.abspath(target)) or os.getcwd()
     return os.path.abspath(target)
+
+
+def _find_project_root(start: str) -> str | None:
+    """The project root above ``start`` (T119, FR-009), or None when there is none.
+
+    The first directory from ``start`` upward, ``start`` included, holding
+    ``.git`` (a directory, or a file for a git worktree or submodule, so a
+    submodule is its own project) or a ``.veritas/config.toml`` file. A bare
+    ``.veritas/`` directory is not a marker: Veritas creates one wherever it
+    runs. None when the filesystem root, or ``MAX_WALK_UP`` levels above
+    ``start``, is reached without a marker. Parents are found by string
+    arithmetic on ``os.path.abspath`` (links are not resolved, so subst and
+    mapped drives keep their names and a link loop cannot happen).
+    """
+    current = os.path.abspath(start)
+    for _level in range(MAX_WALK_UP + 1):
+        if os.path.lexists(os.path.join(current, ".git")) or os.path.isfile(
+            os.path.join(current, CONFIG_PATH)
+        ):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+    return None
 
 
 def _read_source(
@@ -243,47 +275,70 @@ def _read_source(
         return None, f"{name} is not valid UTF-8, skipped"
 
 
-def _read_project_sources(root: str) -> ProjectSources:
-    """Read the project-context files from ``root`` (T116/T118, FR-009/FR-010/FR-011).
+def _read_project_sources(start: str) -> ProjectSources:
+    """Read the project-context files from ``start`` up to the project root
+    (T116/T118/T119, FR-009/FR-010/FR-011).
 
-    From the one directory (no walk-up): each manifest in ``MANIFEST_NAMES``
-    then every ``*.csproj`` (sorted), the conventions files in
-    ``CONVENTIONS_FILENAMES`` order up to the first one with non-blank text,
-    and ``.veritas/rules.md``. A missing file is left out silently. A file
-    that is too large, unreadable or (pyproject.toml) not valid UTF-8 is left
-    out with a problem in ``ProjectSources.problems``.
+    The root is ``_find_project_root(start)``; without one, only ``start`` is
+    read. Nothing above the root is read. Each file is named by its path
+    relative to the root with ``/`` separators, and the root is the origin.
+
+    - Manifests: the nearest directory holding any manifest (one in
+      ``MANIFEST_NAMES`` or a ``*.csproj``) supplies all of them, named ones
+      first and then every ``*.csproj`` sorted; levels are never mixed. A
+      manifest that exists but cannot be used still decides the directory,
+      and its problem is stated.
+    - Conventions: the nearest file whose text is not blank, trying
+      ``CONVENTIONS_FILENAMES`` in order within each directory before going up.
+    - ``.veritas/rules.md``: the nearest whose text is not blank.
+
+    A blank conventions or rules file is passed over and not kept. A missing
+    file is left out silently. A file that is too large, unreadable or
+    (pyproject.toml) not valid UTF-8 is left out with a problem in
+    ``ProjectSources.problems``, in read order.
     """
+    start = os.path.abspath(start)
+    root = _find_project_root(start) or start
+    levels = [start]
+    while levels[-1] != root:
+        levels.append(os.path.dirname(levels[-1]))
     root_path = Path(root)
+    directories = [Path(level) for level in levels]
     files: list[tuple[str, str]] = []
     problems: list[str] = []
 
-    def read(path: Path, name: str, *, strict_utf8: bool = False) -> str | None:
+    def read(path: Path, *, strict_utf8: bool = False) -> tuple[str, str | None]:
+        name = path.relative_to(root_path).as_posix()
         text, problem = _read_source(path, name, strict_utf8=strict_utf8)
         if problem is not None:
             problems.append(problem)
-        if text is not None:
-            files.append((name, text))
-        return text
+        return name, text
 
-    if root_path.is_dir():
-        for name in MANIFEST_NAMES:
-            path = root_path / name
-            if path.is_file():
-                read(path, name, strict_utf8=name == "pyproject.toml")
-        for path in sorted(root_path.glob(f"*{CSPROJ_SUFFIX}")):
-            if path.is_file():
-                read(path, path.name)
-        for name in CONVENTIONS_FILENAMES:
-            path = root_path / name
-            if not path.is_file():
-                continue
-            text = read(path, name)
-            if text is not None and text.strip():
-                break
-    rules = root_path / NATURAL_LANGUAGE_RULES_GLOB
-    if rules.is_file():
-        read(rules, NATURAL_LANGUAGE_RULES_GLOB)
-    return ProjectSources(origin=str(root_path), files=tuple(files), problems=tuple(problems))
+    for directory in directories:
+        manifests = [directory / name for name in MANIFEST_NAMES if (directory / name).is_file()]
+        manifests += [path for path in sorted(directory.glob(f"*{CSPROJ_SUFFIX}")) if path.is_file()]
+        if not manifests:
+            continue
+        for path in manifests:
+            name, text = read(path, strict_utf8=path.name == "pyproject.toml")
+            if text is not None:
+                files.append((name, text))
+        break
+
+    def nearest_non_blank(keys: Sequence[str]) -> None:
+        for directory in directories:
+            for key in keys:
+                path = directory / key
+                if not path.is_file():
+                    continue
+                name, text = read(path)
+                if text is not None and text.strip():
+                    files.append((name, text))
+                    return
+
+    nearest_non_blank(CONVENTIONS_FILENAMES)
+    nearest_non_blank((NATURAL_LANGUAGE_RULES_GLOB,))
+    return ProjectSources(origin=root, files=tuple(files), problems=tuple(problems))
 
 
 def _walk_local_scope(
@@ -479,11 +534,11 @@ def make_scope_node(ctx: ScopeContext) -> Callable[[ReviewState], dict]:
             }
         )
         # FR-009/FR-010/FR-011: read last, so the log up to here is unchanged.
-        # A PR review has no local files to read (T119 fetches them).
+        # A PR review has no local files to read (T120 fetches them).
         project_sources = (
             None
             if scope == ReviewScope.PR
-            else _read_project_sources(_project_context_root(scope, target))
+            else _read_project_sources(_project_context_start(scope, target))
         )
         return {
             "files": files,
