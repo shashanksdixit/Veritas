@@ -6,6 +6,7 @@ from veritas.models.entities import (
     Coverage,
     ExcludedFile,
     LineRange,
+    ProjectContextStatus,
     Report,
     ReportStatus,
     RequirementStatus,
@@ -222,3 +223,40 @@ def test_sast_line_when_the_scan_did_not_run():
 
 def test_no_sast_line_when_sast_was_never_reached():
     assert _sast_lines() == []
+
+
+# --- one line says whether project context was used (T117, FR-009) ---
+
+
+def _context_lines(**fields) -> list[str]:
+    report = _report()
+    report.run = report.run.model_copy(update=fields)
+    return [line for line in render_compact(report).splitlines() if line.startswith("Context")]
+
+
+def test_context_line_when_detected():
+    assert _context_lines(
+        project_context_status=ProjectContextStatus.DETECTED,
+        project_context_sources=["pyproject.toml", "AGENTS.md"],
+        project_context_origin=".",
+    ) == ["Context: detected (pyproject.toml, AGENTS.md)"]
+
+
+def test_context_line_when_partial_keeps_the_reason():
+    assert _context_lines(
+        project_context_status=ProjectContextStatus.PARTIAL,
+        project_context_sources=["pyproject.toml"],
+        project_context_origin=".",
+        project_context_reason="AGENTS.md over 200000 bytes, skipped",
+    ) == ["Context: partial (pyproject.toml) — AGENTS.md over 200000 bytes, skipped"]
+
+
+def test_context_line_when_unavailable_states_the_reason():
+    assert _context_lines(
+        project_context_status=ProjectContextStatus.UNAVAILABLE,
+        project_context_reason="not read for PR reviews yet",
+    ) == ["Context: unavailable — not read for PR reviews yet"]
+
+
+def test_no_context_line_when_the_context_node_was_never_reached():
+    assert _context_lines() == []

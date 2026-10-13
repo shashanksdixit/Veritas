@@ -108,6 +108,21 @@ class ReviewRun(BaseModel):
     sast_status: SastStatus | None = None   # "ran" | "not_run"
     sast_result_count: int | None = None
     sast_reason: str | None = None
+    # Report.schema_version 1.10.0 (FR-009): set by the context node.
+    # project_context_status is "detected", "partial" or "unavailable";
+    # project_context_sources names the files that contributed to the context
+    # the model received (a manifest that parsed to nothing does not count);
+    # project_context_reason is one line, set for partial and unavailable (an
+    # absent file is never a reason by itself); project_context_origin is where
+    # the files were read from as the report shows it: relative to the working
+    # directory ("." for the directory itself), or only the directory name when
+    # it lies outside it, never an absolute path; None for a PR review. All
+    # None/empty when the run never reached the context node, so a pre-1.10.0
+    # report still validates; consumers treat None as "not recorded".
+    project_context_status: ProjectContextStatus | None = None  # "detected" | "partial" | "unavailable"
+    project_context_sources: list[str] = []
+    project_context_reason: str | None = None
+    project_context_origin: str | None = None
 ```
 
 ### CodeFinding (spec Key Entity: "Code Finding")
@@ -274,7 +289,7 @@ class FailedBatch(BaseModel):
 
 class Report(BaseModel):
     """The full review deliverable (FR-016)."""
-    schema_version: str = "1.9.0"    # semver; bump on any breaking change to
+    schema_version: str = "1.10.0"   # semver; bump on any breaking change to
                                       # Report/CodeFinding/RequirementFinding shape,
                                       # per CHANGELOG.md (constitution Principle VIII)
     run: ReviewRun
@@ -321,7 +336,8 @@ class ReviewState(TypedDict):
 
 `project_sources: ProjectSources | None` is an overwrite channel written only
 by the scope node; it starts as None and stays None for `--scope pr`. The
-context node renders project context from it and never reads the filesystem.
+context node renders project context from it and never reads the filesystem;
+it also records the `ReviewRun.project_context_*` fields from it (T117).
 
 `ProjectSources` (in `veritas/review/state.py`) is
 `@dataclass(frozen=True, slots=True)`:

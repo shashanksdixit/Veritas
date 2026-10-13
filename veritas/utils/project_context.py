@@ -7,10 +7,13 @@ nothing is detectable a ``note`` records that project context is unavailable.
 Since T116 nothing here touches the filesystem: the scope node reads the files
 into ``ProjectSources`` and the parsers below take text. The names to read and
 the size limit live here so the reader and the parsers agree on them.
+``display_origin`` reads the current working directory but only does path
+arithmetic on strings.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -200,13 +203,19 @@ def _append_versions(parsed: object, versions: list[str]) -> None:
         versions.append(parsed)
 
 
-def detect_conventions(sources: ProjectSources) -> str | None:
-    """Project conventions/AGENTS.md-equivalent (FR-010): the first non-empty one."""
+def _conventions_source(sources: ProjectSources) -> tuple[str, str] | None:
+    """The conventions file used: the first in ``CONVENTIONS_FILENAMES`` order with any text."""
     for name in CONVENTIONS_FILENAMES:
         text = sources.text(name)
         if text:
-            return text.strip()
+            return name, text
     return None
+
+
+def detect_conventions(sources: ProjectSources) -> str | None:
+    """Project conventions/AGENTS.md-equivalent (FR-010): the first non-empty one."""
+    found = _conventions_source(sources)
+    return found[1].strip() if found is not None else None
 
 
 def detect_natural_language_rules(sources: ProjectSources) -> str | None:
@@ -215,6 +224,54 @@ def detect_natural_language_rules(sources: ProjectSources) -> str | None:
     if text:
         return text.strip()
     return None
+
+
+def contributing_sources(sources: ProjectSources) -> list[str]:
+    """The names of the files that put something into the rendered context, in read order.
+
+    A file counts only when it changes what ``ProjectContext.render`` shows: a
+    manifest when its parser extracts at least one version from it, the
+    conventions file ``detect_conventions`` picked when its text is not blank,
+    and the rules file when its text is not blank. A file that was read but
+    parsed to nothing (a pyproject.toml with no requires-python and no pinned
+    dependency, a package.json without engines.node) is not a source.
+    """
+    conventions = _conventions_source(sources)
+    used: list[str] = []
+    for name, text in sources.files:
+        if name in _MANIFEST_PARSERS:
+            contributed = bool(_MANIFEST_PARSERS[name](text))
+        elif is_csproj(name):
+            contributed = _parse_csproj(text) is not None
+        elif conventions is not None and name == conventions[0]:
+            contributed = bool(text.strip())
+        elif name == NATURAL_LANGUAGE_RULES_GLOB:
+            contributed = bool(text.strip())
+        else:
+            contributed = False
+        if contributed:
+            used.append(name)
+    return used
+
+
+def display_origin(origin: str, cwd: str | None = None) -> str:
+    """Where project context was read from, as the report shows it: never an absolute path.
+
+    The origin itself when it is the working directory (``"."``); the path
+    relative to the working directory, with ``/`` separators, when it lies
+    below it; otherwise only the origin's directory name. Pure path arithmetic
+    on strings: nothing on disk is read.
+    """
+    here = os.path.normpath(os.path.abspath(cwd if cwd is not None else os.getcwd()))
+    there = os.path.normpath(os.path.abspath(origin))
+    try:
+        inside = os.path.normcase(os.path.commonpath([here, there])) == os.path.normcase(here)
+    except ValueError:  # different drives on Windows
+        inside = False
+    if inside:
+        return os.path.relpath(there, here).replace(os.sep, "/")
+    # A filesystem root has no name; say so rather than print the root itself.
+    return os.path.basename(there) or "(filesystem root)"
 
 
 def build_project_context(sources: ProjectSources) -> ProjectContext:

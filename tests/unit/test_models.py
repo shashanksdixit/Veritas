@@ -100,7 +100,7 @@ def test_report_roundtrip_json():
             verdict=V.CLEAN,
         ),
     )
-    assert report.schema_version == "1.9.0"
+    assert report.schema_version == "1.10.0"
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.run.id == report.run.id
 
@@ -364,7 +364,7 @@ def test_sast_rules_round_trips_at_schema_1_7_0():
             verdict=Verdict.CLEAN,
         ),
     )
-    assert report.schema_version == "1.9.0"
+    assert report.schema_version == "1.10.0"
 
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.run.sast_rules == "r/corp-pack"
@@ -425,10 +425,10 @@ def test_sast_status_fields_round_trip_at_schema_1_9_0(status, count, reason):
             sast_reason=reason,
         )
     )
-    assert report.schema_version == "1.9.0"
+    assert report.schema_version == "1.10.0"
 
     dumped = json.loads(report.model_dump_json())
-    assert dumped["schema_version"] == "1.9.0"
+    assert dumped["schema_version"] == "1.10.0"
     assert dumped["run"]["sast_status"] == status
 
     restored = Report.model_validate_json(report.model_dump_json())
@@ -477,3 +477,91 @@ def test_sast_status_values_are_ran_and_not_run():
     from veritas.models.entities import SastStatus
 
     assert [status.value for status in SastStatus] == ["ran", "not_run"]
+
+
+# --- schema 1.10.0 adds ReviewRun.project_context_* (T117, FR-009) ---
+
+
+@pytest.mark.parametrize(
+    ("status", "sources", "reason", "origin"),
+    [
+        ("detected", ["pyproject.toml", "AGENTS.md"], None, "."),
+        ("partial", ["pyproject.toml"], "AGENTS.md over 200000 bytes, skipped", "src"),
+        ("unavailable", [], "not read for PR reviews yet", None),
+    ],
+)
+def test_project_context_fields_round_trip_at_schema_1_10_0(status, sources, reason, origin):
+    from veritas.models.entities import ProjectContextStatus, Report
+
+    report = _report_with_run(
+        ReviewRun(
+            scope=ReviewScope.PROJECT,
+            target=".",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.0.0",
+            project_context_status=ProjectContextStatus(status),
+            project_context_sources=sources,
+            project_context_reason=reason,
+            project_context_origin=origin,
+        )
+    )
+    assert report.schema_version == "1.10.0"
+
+    dumped = json.loads(report.model_dump_json())
+    assert dumped["schema_version"] == "1.10.0"
+    assert dumped["run"]["project_context_status"] == status
+    assert dumped["run"]["project_context_sources"] == sources
+
+    restored = Report.model_validate_json(report.model_dump_json())
+    assert restored.run.project_context_status is ProjectContextStatus(status)
+    assert restored.run.project_context_sources == sources
+    assert restored.run.project_context_reason == reason
+    assert restored.run.project_context_origin == origin
+
+
+def test_a_1_9_report_still_validates_with_project_context_fields_unset():
+    """Schema 1.10.0 is additive: a 1.9.0 report has none of the new keys."""
+    from veritas.models.entities import Report
+
+    pre_1_10 = {
+        "schema_version": "1.9.0",
+        "run": {
+            "scope": "project",
+            "target": ".",
+            "config_hash": "h",
+            "model_name": "m",
+            "prompt_version": "1.0.0",
+            "report_status": "complete",
+            "sast_rules": "p/owasp-top-ten",
+            "sast_status": "ran",
+            "sast_result_count": 0,
+        },
+        "code_findings": [],
+        "requirement_findings": [],
+        "summary": {
+            "total_code_findings": 0,
+            "total_requirement_findings": 0,
+            "verification_failure_count": 0,
+            "verdict": "Clean",
+        },
+        "failed_batches": [],
+    }
+
+    restored = Report.model_validate(pre_1_10)
+
+    assert restored.schema_version == "1.9.0"
+    assert restored.run.project_context_status is None
+    assert restored.run.project_context_sources == []
+    assert restored.run.project_context_reason is None
+    assert restored.run.project_context_origin is None
+
+
+def test_project_context_status_values():
+    from veritas.models.entities import ProjectContextStatus
+
+    assert [status.value for status in ProjectContextStatus] == [
+        "detected",
+        "partial",
+        "unavailable",
+    ]

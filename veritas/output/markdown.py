@@ -13,6 +13,7 @@ from veritas.models.entities import (
     CodeFinding,
     Coverage,
     FailedBatch,
+    ProjectContextStatus,
     Report,
     RequirementStatus,
     ReviewRun,
@@ -298,6 +299,26 @@ def sast_header_line(run: ReviewRun) -> str | None:
     return f"- **SAST**: not run — {run.sast_reason} (rules configured: `{run.sast_rules}`)"
 
 
+def project_context_header_line(run: ReviewRun) -> str | None:
+    """The report header's one project-context line (FR-009), or None when the
+    run never reached the context node.
+
+    Detected and partial name the files that contributed and where they were
+    read from; partial and unavailable end with the reason.
+    """
+    status = run.project_context_status
+    if status is None:
+        return None
+    if status is ProjectContextStatus.UNAVAILABLE:
+        return f"- **Project context**: unavailable — {run.project_context_reason}"
+    used = ", ".join(run.project_context_sources)
+    origin = f" (from {run.project_context_origin})" if run.project_context_origin else ""
+    line = f"- **Project context**: {status.value} — {used}{origin}"
+    if status is ProjectContextStatus.PARTIAL:
+        return f"{line}; {run.project_context_reason}"
+    return line
+
+
 def render_markdown(report: Report) -> str:
     """Render the full report as GFM Markdown (SC-007)."""
     run = report.run
@@ -313,6 +334,9 @@ def render_markdown(report: Report) -> str:
     sast_line = sast_header_line(run)
     if sast_line:
         out.append(sast_line)
+    context_line = project_context_header_line(run)
+    if context_line:
+        out.append(context_line)
     out.append(f"- **Input revision**: `{run.input_revision or 'n/a'}`")
     out.append(f"- **Report status**: `{run.report_status.value}`")
     if run.error:

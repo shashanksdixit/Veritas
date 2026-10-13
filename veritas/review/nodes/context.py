@@ -6,16 +6,60 @@ unavailable" note (US4 edge).
 
 The node never touches the filesystem (T116): the scope node reads the files
 into the ``project_sources`` channel, and this node only renders them.
+
+It also records on the run whether project context was detected, partial or
+unavailable, and why (T117, FR-009), so the report can say so. The node runs
+alone between scope and the fan-out, so nothing else writes ``run`` then.
 """
 
 from __future__ import annotations
 
 from typing import Callable
 
-from veritas.models.entities import ReviewScope
+from veritas.models.entities import ProjectContextStatus, ReviewRun, ReviewScope
 from veritas.review.contexts import ReviewContext
-from veritas.review.state import ReviewState
-from veritas.utils.project_context import build_project_context
+from veritas.review.state import ProjectSources, ReviewState
+from veritas.utils.project_context import (
+    build_project_context,
+    contributing_sources,
+    display_origin,
+)
+
+# The one-line reasons recorded on the run (FR-009). An absent file is never a
+# reason by itself: these name what the run could not use as a whole.
+NOTHING_FOUND_REASON = "no manifest, conventions file or rules file found"
+PR_NOT_READ_REASON = "not read for PR reviews yet"
+
+
+def project_context_record(scope: ReviewScope, sources: ProjectSources | None) -> dict:
+    """The ``ReviewRun`` fields stating the project context this review used (FR-009).
+
+    PR review: unavailable (T119 reads the files for PRs). Local review: the
+    files that contributed, and detected when there are any. Reading problems
+    make it partial when something was still detected and unavailable when not,
+    with the problems as the reason.
+    """
+    if scope == ReviewScope.PR or sources is None:
+        return {
+            "project_context_status": ProjectContextStatus.UNAVAILABLE,
+            "project_context_sources": [],
+            "project_context_reason": PR_NOT_READ_REASON,
+            "project_context_origin": None,
+        }
+    used = contributing_sources(sources)
+    if sources.problems:
+        status = ProjectContextStatus.PARTIAL if used else ProjectContextStatus.UNAVAILABLE
+        reason: str | None = "; ".join(sources.problems)
+    elif used:
+        status, reason = ProjectContextStatus.DETECTED, None
+    else:
+        status, reason = ProjectContextStatus.UNAVAILABLE, NOTHING_FOUND_REASON
+    return {
+        "project_context_status": status,
+        "project_context_sources": used,
+        "project_context_reason": reason,
+        "project_context_origin": display_origin(sources.origin),
+    }
 
 
 def make_context_node(ctx: ReviewContext) -> Callable[[ReviewState], dict]:
@@ -32,6 +76,9 @@ def make_context_node(ctx: ReviewContext) -> Callable[[ReviewState], dict]:
             for entry in project.language_versions:
                 ctx.log.info(f"Detected: {entry}")
             rendered = project.render()
-        return {"project_context": rendered}
+        run: ReviewRun = state["run"].model_copy(
+            update=project_context_record(state["scope"], state.get("project_sources"))
+        )
+        return {"project_context": rendered, "run": run}
 
     return node

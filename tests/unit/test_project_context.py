@@ -13,8 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from veritas.models.entities import ReviewScope
+from veritas.models.entities import ProjectContextStatus, ReviewScope
 from veritas.review.nodes import context as context_module
+from veritas.review.nodes.context import project_context_record
 from veritas.review.nodes.scope import _project_context_root, _read_project_sources
 from veritas.review.state import ProjectSources
 from veritas.utils.project_context import (
@@ -26,9 +27,11 @@ from veritas.utils.project_context import (
     _parse_pom,
     _parse_pyproject,
     build_project_context,
+    contributing_sources,
     detect_conventions,
     detect_language_versions,
     detect_natural_language_rules,
+    display_origin,
 )
 
 
@@ -304,3 +307,128 @@ def test_context_root_is_the_files_directory_for_file_scope(tmp_path):
     assert _project_context_root(ReviewScope.FILE, str(target)) == str(tmp_path / "src")
     assert _project_context_root(ReviewScope.MODULE, str(tmp_path / "src")) == str(tmp_path / "src")
     assert _project_context_root(ReviewScope.PROJECT, str(tmp_path)) == str(tmp_path)
+
+
+# --- the report states the project context (T117, FR-009) ----------------------
+
+_PYPROJECT = '[project]\nrequires-python = ">=3.12"\n'
+
+
+def test_contributing_sources_names_every_file_that_reached_the_context():
+    sources = _sources(
+        ("pyproject.toml", _PYPROJECT),
+        ("App.csproj", "<TargetFramework>net8.0</TargetFramework>"),
+        ("AGENTS.md", "Prefer early returns.\n"),
+        (".veritas/rules.md", "Flag eval().\n"),
+    )
+    assert contributing_sources(sources) == [
+        "pyproject.toml",
+        "App.csproj",
+        "AGENTS.md",
+        ".veritas/rules.md",
+    ]
+
+
+def test_a_manifest_that_parsed_to_nothing_is_not_a_source():
+    sources = _sources(
+        ("pyproject.toml", '[project]\nname = "demo"\n'),
+        ("package.json", '{"name": "demo"}'),
+        ("go.mod", "module example.com/demo\n\ngo 1.22\n"),
+    )
+    assert contributing_sources(sources) == ["go.mod"]
+
+
+def test_blank_conventions_and_rules_are_not_sources():
+    # The reader stops at the first conventions file with any text; whitespace
+    # counts as text there but renders nothing, so it is not a source.
+    sources = _sources(("AGENTS.md", "  \n"), (".veritas/rules.md", "\n"))
+    assert contributing_sources(sources) == []
+    assert build_project_context(sources).is_empty
+
+
+def test_only_the_conventions_file_that_was_used_is_a_source():
+    sources = _sources(("AGENTS.md", "Use tabs.\n"), ("STYLE.md", "Use spaces.\n"))
+    assert detect_conventions(sources) == "Use tabs."
+    assert contributing_sources(sources) == ["AGENTS.md"]
+
+
+def test_origin_that_is_the_working_directory_is_a_dot(tmp_path):
+    assert display_origin(str(tmp_path), cwd=str(tmp_path)) == "."
+
+
+def test_origin_below_the_working_directory_is_relative(tmp_path):
+    origin = tmp_path / "src" / "pkg"
+    assert display_origin(str(origin), cwd=str(tmp_path)) == "src/pkg"
+
+
+def test_origin_outside_the_working_directory_is_its_name_only(tmp_path):
+    origin = tmp_path / "elsewhere" / "project"
+    cwd = tmp_path / "work"
+    shown = display_origin(str(origin), cwd=str(cwd))
+    assert shown == "project"
+    assert str(tmp_path) not in shown
+
+
+def test_relative_origin_is_resolved_against_the_working_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "proj").mkdir()
+    assert display_origin("proj") == "proj"
+    assert display_origin(".") == "."
+
+
+def test_a_sibling_with_a_shared_prefix_is_outside(tmp_path):
+    # "/x/work-other" starts with the text "/x/work" but is not below it.
+    shown = display_origin(str(tmp_path / "work-other"), cwd=str(tmp_path / "work"))
+    assert shown == "work-other"
+
+
+def test_record_local_with_something_detected(tmp_path):
+    sources = ProjectSources(
+        origin=str(tmp_path),
+        files=(("pyproject.toml", _PYPROJECT), ("AGENTS.md", "Prefer early returns.\n")),
+    )
+    record = project_context_record(ReviewScope.PROJECT, sources)
+    assert record["project_context_status"] is ProjectContextStatus.DETECTED
+    assert record["project_context_sources"] == ["pyproject.toml", "AGENTS.md"]
+    assert record["project_context_reason"] is None
+
+
+def test_record_local_with_nothing_detected(tmp_path):
+    sources = ProjectSources(origin=str(tmp_path), files=(("package.json", "{}"),))
+    record = project_context_record(ReviewScope.PROJECT, sources)
+    assert record["project_context_status"] is ProjectContextStatus.UNAVAILABLE
+    assert record["project_context_sources"] == []
+    assert record["project_context_reason"] == "no manifest, conventions file or rules file found"
+
+
+def test_record_problems_with_something_detected_is_partial(tmp_path):
+    sources = ProjectSources(
+        origin=str(tmp_path),
+        files=(("pyproject.toml", _PYPROJECT),),
+        problems=("AGENTS.md over 200000 bytes, skipped", "package.json unreadable"),
+    )
+    record = project_context_record(ReviewScope.PROJECT, sources)
+    assert record["project_context_status"] is ProjectContextStatus.PARTIAL
+    assert record["project_context_sources"] == ["pyproject.toml"]
+    assert record["project_context_reason"] == (
+        "AGENTS.md over 200000 bytes, skipped; package.json unreadable"
+    )
+
+
+def test_record_problems_with_nothing_detected_is_unavailable_with_the_problems(tmp_path):
+    sources = ProjectSources(
+        origin=str(tmp_path), files=(), problems=("pyproject.toml is not valid UTF-8",)
+    )
+    record = project_context_record(ReviewScope.PROJECT, sources)
+    assert record["project_context_status"] is ProjectContextStatus.UNAVAILABLE
+    assert record["project_context_reason"] == "pyproject.toml is not valid UTF-8"
+
+
+def test_record_pr_review_is_unavailable_not_read_yet():
+    record = project_context_record(ReviewScope.PR, None)
+    assert record == {
+        "project_context_status": ProjectContextStatus.UNAVAILABLE,
+        "project_context_sources": [],
+        "project_context_reason": "not read for PR reviews yet",
+        "project_context_origin": None,
+    }

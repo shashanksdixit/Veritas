@@ -7,6 +7,7 @@ from veritas.models.entities import (
     ExcludedFile,
     FindingSource,
     LineRange,
+    ProjectContextStatus,
     Report,
     ReportStatus,
     RequirementFinding,
@@ -81,7 +82,7 @@ def _report(**overrides) -> Report:
 
 def test_schema_version_comment_top():
     md = render_markdown(_report())
-    assert md.startswith("<!-- veritas-report-schema: 1.9.0 -->")
+    assert md.startswith("<!-- veritas-report-schema: 1.10.0 -->")
 
 
 def test_sections_present():
@@ -908,3 +909,68 @@ def test_no_sast_line_when_sast_was_never_reached():
     assert "**SAST**" not in md
     assert "SAST rules" not in md
 
+
+
+# --- the project-context header line (T117, FR-009) ---
+
+
+def _context_lines(**fields) -> list[str]:
+    report = _report()
+    report.run = report.run.model_copy(update=fields)
+    return [
+        line
+        for line in render_markdown(report).splitlines()
+        if line.startswith("- **Project context**")
+    ]
+
+
+def test_project_context_line_when_detected():
+    assert _context_lines(
+        project_context_status=ProjectContextStatus.DETECTED,
+        project_context_sources=["pyproject.toml", "AGENTS.md"],
+        project_context_origin=".",
+    ) == ["- **Project context**: detected — pyproject.toml, AGENTS.md (from .)"]
+
+
+def test_project_context_line_when_partial_keeps_the_reason():
+    assert _context_lines(
+        project_context_status=ProjectContextStatus.PARTIAL,
+        project_context_sources=["pyproject.toml"],
+        project_context_origin="services/api",
+        project_context_reason="AGENTS.md over 200000 bytes, skipped",
+    ) == [
+        "- **Project context**: partial — pyproject.toml (from services/api); "
+        "AGENTS.md over 200000 bytes, skipped"
+    ]
+
+
+def test_project_context_line_when_unavailable_states_the_reason():
+    assert _context_lines(
+        project_context_status=ProjectContextStatus.UNAVAILABLE,
+        project_context_origin=".",
+        project_context_reason="no manifest, conventions file or rules file found",
+    ) == [
+        "- **Project context**: unavailable — "
+        "no manifest, conventions file or rules file found"
+    ]
+
+
+def test_project_context_line_sits_right_after_the_sast_line():
+    report = _report()
+    report.run = report.run.model_copy(
+        update={
+            "sast_rules": "p/owasp-top-ten",
+            "sast_status": SastStatus.RAN,
+            "sast_result_count": 0,
+            "project_context_status": ProjectContextStatus.UNAVAILABLE,
+            "project_context_reason": "not read for PR reviews yet",
+        }
+    )
+    lines = render_markdown(report).splitlines()
+    sast = lines.index("- **SAST**: ran with `p/owasp-top-ten` — 0 result(s)")
+    assert lines[sast + 1] == "- **Project context**: unavailable — not read for PR reviews yet"
+
+
+def test_no_project_context_line_when_the_context_node_was_never_reached():
+    assert _context_lines() == []
+    assert "Project context" not in render_markdown(_report()).split("## Summary")[0]

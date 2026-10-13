@@ -14,6 +14,7 @@ from veritas.models.entities import (
     CodeFinding,
     Coverage,
     FailedBatch,
+    ProjectContextStatus,
     Report,
     RequirementStatus,
     ReviewRun,
@@ -119,6 +120,20 @@ def _sast_line(run: ReviewRun) -> str | None:
     return f"SAST: not run — {run.sast_reason}"
 
 
+def _context_line(run: ReviewRun) -> str | None:
+    """One line saying whether project context was used (FR-009); None when the
+    run never reached the context node."""
+    status = run.project_context_status
+    if status is None:
+        return None
+    if status is ProjectContextStatus.UNAVAILABLE:
+        return f"Context: unavailable — {run.project_context_reason}"
+    line = f"Context: {status.value} ({', '.join(run.project_context_sources)})"
+    if status is ProjectContextStatus.PARTIAL:
+        return f"{line} — {run.project_context_reason}"
+    return line
+
+
 def render_compact(report: Report, report_path: str | None = None) -> str:
     """Render the compact stdout summary (FR-016)."""
     summary = report.summary
@@ -151,6 +166,10 @@ def render_compact(report: Report, report_path: str | None = None) -> str:
     sast_line = _sast_line(report.run)
     if sast_line:
         lines.append(sast_line)
+
+    context_line = _context_line(report.run)
+    if context_line:
+        lines.append(context_line)
 
     source_bits: list[str] = []
     for finding in report.code_findings:

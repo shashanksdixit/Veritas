@@ -50,6 +50,25 @@ constitution Principle VIII / FR-016.
   their text is not redacted, and neither are Click's own usage errors.
 
 ### Added
+- Report schema **1.10.0**: the report states the project context the review
+  used (FR-009, T117). `ReviewRun` gains `project_context_status`
+  (`"detected"`, `"partial"` or `"unavailable"`), `project_context_sources`
+  (the files that contributed; a manifest that parsed to nothing is not
+  listed), `project_context_reason` (one line, for partial and unavailable)
+  and `project_context_origin` (where the files were read from, relative to the
+  working directory, or only the directory name when outside it; never an
+  absolute path), all set by the context node. The report header gains, after
+  the SAST line, `- **Project context**: detected — <sources> (from <origin>)`,
+  `- **Project context**: partial — <sources> (from <origin>); <reason>` or
+  `- **Project context**: unavailable — <reason>`, and the compact stdout
+  summary gains `Context: detected (<sources>)`,
+  `Context: partial (<sources>) — <reason>` or `Context: unavailable — <reason>`.
+  A local review with nothing detected says
+  `no manifest, conventions file or rules file found`; a `--scope pr` review
+  says `not read for PR reviews yet`. What the model receives is unchanged.
+  Migration: reports written before 1.10.0 still validate, with the status,
+  reason and origin null and the sources empty; consumers should treat null as
+  "not recorded", not as "unavailable".
 - Tests: a reachability test for the read-only boundary (FR-026, T112).
   `tests/boundary_walker.py` walks everything a graph node's function can
   reach (closures, defaults, partials, bound methods, Veritas objects and their

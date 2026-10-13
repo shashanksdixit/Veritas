@@ -83,6 +83,14 @@ class SastStatus(str, Enum):
     NOT_RUN = "not_run"
 
 
+class ProjectContextStatus(str, Enum):
+    """Whether the review used project context (FR-009)."""
+
+    DETECTED = "detected"
+    PARTIAL = "partial"
+    UNAVAILABLE = "unavailable"
+
+
 class Verdict(str, Enum):
     """Overall report verdict, derived per FR-015 from the collected findings."""
 
@@ -122,6 +130,18 @@ class ReviewRun(BaseModel):
     sast_status: SastStatus | None = None
     sast_result_count: int | None = None
     sast_reason: str | None = None
+    # Report.schema_version 1.10.0 (FR-009): whether the review used project
+    # context, set by the context node. project_context_sources names the files
+    # that actually contributed (a manifest that parsed to nothing does not
+    # count); project_context_reason is one line, set when context is partial or
+    # unavailable; project_context_origin is where the files were read from, as
+    # shown in the report (relative to the working directory, never an absolute
+    # path). All None/empty when the run never reached the context node, so a
+    # report written before 1.10.0 still validates.
+    project_context_status: ProjectContextStatus | None = None
+    project_context_sources: list[str] = Field(default_factory=list)
+    project_context_reason: str | None = None
+    project_context_origin: str | None = None
 
 
 class LineRange(BaseModel):
