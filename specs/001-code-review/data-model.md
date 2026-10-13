@@ -346,15 +346,27 @@ it also records the `ReviewRun.project_context_*` fields from it (T117).
 |-------|------|---------|
 | `origin` | `str` | Where the files were read from: the local directory today |
 | `files` | `tuple[tuple[str, str], ...]` | `(relative name, text)` pairs in read order, for example `("pyproject.toml", "...")` or `(".veritas/rules.md", "...")`; names are unique; `text(name)` returns one or None |
-| `problems` | `tuple[str, ...]` | Reading problems worth reporting; empty today |
+| `problems` | `tuple[str, ...]` | One short line per file the reader had to skip, in read order (T118): `<name> over 200000 bytes, skipped`, `<name> could not be read, skipped`, `pyproject.toml is not valid UTF-8, skipped` |
 
 `files` is a tuple of pairs rather than a mapping so that nothing can change
 it after the scope node builds it and so it compares, copies and pickles like
 any other state value. The scope node reads, from one directory (the target,
 or the file's directory for `--scope file`; no walk-up): the named manifests,
-`*.csproj` files, the conventions files up to the first non-empty one, and
-`.veritas/rules.md`. A missing or unreadable file, or one over 200,000 bytes
-(pyproject.toml has no limit), is left out.
+`*.csproj` files, the conventions files up to the first one whose text is not
+blank, and `.veritas/rules.md`. A missing file is left out silently. A file
+over 200,000 bytes (pyproject.toml included), an unreadable one, or a
+pyproject.toml that is not valid UTF-8 is left out with a line in `problems`.
+pyproject.toml is decoded as `utf-8-sig`, so a leading byte-order mark is
+dropped. `project_context_problems` (in `veritas/utils/project_context.py`)
+adds what only parsing can tell, `pyproject.toml is not valid TOML` or
+`pyproject.toml has an unexpected [project] layout` (`[project]` not a table,
+`requires-python` not a string, `dependencies` not a list; non-string items in
+the list are skipped), and a
+`<name> truncated to 4000 characters` line for conventions or rules longer
+than the 4,000 characters the model receives (measured after redaction). The
+context node logs each as one `[warn]` line, and they make the run's
+project context partial (something still detected) or unavailable (nothing),
+joined by "; " as `project_context_reason`.
 
 ---
 

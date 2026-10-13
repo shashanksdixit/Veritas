@@ -1,6 +1,10 @@
 """Integration tests — project-aware review (T057, FR-009/FR-010/FR-011)."""
 
-from tests.conftest import FakeLLM, default_fake_llm
+from pathlib import Path
+
+import pytest
+
+from tests.conftest import FakeLLM, default_fake_llm, fake_secret
 
 from veritas.models.entities import ReviewScope
 from veritas.review.graph import run_review
@@ -129,3 +133,225 @@ def test_pr_review_reports_context_unavailable_not_read_yet(monkeypatch, setting
     assert report.run.project_context_origin is None
     assert "- **Project context**: unavailable — not read for PR reviews yet" in md_lines
     assert "Context: unavailable — not read for PR reviews yet" in stdout_lines
+
+
+# --- project-context problems are stated, not silent (T118, FR-009) ---
+
+_GO_MOD = "module example.com/demo\n\ngo 1.22\n"
+_NOT_UTF8_PYPROJECT = b'[project]\nname = "caf\xe9"\n'
+_BIG = "x" * 200_001
+
+
+def _project(tmp_path, files: dict[str, str | bytes]) -> Path:
+    """A project at tmp_path/proj with one Python file to review plus ``files``."""
+    project = tmp_path / "proj"
+    (project / "src").mkdir(parents=True)
+    (project / "src" / "lib.py").write_text("x = 1\n", encoding="utf-8")
+    for name, content in files.items():
+        path = project / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        else:
+            path.write_bytes(content.encode("utf-8"))
+    return project
+
+
+def _make_unreadable(monkeypatch, path: Path) -> None:
+    """Reading ``path`` raises PermissionError; every other file reads normally."""
+    for method in ("read_text", "read_bytes"):
+        original = getattr(Path, method)
+
+        def failing(self, *args, _original=original, **kwargs):
+            if self == path:
+                raise PermissionError(13, "Permission denied", str(self))
+            return _original(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, method, failing)
+
+
+_PROBLEM_CASES = [
+    # id, files, unreadable file, status, sources, reason
+    (
+        "too-large-partial",
+        {"package.json": _BIG, "go.mod": _GO_MOD},
+        None,
+        "partial",
+        ["go.mod"],
+        "package.json over 200000 bytes, skipped",
+    ),
+    (
+        "too-large-pyproject-unavailable",
+        {"pyproject.toml": '[project]\nrequires-python = ">=3.12"\n' + "#" * 200_001},
+        None,
+        "unavailable",
+        [],
+        "pyproject.toml over 200000 bytes, skipped",
+    ),
+    (
+        "not-utf8-partial",
+        {"pyproject.toml": _NOT_UTF8_PYPROJECT, "AGENTS.md": "Prefer early returns.\n"},
+        None,
+        "partial",
+        ["AGENTS.md"],
+        "pyproject.toml is not valid UTF-8, skipped",
+    ),
+    (
+        "not-utf8-unavailable",
+        {"pyproject.toml": _NOT_UTF8_PYPROJECT},
+        None,
+        "unavailable",
+        [],
+        "pyproject.toml is not valid UTF-8, skipped",
+    ),
+    (
+        "invalid-toml-partial",
+        {"pyproject.toml": "[project\n", "go.mod": _GO_MOD},
+        None,
+        "partial",
+        ["go.mod"],
+        "pyproject.toml is not valid TOML",
+    ),
+    (
+        "invalid-toml-unavailable",
+        {"pyproject.toml": "[project\n"},
+        None,
+        "unavailable",
+        [],
+        "pyproject.toml is not valid TOML",
+    ),
+    (
+        "unreadable-partial",
+        {"AGENTS.md": "Prefer early returns.\n", "go.mod": _GO_MOD},
+        "AGENTS.md",
+        "partial",
+        ["go.mod"],
+        "AGENTS.md could not be read, skipped",
+    ),
+    (
+        "unreadable-unavailable",
+        {"go.mod": _GO_MOD},
+        "go.mod",
+        "unavailable",
+        [],
+        "go.mod could not be read, skipped",
+    ),
+    (
+        "bad-layout-partial",
+        {"pyproject.toml": 'project = "x"\n', "go.mod": _GO_MOD},
+        None,
+        "partial",
+        ["go.mod"],
+        "pyproject.toml has an unexpected [project] layout",
+    ),
+    (
+        "bad-layout-unavailable",
+        {"pyproject.toml": "[project]\nrequires-python = 3.12\n"},
+        None,
+        "unavailable",
+        [],
+        "pyproject.toml has an unexpected [project] layout",
+    ),
+    # A truncated file still contributes, so truncation is never unavailable.
+    (
+        "truncated-partial",
+        {"AGENTS.md": "a" * 4001},
+        None,
+        "partial",
+        ["AGENTS.md"],
+        "AGENTS.md truncated to 4000 characters",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "files, unreadable, status, sources, reason",
+    [case[1:] for case in _PROBLEM_CASES],
+    ids=[case[0] for case in _PROBLEM_CASES],
+)
+def test_each_problem_is_stated_and_the_review_still_completes(
+    tmp_path, settings, capsys, monkeypatch, files, unreadable, status, sources, reason
+):
+    from veritas.models.entities import ProjectContextStatus
+
+    project = _project(tmp_path, files)
+    if unreadable is not None:
+        _make_unreadable(monkeypatch, project / unreadable)
+
+    outcome = run_review(settings, ReviewScope.PROJECT, str(project), llm=FakeLLM({}))
+    report, _md_lines, _stdout_lines = _outputs(outcome, capsys)
+
+    assert outcome.exit_code == 0
+    assert report.run.project_context_status is ProjectContextStatus(status)
+    assert report.run.project_context_sources == sources
+    assert report.run.project_context_reason == reason
+    assert report.run.project_context_origin == "proj"
+
+
+def test_two_problems_render_in_the_markdown_header_and_compact_output(
+    tmp_path, settings, capsys
+):
+    from veritas.models.entities import ProjectContextStatus
+
+    project = _project(
+        tmp_path,
+        {"pyproject.toml": _NOT_UTF8_PYPROJECT, "package.json": _BIG, "go.mod": _GO_MOD},
+    )
+
+    outcome = run_review(settings, ReviewScope.PROJECT, str(project), llm=FakeLLM({}))
+    report, md_lines, stdout_lines = _outputs(outcome, capsys)
+
+    reason = "pyproject.toml is not valid UTF-8, skipped; package.json over 200000 bytes, skipped"
+    assert report.run.project_context_status is ProjectContextStatus.PARTIAL
+    assert report.run.project_context_reason == reason
+    assert f"- **Project context**: partial — go.mod (from proj); {reason}" in md_lines
+    assert f"Context: partial (go.mod) — {reason}" in stdout_lines
+
+
+def test_a_blank_agents_md_does_not_hide_style_md(tmp_path, settings, capsys):
+    project = _project(tmp_path, {"AGENTS.md": "  \n\t\n", "STYLE.md": "Use four-space indentation.\n"})
+    llm = FakeLLM({})
+
+    outcome = run_review(settings, ReviewScope.PROJECT, str(project), llm=llm)
+    report, _md_lines, _stdout_lines = _outputs(outcome, capsys)
+
+    assert report.run.project_context_sources == ["STYLE.md"]
+    assert any("Use four-space indentation." in user for _sys, user in llm.calls)
+
+
+def test_conventions_and_rules_reach_the_model_redacted(tmp_path, settings):
+    token = fake_secret("ghp_", "t" * 36)
+    project = _project(
+        tmp_path,
+        {
+            "AGENTS.md": f"Deploy with {token} only from CI.\n",
+            ".veritas/rules.md": f"Flag any use of {token}.\n",
+        },
+    )
+    llm = FakeLLM({})
+
+    run_review(settings, ReviewScope.PROJECT, str(project), llm=llm)
+    prompts = "\n".join(system + "\n" + user for system, user in llm.calls)
+
+    assert llm.calls
+    assert token not in prompts
+    assert "Deploy with [REDACTED] only from CI." in prompts
+    assert "Flag any use of [REDACTED]." in prompts
+
+
+def test_a_bom_pyproject_is_detected_with_no_problem(tmp_path, settings, capsys):
+    """T118: a pyproject.toml saved with a UTF-8 byte-order mark is read normally."""
+    from veritas.models.entities import ProjectContextStatus
+
+    project = _project(
+        tmp_path, {"pyproject.toml": b'\xef\xbb\xbf[project]\nrequires-python = ">=3.12"\n'}
+    )
+    llm = FakeLLM({})
+
+    outcome = run_review(settings, ReviewScope.PROJECT, str(project), llm=llm)
+    report, _md_lines, _stdout_lines = _outputs(outcome, capsys)
+
+    assert report.run.project_context_status is ProjectContextStatus.DETECTED
+    assert report.run.project_context_sources == ["pyproject.toml"]
+    assert report.run.project_context_reason is None
+    assert any("Python >=3.12" in user for _sys, user in llm.calls)

@@ -112,6 +112,23 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- Project-context problems are stated, not silent (FR-009, T118). A file
+  over 200,000 bytes (pyproject.toml now included; it had no limit), a file
+  that cannot be read, a pyproject.toml that is not valid UTF-8 or not valid
+  TOML, and conventions or rules text longer than the 4,000 characters the
+  model receives each produce one short line naming the file, for example
+  `package.json over 200000 bytes, skipped` or
+  `AGENTS.md truncated to 4000 characters`. The context node logs each as
+  one `[warn] Project context: ...` line, and the report's project context
+  becomes partial when something was still detected or unavailable when not,
+  with the lines joined by "; " as the reason. What the model receives for a
+  truncated file is unchanged. A manifest that declares no version is still
+  not a problem. No schema change (1.10.0 already has the fields).
+- Conventions (`AGENTS.md`, `CONVENTIONS.md`, `STYLE.md`) and
+  `.veritas/rules.md` text now passes through `redact_secrets()` before it
+  reaches the model (FR-010, FR-011, FR-013, T118); before, a token written
+  in AGENTS.md was sent to the model as is. Redaction runs before the
+  4,000-character cut, so a cut can never leave an unmasked fragment.
 - Internal: project-context files are now read by the scope node instead of
   the context node (T116; no user-visible change). The scope node reads the
   same manifests, conventions file and `.veritas/rules.md` from the same
@@ -183,6 +200,24 @@ constitution Principle VIII / FR-016.
   contexts, checked by the reachability test.
 
 ### Fixed
+- A pyproject.toml that is not valid UTF-8 no longer stops a local review
+  with a `UnicodeDecodeError` (FR-009, T118): it is skipped and the report
+  says `pyproject.toml is not valid UTF-8, skipped`.
+- A pyproject.toml that is valid TOML but shaped unexpectedly no longer
+  crashes or misleads (FR-009, T118): `project = "x"` raised `AttributeError`
+  and stopped the review, `requires-python = 3.12` (a number) was shown as
+  "Python 3.12", and `dependencies = "pydantic"` (a string) was walked one
+  character at a time. Each now gives `pyproject.toml has an unexpected
+  [project] layout`; the parts of the right type are still used. A
+  non-string item inside a valid `dependencies` list is skipped, as before.
+- A pyproject.toml saved with a UTF-8 byte-order mark (common from Windows
+  editors) is read normally (FR-009, T118). `tomllib` rejects the mark, so
+  such a file was taken for invalid TOML and its versions were lost; it is
+  now decoded as `utf-8-sig`. Invalid UTF-8 is still reported as before.
+- A blank (whitespace-only) `AGENTS.md` or `CONVENTIONS.md` no longer hides
+  the next conventions file (FR-010, T118): before, a blank AGENTS.md was
+  picked, stripped to nothing, and a real STYLE.md next to it was never read.
+  The search now passes over blank files.
 - A `Retry-After` header given as an HTTP date no longer crashes the
   OpenRouter in-flight-budget retry (FR-019, T114). Two causes: the date parser
   `parsedate_to_datetime` was never imported (`NameError`, which an

@@ -10,6 +10,9 @@ into the ``project_sources`` channel, and this node only renders them.
 It also records on the run whether project context was detected, partial or
 unavailable, and why (T117, FR-009), so the report can say so. The node runs
 alone between scope and the fan-out, so nothing else writes ``run`` then.
+Each problem behind a partial or unavailable status (a file too large,
+unreadable, not valid UTF-8 or TOML, or a truncation) is also logged as one
+``[warn]`` line (T118).
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from veritas.utils.project_context import (
     build_project_context,
     contributing_sources,
     display_origin,
+    project_context_problems,
 )
 
 # The one-line reasons recorded on the run (FR-009). An absent file is never a
@@ -35,9 +39,10 @@ def project_context_record(scope: ReviewScope, sources: ProjectSources | None) -
     """The ``ReviewRun`` fields stating the project context this review used (FR-009).
 
     PR review: unavailable (T119 reads the files for PRs). Local review: the
-    files that contributed, and detected when there are any. Reading problems
-    make it partial when something was still detected and unavailable when not,
-    with the problems as the reason.
+    files that contributed, and detected when there are any. Problems (from
+    ``project_context_problems``: reading, parsing and truncation) make it
+    partial when something was still detected and unavailable when not, with
+    the problems joined by "; " as the reason.
     """
     if scope == ReviewScope.PR or sources is None:
         return {
@@ -47,9 +52,10 @@ def project_context_record(scope: ReviewScope, sources: ProjectSources | None) -
             "project_context_origin": None,
         }
     used = contributing_sources(sources)
-    if sources.problems:
+    problems = project_context_problems(sources)
+    if problems:
         status = ProjectContextStatus.PARTIAL if used else ProjectContextStatus.UNAVAILABLE
-        reason: str | None = "; ".join(sources.problems)
+        reason: str | None = "; ".join(problems)
     elif used:
         status, reason = ProjectContextStatus.DETECTED, None
     else:
@@ -72,9 +78,12 @@ def make_context_node(ctx: ReviewContext) -> Callable[[ReviewState], dict]:
             rendered = f"Note: {ctx_note}"
             ctx.log.info(ctx_note)
         else:
-            project = build_project_context(state["project_sources"])
+            sources = state["project_sources"]
+            project = build_project_context(sources)
             for entry in project.language_versions:
                 ctx.log.info(f"Detected: {entry}")
+            for problem in project_context_problems(sources):
+                ctx.log.warn(f"Project context: {problem}")
             rendered = project.render()
         run: ReviewRun = state["run"].model_copy(
             update=project_context_record(state["scope"], state.get("project_sources"))

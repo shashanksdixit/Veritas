@@ -1,16 +1,20 @@
-"""Project-context golden cases (T116).
+"""Project-context golden cases (T116, T118).
 
 Each builder lays out one project under ``root`` and returns the scope and the
-target a review would be given. The goldens in
+target a review would be given. The goldens a to g in
 ``tests/integration/data/project_context_golden.json`` were captured from the
 context node at the commit before T116 using these same builders, so the golden
 tests prove the refactor left what the model receives byte-for-byte unchanged.
+T118 added one ``[warn]`` line to the logs of d (truncation) and e (file too
+large), leaving every ``context`` string as it was, and added cases h to k for
+the problems and fixes it introduced.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from tests.conftest import fake_secret
 from veritas.models.entities import ReviewScope
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -78,6 +82,42 @@ def case_f(root: Path) -> tuple[ReviewScope, str]:
     return ReviewScope.MODULE, str(root / "src")
 
 
+# Built at runtime (tests/conftest.py): no secret-shaped literal in the source.
+CASE_K_SECRET = fake_secret("ghp_", "k" * 36)
+
+
+def case_h(root: Path) -> tuple[ReviewScope, str]:
+    """A pyproject.toml that is not valid UTF-8 (Latin-1 "é") next to a small go.mod (T118)."""
+    (root / "pyproject.toml").write_bytes(
+        b'[project]\nname = "caf\xe9"\nrequires-python = ">=3.12"\n'
+    )
+    _write(root / "go.mod", "module example.com/latin1\n\ngo 1.22\n")
+    _write(root / "main.go", "package main\n")
+    return ReviewScope.PROJECT, str(root)
+
+
+def case_i(root: Path) -> tuple[ReviewScope, str]:
+    """A pyproject.toml that is valid UTF-8 but not valid TOML, nothing else (T118)."""
+    _write(root / "pyproject.toml", '[project\nrequires-python = ">=3.12"\n')
+    _write(root / "src" / "app.py", "x = 1\n")
+    return ReviewScope.PROJECT, str(root)
+
+
+def case_j(root: Path) -> tuple[ReviewScope, str]:
+    """A whitespace-only AGENTS.md next to a real STYLE.md (T118)."""
+    _write(root / "AGENTS.md", "  \n\n\t\n")
+    _write(root / "STYLE.md", "Use four-space indentation.\n")
+    _write(root / "src" / "app.py", "x = 1\n")
+    return ReviewScope.PROJECT, str(root)
+
+
+def case_k(root: Path) -> tuple[ReviewScope, str]:
+    """An AGENTS.md holding a GitHub-token-shaped value (T118): it reaches the model masked."""
+    _write(root / "AGENTS.md", f"Deploy with {CASE_K_SECRET} only from CI.\n")
+    _write(root / "src" / "app.py", "x = 1\n")
+    return ReviewScope.PROJECT, str(root)
+
+
 PR_TARGET = "https://github.com/owner/repo/pull/1"
 
 TMP_CASES = {
@@ -86,4 +126,8 @@ TMP_CASES = {
     "d": case_d,
     "e": case_e,
     "f": case_f,
+    "h": case_h,
+    "i": case_i,
+    "j": case_j,
+    "k": case_k,
 }

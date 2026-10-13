@@ -1,11 +1,16 @@
 """Golden tests: moving project-context reading into the scope node (T116)
-changed nothing the model receives.
+changed nothing the model receives, and stating reading problems (T118)
+changed only the log.
 
 ``data/project_context_golden.json`` holds, for each case, the exact
-``project_context`` string and the ``[info]`` lines the context node produced
-before T116, when it read the files itself. Here the scope node reads them into
-``project_sources`` and the context node renders that, and both must match the
-captures byte for byte.
+``project_context`` string and the log lines the context node produced. Cases a
+to g were captured before T116, when the context node read the files itself;
+T118 added one ``[warn]`` line to d and e and left every ``context`` string
+byte-identical. Cases h to k were captured at T118 for the problems it states
+(non-UTF-8 and non-TOML pyproject.toml) and what it fixed (a blank AGENTS.md
+no longer hides STYLE.md; conventions are redacted). Here the scope node reads
+the files into ``project_sources`` and the context node renders that, and both
+must match the captures byte for byte.
 
 Case ``a`` reviews this repository, so its golden follows the repository's own
 ``pyproject.toml``: a dependency change there means recapturing it.
@@ -20,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.project_context_cases import PR_TARGET, REPO_ROOT, TMP_CASES
+from tests.integration.project_context_cases import CASE_K_SECRET, PR_TARGET, REPO_ROOT, TMP_CASES
 from veritas.config.settings import Settings
 from veritas.hosting.resolver import parse_pr_target
 from veritas.models.entities import ReviewRun, ReviewScope
@@ -101,15 +106,44 @@ def test_golden_g_pr_keeps_the_hard_coded_note():
     assert _scope_then_context(ReviewScope.PR, PR_TARGET, fetcher=_FakeFetcher()) == GOLDEN["g"]
 
 
-def test_goldens_show_todays_silent_limits():
-    """The captures themselves: d truncated at 4,000 characters, e skipped, f unavailable."""
+def test_goldens_state_the_limits_they_hit():
+    """The captures themselves (T118): d still truncated at 4,000 characters and
+    e still skipped, now each with a [warn] line; f unavailable and silent."""
     conventions = GOLDEN["d"]["context"].split("Project conventions to honor:\n", 1)[1]
     assert len(conventions) == 4000
-    assert GOLDEN["d"]["log"] == ["[info] Detected: .NET net8.0"]
+    assert GOLDEN["d"]["log"] == [
+        "[info] Detected: .NET net8.0",
+        "[warn] Project context: AGENTS.md truncated to 4000 characters",
+    ]
     assert "Node" not in GOLDEN["e"]["context"]
-    assert GOLDEN["e"]["log"] == ["[info] Detected: Go 1.21"]
+    assert GOLDEN["e"]["log"] == [
+        "[info] Detected: Go 1.21",
+        "[warn] Project context: package.json over 200000 bytes, skipped",
+    ]
     assert GOLDEN["f"]["context"].startswith("Note: Project context unavailable (no detectable")
     assert GOLDEN["f"]["log"] == []
+
+
+def test_goldens_for_the_t118_cases():
+    """h: non-UTF-8 pyproject.toml skipped, go.mod still used. i: non-TOML
+    pyproject.toml, nothing detected. j: a blank AGENTS.md passed over for
+    STYLE.md. k: the token in AGENTS.md reaches the model masked."""
+    assert "Python" not in GOLDEN["h"]["context"]
+    assert GOLDEN["h"]["log"][-1] == "[warn] Project context: pyproject.toml is not valid UTF-8, skipped"
+    assert GOLDEN["i"]["context"].startswith("Note: Project context unavailable")
+    assert GOLDEN["i"]["log"] == ["[warn] Project context: pyproject.toml is not valid TOML"]
+    assert GOLDEN["j"]["context"] == "Project conventions to honor:\nUse four-space indentation."
+    assert GOLDEN["k"]["context"] == "Project conventions to honor:\nDeploy with [REDACTED] only from CI."
+
+
+def test_case_k_secret_never_reaches_the_context_or_the_log(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    result = _scope_then_context(*TMP_CASES["k"](root))
+    assert CASE_K_SECRET not in result["context"]
+    assert all(CASE_K_SECRET not in line for line in result["log"])
+    # The file on disk really holds it: the masking happened on the way to the model.
+    assert CASE_K_SECRET in (root / "AGENTS.md").read_text(encoding="utf-8")
 
 
 def test_pr_scope_writes_no_project_sources():

@@ -32,8 +32,9 @@ class ProjectSources:
     by anyone, compares and hashes by value, and can be copied or pickled like
     any other state value, which a ``MappingProxyType`` cannot. The file count
     is a handful, so looking a name up with ``text()`` by a linear scan costs
-    nothing. ``problems`` is for reading problems worth reporting (empty
-    today).
+    nothing. ``problems`` holds one short line per file the reader had to
+    skip (too large, unreadable, pyproject.toml not valid UTF-8; T118), for
+    the report and the log.
     """
 
     origin: str

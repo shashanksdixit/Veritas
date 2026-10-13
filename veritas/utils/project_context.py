@@ -3,6 +3,7 @@
 Detects language/framework versions from real manifest files, project
 conventions (AGENTS.md-equivalent), and natural-language custom rules. When
 nothing is detectable a ``note`` records that project context is unavailable.
+Conventions and rules text is redacted before it reaches the model (FR-013).
 
 Since T116 nothing here touches the filesystem: the scope node reads the files
 into ``ProjectSources`` and the parsers below take text. The names to read and
@@ -20,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from veritas.config.constants import CONVENTIONS_FILENAMES, NATURAL_LANGUAGE_RULES_GLOB
+from veritas.utils.redaction import redact_secrets
 
 if TYPE_CHECKING:
     from veritas.review.state import ProjectSources
@@ -36,8 +38,10 @@ MANIFEST_NAMES = (
     "Cargo.toml",
 )
 CSPROJ_SUFFIX = ".csproj"
-# Every file but pyproject.toml larger than this is skipped unread.
+# Every file larger than this is skipped unread, and the reader says so (T118).
 MAX_SOURCE_BYTES = 200_000
+# At most this many characters of conventions, and of rules, reach the model.
+MAX_PROMPT_CHARS = 4000
 
 _MAVEN_COMPILER = re.compile(
     r"<maven\.compiler\.(?:source|target)>\s*(\d[\w.]*)\s*</maven\.compiler\.(?:source|target)>"
@@ -76,24 +80,52 @@ class ProjectContext:
                 lines.append(f"  - {entry}")
         if self.conventions:
             lines.append("Project conventions to honor:")
-            lines.append(self.conventions.strip()[:4000])
+            lines.append(self.conventions.strip()[:MAX_PROMPT_CHARS])
         if self.rules:
             lines.append("Project-specific natural-language review rules:")
-            lines.append(self.rules.strip()[:4000])
+            lines.append(self.rules.strip()[:MAX_PROMPT_CHARS])
         return "\n".join(lines)
 
 
-def _parse_pyproject(text: str) -> list[str] | None:
+PYPROJECT_NOT_TOML = "pyproject.toml is not valid TOML"
+PYPROJECT_BAD_LAYOUT = "pyproject.toml has an unexpected [project] layout"
+
+
+def _pyproject_project(text: str) -> tuple[dict, str | None]:
+    """The ``[project]`` table of a pyproject.toml and the problem with it, if any (T118).
+
+    Valid TOML can still have the wrong shape: ``[project]`` that is not a
+    table, ``requires-python`` that is not a string or ``dependencies`` that
+    is not a list. Each is the layout problem, and the value of the wrong type
+    is dropped so nothing downstream can trip on it; the rest of the table is
+    kept. Non-string items inside a ``dependencies`` list are not a problem:
+    the parser skips them. A missing ``[project]`` is an empty table.
+    """
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError:
-        return None
+        return {}, PYPROJECT_NOT_TOML
+    project = data.get("project", {})
+    if not isinstance(project, dict):
+        return {}, PYPROJECT_BAD_LAYOUT
+    project = dict(project)
+    problem = None
+    if "requires-python" in project and not isinstance(project["requires-python"], str):
+        del project["requires-python"]
+        problem = PYPROJECT_BAD_LAYOUT
+    if "dependencies" in project and not isinstance(project["dependencies"], list):
+        del project["dependencies"]
+        problem = PYPROJECT_BAD_LAYOUT
+    return project, problem
+
+
+def _parse_pyproject(text: str) -> list[str] | None:
+    project, _problem = _pyproject_project(text)
     parts: list[str] = []
-    requires_python = data.get("project", {}).get("requires-python")
+    requires_python = project.get("requires-python")
     if requires_python:
         parts.append(f"Python {requires_python}")
-    deps = data.get("project", {}).get("dependencies", []) or []
-    for dep in deps:
+    for dep in project.get("dependencies", []):
         if not isinstance(dep, str):
             continue
         match = _DEP_SPEC.match(dep)
@@ -204,26 +236,58 @@ def _append_versions(parsed: object, versions: list[str]) -> None:
 
 
 def _conventions_source(sources: ProjectSources) -> tuple[str, str] | None:
-    """The conventions file used: the first in ``CONVENTIONS_FILENAMES`` order with any text."""
+    """The conventions file used: the first in ``CONVENTIONS_FILENAMES`` order
+    whose text is not blank (a whitespace-only file is passed over, T118)."""
     for name in CONVENTIONS_FILENAMES:
         text = sources.text(name)
-        if text:
+        if text and text.strip():
             return name, text
     return None
 
 
 def detect_conventions(sources: ProjectSources) -> str | None:
-    """Project conventions/AGENTS.md-equivalent (FR-010): the first non-empty one."""
+    """Project conventions/AGENTS.md-equivalent (FR-010): the first non-blank one, redacted."""
     found = _conventions_source(sources)
-    return found[1].strip() if found is not None else None
+    return redact_secrets(found[1].strip()) if found is not None else None
 
 
 def detect_natural_language_rules(sources: ProjectSources) -> str | None:
-    """Natural-language-only custom rules (FR-011)."""
+    """Natural-language-only custom rules (FR-011), redacted."""
     text = sources.text(NATURAL_LANGUAGE_RULES_GLOB)
-    if text:
-        return text.strip()
+    if text and text.strip():
+        return redact_secrets(text.strip())
     return None
+
+
+def project_context_problems(sources: ProjectSources) -> list[str]:
+    """Every problem the report states about this project context (T118, FR-009).
+
+    First the reading problems the scope node recorded (too large, unreadable,
+    invalid UTF-8), in read order. Then what only parsing can tell: a
+    pyproject.toml that is not valid TOML, or valid TOML whose ``[project]``
+    has the wrong shape (``_pyproject_project``). Then a truncation for conventions
+    and for rules longer than ``MAX_PROMPT_CHARS``, measured on the redacted
+    text ``ProjectContext.render`` cuts. Redaction runs before the cut so a
+    cut can never leave half a secret that no longer matches a pattern.
+
+    A regex-parsed manifest that yields nothing is not a problem: it may simply
+    not declare a version.
+    """
+    problems = list(sources.problems)
+    pyproject = sources.text("pyproject.toml")
+    if pyproject is not None:
+        _project, problem = _pyproject_project(pyproject)
+        if problem is not None:
+            problems.append(problem)
+    conventions = _conventions_source(sources)
+    shown = (
+        (conventions[0] if conventions else None, detect_conventions(sources)),
+        (NATURAL_LANGUAGE_RULES_GLOB, detect_natural_language_rules(sources)),
+    )
+    for name, text in shown:
+        if name is not None and text is not None and len(text.strip()) > MAX_PROMPT_CHARS:
+            problems.append(f"{name} truncated to {MAX_PROMPT_CHARS} characters")
+    return problems
 
 
 def contributing_sources(sources: ProjectSources) -> list[str]:

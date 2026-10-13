@@ -217,73 +217,73 @@ def _project_context_root(scope: ReviewScope, target: str) -> str:
     return os.path.abspath(target)
 
 
-def _read_capped_text(path: Path) -> str | None:
-    """The file's text, or None when it is over ``MAX_SOURCE_BYTES`` or unreadable.
+def _read_source(
+    path: Path, name: str, *, strict_utf8: bool = False
+) -> tuple[str | None, str | None]:
+    """Read one project-context file: ``(text, None)``, or ``(None, problem)`` (T118).
 
-    Both are silent for now; T118 reports them.
+    Every file over ``MAX_SOURCE_BYTES``, pyproject.toml included, is skipped
+    unread. pyproject.toml (``strict_utf8``) must be valid UTF-8, read as bytes
+    and decoded as ``utf-8-sig`` so a leading byte-order mark (which
+    ``tomllib`` rejects) is dropped; other files are text with invalid bytes
+    replaced.
+    The problem is one short line naming the file, for the report and the log.
     """
     try:
         if path.stat().st_size > MAX_SOURCE_BYTES:
-            return None
-        return path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-
-
-def _read_pyproject_text(path: Path) -> str | None:
-    """pyproject.toml has no size limit and is decoded as strict UTF-8, as
-    ``tomllib.load`` did before T116: invalid UTF-8 raises
-    ``UnicodeDecodeError``, an unreadable file is None."""
-    try:
+            return None, f"{name} over {MAX_SOURCE_BYTES} bytes, skipped"
+        if not strict_utf8:
+            return path.read_text(encoding="utf-8", errors="replace"), None
         raw = path.read_bytes()
     except OSError:
-        return None
-    return raw.decode()
+        return None, f"{name} could not be read, skipped"
+    try:
+        return raw.decode("utf-8-sig"), None
+    except UnicodeDecodeError:
+        return None, f"{name} is not valid UTF-8, skipped"
 
 
 def _read_project_sources(root: str) -> ProjectSources:
-    """Read the project-context files from ``root`` (T116, FR-009/FR-010/FR-011).
+    """Read the project-context files from ``root`` (T116/T118, FR-009/FR-010/FR-011).
 
-    The same files, from the same one directory, that the context node read
-    itself before T116: each manifest in ``MANIFEST_NAMES`` then every
-    ``*.csproj`` (sorted), the conventions files in ``CONVENTIONS_FILENAMES``
-    order up to the first non-empty one, and ``.veritas/rules.md``. A file that
-    is missing, unreadable or over the size limit is left out.
+    From the one directory (no walk-up): each manifest in ``MANIFEST_NAMES``
+    then every ``*.csproj`` (sorted), the conventions files in
+    ``CONVENTIONS_FILENAMES`` order up to the first one with non-blank text,
+    and ``.veritas/rules.md``. A missing file is left out silently. A file
+    that is too large, unreadable or (pyproject.toml) not valid UTF-8 is left
+    out with a problem in ``ProjectSources.problems``.
     """
     root_path = Path(root)
     files: list[tuple[str, str]] = []
+    problems: list[str] = []
+
+    def read(path: Path, name: str, *, strict_utf8: bool = False) -> str | None:
+        text, problem = _read_source(path, name, strict_utf8=strict_utf8)
+        if problem is not None:
+            problems.append(problem)
+        if text is not None:
+            files.append((name, text))
+        return text
+
     if root_path.is_dir():
         for name in MANIFEST_NAMES:
             path = root_path / name
-            if not path.is_file():
-                continue
-            if name == "pyproject.toml":
-                text = _read_pyproject_text(path)
-            else:
-                text = _read_capped_text(path)
-            if text is not None:
-                files.append((name, text))
+            if path.is_file():
+                read(path, name, strict_utf8=name == "pyproject.toml")
         for path in sorted(root_path.glob(f"*{CSPROJ_SUFFIX}")):
-            if not path.is_file():
-                continue
-            text = _read_capped_text(path)
-            if text is not None:
-                files.append((path.name, text))
+            if path.is_file():
+                read(path, path.name)
         for name in CONVENTIONS_FILENAMES:
             path = root_path / name
             if not path.is_file():
                 continue
-            text = _read_capped_text(path)
-            if text is not None:
-                files.append((name, text))
-            if text:
+            text = read(path, name)
+            if text is not None and text.strip():
                 break
     rules = root_path / NATURAL_LANGUAGE_RULES_GLOB
     if rules.is_file():
-        text = _read_capped_text(rules)
-        if text is not None:
-            files.append((NATURAL_LANGUAGE_RULES_GLOB, text))
-    return ProjectSources(origin=str(root_path), files=tuple(files))
+        read(rules, NATURAL_LANGUAGE_RULES_GLOB)
+    return ProjectSources(origin=str(root_path), files=tuple(files), problems=tuple(problems))
 
 
 def _walk_local_scope(
