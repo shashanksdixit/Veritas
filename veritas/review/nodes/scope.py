@@ -2,6 +2,8 @@
 
 * ``pr`` — fetch changed files + contents via the hosting provider API (remote
   only, no local git state per FR-002); ``input_revision`` = PR/MR head sha.
+  Project context comes from the repository root through the same API:
+  manifests at the head commit, conventions and rules at the base commit (T120).
 * ``project``/``module`` — walk the directory tree for supported-language files.
 * ``file`` — a single file.
 For local scopes ``input_revision`` is ``sha256:<hex>``, a digest of the
@@ -41,7 +43,12 @@ from veritas.review.test_index import build_batch_test_indexes
 from veritas.security.opengrep import collect_sast
 from veritas.utils.languages import is_supported
 from veritas.utils.paths import matching_exclusion
-from veritas.utils.project_context import CSPROJ_SUFFIX, MANIFEST_NAMES, MAX_SOURCE_BYTES
+from veritas.utils.project_context import (
+    CSPROJ_SUFFIX,
+    MANIFEST_NAMES,
+    MAX_SOURCE_BYTES,
+    is_csproj,
+)
 
 _SKIP_DIRS = {
     ".git",
@@ -391,14 +398,27 @@ def _fetch_pr(ctx: ScopeContext) -> dict:
     ctx.log.info(f"Fetching PR {parsed.ref} from {parsed.provider}")
     patterns = ctx.exclude
 
+    # One request gives both commits: the head for the files and manifests,
+    # the base for conventions and rules (T120). head_sha made this same
+    # request and kept only the head.
+    refs = host.pull_refs(parsed.owner, parsed.repo, parsed.number)
+    sha = refs.head_sha
+    # Every path the PR touches, deleted and renamed-away ones included, so the
+    # project-context reader can say when the PR changes a conventions or rules file.
+    changed: set[str] = set()
     if parsed.provider == "github":
-        sha = host.head_sha(parsed.owner, parsed.repo, parsed.number)
         items = host.list_pr_files(parsed.owner, parsed.repo, parsed.number)
+        for item in items:
+            changed.add(_normalize_rel(item["filename"]))
+            if item.get("previous_filename"):
+                changed.add(_normalize_rel(item["previous_filename"]))
     else:
-        sha = host.head_sha(parsed.owner, parsed.repo, parsed.number)
         changes = host.list_mr_changes(parsed.owner, parsed.repo, parsed.number)
         items = []
         for change in changes:
+            changed.add(_normalize_rel(change["new_path"]))
+            if change.get("old_path"):
+                changed.add(_normalize_rel(change["old_path"]))
             if not change.get("deleted_file"):
                 items.append({"filename": change["new_path"]})
 
@@ -439,7 +459,129 @@ def _fetch_pr(ctx: ScopeContext) -> dict:
         "skipped_languages": skipped,
         "excluded_files": _excluded_files(excluded),
         "input_revision": sha,
+        "base_sha": refs.base_sha,
+        "changed_paths": frozenset(changed),
     }
+
+
+# At most this many ``*.csproj`` files are fetched from a PR's repository root.
+MAX_PR_CSPROJ = 3
+
+
+def _read_pr_project_sources(
+    ctx: ScopeContext, head: str | None, base: str | None, changed_paths: frozenset[str]
+) -> ProjectSources:
+    """Read a PR's project-context files through the hosting API (T120,
+    FR-009/FR-010/FR-011).
+
+    Only the repository root is read, only through ``ctx.fetcher`` (GET
+    requests), and each file keeps its bare root name.
+
+    - Manifests at the head commit: the head listing says which of
+      ``MANIFEST_NAMES`` exist as files; up to ``MAX_PR_CSPROJ`` ``*.csproj``
+      files, sorted, follow them.
+    - Conventions and ``.veritas/rules.md`` at the base commit, so a PR cannot
+      change the rules it is reviewed by: the first of ``CONVENTIONS_FILENAMES``
+      in the base listing whose text is not blank, and the rules file when it
+      exists and is not blank. When the PR changes one of these files, the base
+      version is still the one read, and a problem says so.
+
+    A file whose listed size exceeds ``MAX_SOURCE_BYTES`` is not fetched; when
+    the listing has no size (GitLab) the limit is applied to the UTF-8 length
+    of the fetched text. pyproject.toml is decoded strictly, as the local
+    reader decodes it. A provider error (anything but 404, which means absent)
+    becomes one problem naming what was being read, and reading goes on; a
+    failed root listing means nothing is read from that commit. No provider
+    error leaves this function, so the review always continues. The provider
+    error is the fetcher's ``api_error``: this module imports nothing from
+    ``veritas.hosting`` (T111).
+
+    Requests: one root listing per commit (GitLab: up to ``MAX_TREE_PAGES``
+    pages each), at most 10 manifests, 3 conventions files and 1 rules file.
+    """
+    parsed = ctx.pr
+    host = ctx.fetcher
+    files: list[tuple[str, str]] = []
+    problems: list[str] = []
+
+    def root_files(ref: str, which: str, consequence: str) -> dict | None:
+        """The files in the root listing at ``ref`` by name, or None when it failed."""
+        try:
+            entries = host.list_root(parsed.owner, parsed.repo, ref)
+        except host.api_error as exc:
+            problems.append(
+                f"reading the repository root at the {which} commit failed: {exc}; {consequence}"
+            )
+            return None
+        return {entry.name: entry for entry in entries if entry.type == "file"}
+
+    def read(
+        name: str, ref: str, which: str, size: int | None, *, strict_utf8: bool = False
+    ) -> str | None:
+        """The text of ``name`` at ``ref``, or None (absent, or a problem recorded)."""
+        too_large = f"{name} over {MAX_SOURCE_BYTES} bytes, skipped"
+        if size is not None and size > MAX_SOURCE_BYTES:
+            problems.append(too_large)
+            return None
+        try:
+            text = host.read_optional(parsed.owner, parsed.repo, name, ref, strict_utf8=strict_utf8)
+        except UnicodeDecodeError:
+            problems.append(f"{name} is not valid UTF-8, skipped")
+            return None
+        except host.api_error as exc:
+            # A 404 never gets here: read_optional returns None for it.
+            problems.append(f"reading {name} at the {which} commit failed: {exc}; skipped")
+            return None
+        if text is not None and size is None and len(text.encode("utf-8")) > MAX_SOURCE_BYTES:
+            problems.append(too_large)
+            return None
+        return text
+
+    if not head:
+        problems.append("head commit unknown; manifests not read")
+    else:
+        head_files = root_files(head, "head", "manifests not read")
+        if head_files is not None:
+            names = [name for name in MANIFEST_NAMES if name in head_files]
+            names += sorted(name for name in head_files if is_csproj(name))[:MAX_PR_CSPROJ]
+            for name in names:
+                text = read(
+                    name, head, "head", head_files[name].size, strict_utf8=name == "pyproject.toml"
+                )
+                if text is not None:
+                    files.append((name, text))
+
+    if not base:
+        problems.append("base commit unknown; conventions and rules not read")
+    else:
+        base_files = root_files(base, "base", "conventions and rules not read")
+        if base_files is not None:
+            for name in CONVENTIONS_FILENAMES:
+                if name not in base_files:
+                    continue
+                text = read(name, base, "base", base_files[name].size)
+                if text is not None and text.strip():
+                    files.append((name, text))
+                    break
+            problems_before = len(problems)
+            rules = read(NATURAL_LANGUAGE_RULES_GLOB, base, "base", None)
+            if rules is not None and rules.strip():
+                files.append((NATURAL_LANGUAGE_RULES_GLOB, rules))
+            # Present at the base: listed there, or (rules) found or failing to read.
+            at_base = set(base_files)
+            if rules is not None or len(problems) > problems_before:
+                at_base.add(NATURAL_LANGUAGE_RULES_GLOB)
+            # Said last, after every read problem from the base commit.
+            for name in (*CONVENTIONS_FILENAMES, NATURAL_LANGUAGE_RULES_GLOB):
+                if name not in changed_paths:
+                    continue
+                if name in at_base:
+                    problems.append(f"{name} changed in this PR; the base version was used")
+                else:
+                    problems.append(f"{name} added in this PR; not used until it is in the base commit")
+
+    origin = f"repository root at {head[:8]}" if head else "repository root (head commit unknown)"
+    return ProjectSources(origin=origin, files=tuple(files), problems=tuple(problems))
 
 
 def _run_local(scope: ReviewScope, target: str, patterns: Sequence[str]) -> dict:
@@ -534,12 +676,13 @@ def make_scope_node(ctx: ScopeContext) -> Callable[[ReviewState], dict]:
             }
         )
         # FR-009/FR-010/FR-011: read last, so the log up to here is unchanged.
-        # A PR review has no local files to read (T120 fetches them).
-        project_sources = (
-            None
-            if scope == ReviewScope.PR
-            else _read_project_sources(_project_context_start(scope, target))
-        )
+        # A PR review reads them through the hosting API (T120).
+        if scope == ReviewScope.PR:
+            project_sources = _read_pr_project_sources(
+                ctx, result["input_revision"], result["base_sha"], result["changed_paths"]
+            )
+        else:
+            project_sources = _read_project_sources(_project_context_start(scope, target))
         return {
             "files": files,
             "skipped_languages": result["skipped_languages"],

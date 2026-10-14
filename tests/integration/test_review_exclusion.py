@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import EmptyRepoRoot
 from veritas.config.settings import Settings
 from veritas.models.entities import ReviewRun, ReviewScope
 from veritas.hosting.resolver import parse_pr_target
@@ -27,7 +28,7 @@ from veritas.utils.logging import Log
 _EXCLUDED_DIR = "aaa_excluded"
 
 
-class FakeHost:
+class FakeHost(EmptyRepoRoot):
     """Records every fetch so tests can prove excluded files are never requested."""
 
     provider = "github"

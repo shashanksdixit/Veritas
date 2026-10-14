@@ -100,6 +100,10 @@ class GitLabFetcher:
     """Read-only GitLab client: MR details and refs, changes, file at ref,
     root listing."""
 
+    # The error every failed request raises, named here so the scope node can
+    # catch it without importing this module (T120).
+    api_error = GitLabAPIError
+
     def __init__(self, token: str, log: Log | None = None, *, base_url: str = DEFAULT_URL) -> None:
         self.log = log or Log()
         self.base_url = _api_url(base_url)
@@ -169,7 +173,9 @@ class GitLabFetcher:
                 )
             page = next_page
 
-    def read_optional(self, owner: str, repo: str, path: str, ref: str) -> str | None:
+    def read_optional(
+        self, owner: str, repo: str, path: str, ref: str, *, strict_utf8: bool = False
+    ) -> str | None:
         """A file's text at ``ref``, or None when GitLab answers 404 (absent).
 
         Every other failure raises ``GitLabAPIError`` unchanged, so "absent"
@@ -177,6 +183,11 @@ class GitLabFetcher:
         object (a list, as for a directory) or has no base64 content (encoding
         ``"none"`` or anything else) also raises, carrying the response's HTTP
         status, instead of reading as empty text.
+
+        Text is decoded as UTF-8 with invalid bytes replaced. With
+        ``strict_utf8`` (T120, for pyproject.toml) it is decoded as
+        ``utf-8-sig`` instead, so a leading byte-order mark is dropped and
+        invalid UTF-8 raises ``UnicodeDecodeError``, as the local reader does.
         """
         pid = self.project_id(owner, repo)
         try:
@@ -202,7 +213,10 @@ class GitLabFetcher:
             raise GitLabAPIError(status, 'file has no content (encoding "none"); it may be too large', path=path)
         if encoding != "base64" or not isinstance(content, str):
             raise GitLabAPIError(status, f"unexpected file encoding {encoding!r}", path=path)
-        return base64.b64decode(content).decode("utf-8", errors="replace")
+        raw = base64.b64decode(content)
+        if strict_utf8:
+            return raw.decode("utf-8-sig")
+        return raw.decode("utf-8", errors="replace")
 
     def list_mr_changes(self, owner: str, repo: str, iid: int) -> list[dict]:
         pid = self.project_id(owner, repo)

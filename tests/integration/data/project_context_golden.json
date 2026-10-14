@@ -47,10 +47,8 @@
     "log": []
   },
   "g": {
-    "context": "Note: Project context unavailable for a remote PR review (no local manifest/conventions access); using generic guidance.",
-    "log": [
-      "[info] Project context unavailable for a remote PR review (no local manifest/conventions access); using generic guidance."
-    ]
+    "context": "Note: Project context unavailable (no detectable manifests, conventions, or custom rules); using generic guidance.",
+    "log": []
   },
   "h": {
     "context": "Detected manifest language/framework versions:\n  - Go 1.22",

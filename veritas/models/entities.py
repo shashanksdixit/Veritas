@@ -137,7 +137,8 @@ class ReviewRun(BaseModel):
     # separators (T119); project_context_reason is one line, set when context is
     # partial or unavailable; project_context_origin is the project root the
     # reader walked up to (the start directory when it found none), as shown in
-    # the report (relative to the working directory, never an absolute path).
+    # the report (relative to the working directory, never an absolute path);
+    # for a PR review "repository root at <head sha first 8>" (T120).
     # All None/empty when the run never reached the context node, so a
     # report written before 1.10.0 still validates.
     project_context_status: ProjectContextStatus | None = None

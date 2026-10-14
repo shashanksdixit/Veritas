@@ -118,7 +118,8 @@ class ReviewRun(BaseModel):
     # root was found), each source named relative to it, as the report shows
     # it: relative to the working
     # directory ("." for the directory itself), or only the directory name when
-    # it lies outside it, never an absolute path; None for a PR review. All
+    # it lies outside it, never an absolute path; for a PR review (T120)
+    # "repository root at <first 8 characters of the head SHA>", unshortened. All
     # None/empty when the run never reached the context node, so a pre-1.10.0
     # report still validates; consumers treat None as "not recorded".
     project_context_status: ProjectContextStatus | None = None  # "detected" | "partial" | "unavailable"
@@ -337,22 +338,44 @@ class ReviewState(TypedDict):
 ### Project sources (T116)
 
 `project_sources: ProjectSources | None` is an overwrite channel written only
-by the scope node; it starts as None and stays None for `--scope pr`. The
-context node renders project context from it and never reads the filesystem;
-it also records the `ReviewRun.project_context_*` fields from it (T117).
+by the scope node; it starts as None and the scope node sets it for every
+scope, `--scope pr` included (T120). The context node renders project context
+from it the same way for every scope and never reads the filesystem or the
+network; it also records the `ReviewRun.project_context_*` fields from it
+(T117).
 
 `ProjectSources` (in `veritas/review/state.py`) is
 `@dataclass(frozen=True, slots=True)`:
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `origin` | `str` | The project root the reader walked up to, or the start directory when it found none (T119) |
+| `origin` | `str` | The project root the reader walked up to, or the start directory when it found none (T119); for `--scope pr`, `repository root at <first 8 characters of the head SHA>` (T120) |
 | `files` | `tuple[tuple[str, str], ...]` | `(name, text)` pairs in read order, each name the path relative to `origin` with `/` separators, for example `("src/pkg/pyproject.toml", "...")`, `("AGENTS.md", "...")` or `(".veritas/rules.md", "...")`; names are unique; `text(name)` returns one or None by exact name; `role(key)` returns the `(name, text)` whose name is `key` or ends with `/key`, or None; at most one file plays each role key (each manifest name, each conventions name and `.veritas/rules.md`; `*.csproj` files are exempt), else `ValueError` |
 | `problems` | `tuple[str, ...]` | One short line per file the reader had to skip, in read order (T118): `<name> over 200000 bytes, skipped`, `<name> could not be read, skipped`, `<name> is not valid UTF-8, skipped` (pyproject.toml), each `<name>` relative to `origin` |
 
 `files` is a tuple of pairs rather than a mapping so that nothing can change
 it after the scope node builds it and so it compares, copies and pickles like
-any other state value. The scope node reads from the start directory (the
+any other state value.
+
+For `--scope pr` (T120) the scope node reads through `ScopeContext.fetcher`
+only, and only the repository root, each file keeping its bare name.
+Manifests come from the root at the PR head commit: the head listing
+(`list_root`) says which of the named manifests exist as files, then up to
+three `*.csproj` files, sorted. Conventions and `.veritas/rules.md` come from
+the root at the PR base commit: the first of AGENTS.md, CONVENTIONS.md and
+STYLE.md in the base listing whose text is not blank, and the rules file when
+`read_optional` finds it and it is not blank. A file whose listed size is over
+200,000 bytes is not fetched; GitLab lists no sizes, so there the limit is
+applied to the UTF-8 length of the fetched text. pyproject.toml is fetched
+with `strict_utf8`, so it decodes as the local reader decodes it. More
+`problems` lines are possible for a PR: `reading <name> at the head|base commit
+failed: <error>; skipped`, `reading the repository root at the head|base commit
+failed: <error>; manifests not read|conventions and rules not read`,
+`head commit unknown; manifests not read`, `base commit unknown; conventions and
+rules not read`, `<name> changed in this PR; the base version was used`, and
+`<name> added in this PR; not used until it is in the base commit`.
+
+For a local review the scope node reads from the start directory (the
 target, or the file's directory for `--scope file`, by `os.path.abspath`, links
 not resolved) up to the project root (T119): the first directory at or above
 it holding `.git` (a directory or a file) or a `.veritas/config.toml` file; a

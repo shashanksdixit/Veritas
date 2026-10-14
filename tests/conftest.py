@@ -43,6 +43,41 @@ def fake_secret(prefix: str, body: str) -> str:
     return prefix + body
 
 
+class FakeHostingAPIError(RuntimeError):
+    """The error a fake fetcher raises, as GitHubAPIError and GitLabAPIError
+    do: a status and a one-line message."""
+
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(f"fake API error: {status} — {detail}")
+        self.status = status
+
+
+class EmptyRepoRoot:
+    """Base for a fake PR fetcher: the project-context reads (T120).
+
+    The scope node asks a PR fetcher for ``pull_refs`` (one call for the head
+    and base commits) and then reads the repository root through
+    ``list_root`` and ``read_optional``, catching ``api_error``. This base
+    answers with ``head_sha`` from the fake and ``BASE_SHA``, and an empty
+    root at both commits, so a fake that only serves the PR's files reviews
+    with project context unavailable and makes no other call.
+    """
+
+    api_error = FakeHostingAPIError
+    BASE_SHA = "base0000"
+
+    def pull_refs(self, owner, repo, number):
+        from veritas.hosting.types import PullRefs
+
+        return PullRefs(head_sha=self.head_sha(owner, repo, number), base_sha=self.BASE_SHA)
+
+    def list_root(self, owner, repo, ref):
+        return []
+
+    def read_optional(self, owner, repo, path, ref, *, strict_utf8=False):
+        return None
+
+
 APP_CONTENT = (
     "import os\n"
     'print("hello")\n'

@@ -50,6 +50,27 @@ constitution Principle VIII / FR-016.
   their text is not redacted, and neither are Click's own usage errors.
 
 ### Added
+- PR reviews now use project context (FR-009, FR-010, FR-011, T120). For
+  `--scope pr` the manifests are read from the repository root at the PR head
+  commit, and AGENTS.md / CONVENTIONS.md / STYLE.md and `.veritas/rules.md`
+  from the repository root at the PR base commit, so a PR cannot change the
+  rules it is reviewed by. Everything goes through the read-only hosting
+  fetcher (GET only, never local git state): at most 16 more requests per
+  GitHub run, 114 per GitLab run. The report says, for example,
+  `- **Project context**: detected — pyproject.toml (from repository root at abcd1234)`.
+  A PR that changes a conventions or rules file is still reviewed with the
+  base version, and the report says so (partial). A read failure other than
+  404 (for example a 502) is not fatal here: it becomes a stated problem, the
+  context is partial or unavailable, and the review finishes with its usual
+  exit code. The reason `not read for PR reviews yet` and the note
+  `Project context unavailable for a remote PR review` are gone; a PR whose
+  root holds nothing now says `no manifest, conventions file or rules file found`.
+  pyproject.toml fetched for a PR is decoded as the local reader decodes it (a
+  leading byte-order mark ignored, invalid UTF-8 stated). `read_optional` on
+  both fetchers gains a keyword `strict_utf8` (default unchanged), and each
+  fetcher class names its error as `api_error`. No schema change:
+  `project_context_origin` now holds `repository root at <8-character head SHA>`
+  for a PR review instead of null.
 - A local review finds project context above its target (FR-009, FR-010,
   FR-011, T119). From the start directory (the target, or a file target's
   directory) Veritas walks up to the project root: the first directory holding

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import FakeLLM, default_fake_llm
+from tests.conftest import EmptyRepoRoot, FakeLLM, default_fake_llm
 
 from veritas.config.constants import LAST_REPORT_JSON
 from veritas.config.settings import Settings
@@ -81,7 +81,7 @@ def test_pr_review_posts_when_requested(monkeypatch, settings):
     from veritas.review import graph as graph_module
     from veritas.review.nodes.scope import _normalize_rel
 
-    class FakeHost:
+    class FakeHost(EmptyRepoRoot):
         provider = "github"
 
         def __init__(self):
@@ -205,7 +205,7 @@ def greet() -> None:
 """
 
 
-class _PrHost:
+class _PrHost(EmptyRepoRoot):
     """A PR that touches the app and its spec, and nothing else (FR-002)."""
 
     provider = "github"

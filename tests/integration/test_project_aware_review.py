@@ -103,11 +103,17 @@ def test_empty_project_reports_context_unavailable_with_the_reason(tmp_path, set
     assert f"Context: unavailable — {reason}" in stdout_lines
 
 
-def test_pr_review_reports_context_unavailable_not_read_yet(monkeypatch, settings, capsys):
+def test_pr_review_with_an_empty_repository_root_reports_nothing_found(
+    monkeypatch, settings, capsys
+):
+    """T120: a PR's project context is read from its repository root; this
+    one holds nothing, so it is unavailable for the same reason as a local
+    project with nothing, and the origin names the head commit."""
+    from tests.conftest import EmptyRepoRoot
     from veritas.hosting.factory import HostingClients
     from veritas.models.entities import ProjectContextStatus
 
-    class _Host:
+    class _Host(EmptyRepoRoot):
         provider = "github"
 
         def head_sha(self, owner, repo, number):
@@ -127,12 +133,13 @@ def test_pr_review_reports_context_unavailable_not_read_yet(monkeypatch, setting
     outcome = run_review(settings, ReviewScope.PR, "acme/widget#3", llm=FakeLLM({}))
     report, md_lines, stdout_lines = _outputs(outcome, capsys)
 
+    reason = "no manifest, conventions file or rules file found"
     assert report.run.project_context_status is ProjectContextStatus.UNAVAILABLE
     assert report.run.project_context_sources == []
-    assert report.run.project_context_reason == "not read for PR reviews yet"
-    assert report.run.project_context_origin is None
-    assert "- **Project context**: unavailable — not read for PR reviews yet" in md_lines
-    assert "Context: unavailable — not read for PR reviews yet" in stdout_lines
+    assert report.run.project_context_reason == reason
+    assert report.run.project_context_origin == "repository root at abcd1234"
+    assert f"- **Project context**: unavailable — {reason}" in md_lines
+    assert f"Context: unavailable — {reason}" in stdout_lines
 
 
 # --- project-context problems are stated, not silent (T118, FR-009) ---

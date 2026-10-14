@@ -25,9 +25,11 @@ Both fetchers offer the same three project-context methods, all plain `GET` requ
 |--------|---------|---------|
 | `pull_refs(owner, repo, number)` | `PullRefs(head_sha, base_sha)` | The PR/MR's head and base commit SHAs. `head_sha(...)` is now `pull_refs(...).head_sha`, unchanged for its callers. |
 | `list_root(owner, repo, ref)` | `list[RootEntry(name, type, size)]` | The repository root at `ref`. Only the root is listed; `type` is `"file"` or `"dir"`, and other entries (symlinks, submodules) are left out. `size` is the file's byte count where the provider reports it, else `None`; it is always `None` for directories. |
-| `read_optional(owner, repo, path, ref)` | `str` or `None` | The file's text at `ref`. **`None` means absent and is returned only for HTTP 404.** Every other HTTP or network error raises the provider's API error unchanged (for example status 502), so a caller can tell "absent" from "failed". A response that is not one file with base64 content (a directory listing, a non-file entry, encoding `"none"`) raises the provider's API error with the response's HTTP status and a detail naming the problem, never returning `""`. |
+| `read_optional(owner, repo, path, ref, *, strict_utf8=False)` | `str` or `None` | The file's text at `ref`, decoded as UTF-8 with invalid bytes replaced; with `strict_utf8=True` (T120, used for pyproject.toml) decoded as `utf-8-sig`, so a leading byte-order mark is dropped and invalid UTF-8 raises `UnicodeDecodeError`. **`None` means absent and is returned only for HTTP 404.** Every other HTTP or network error raises the provider's API error unchanged (for example status 502), so a caller can tell "absent" from "failed". A response that is not one file with base64 content (a directory listing, a non-file entry, encoding `"none"`) raises the provider's API error with the response's HTTP status and a detail naming the problem, never returning `""`. |
 
-No caller uses these methods yet.
+Each fetcher class also names its API error as `api_error` (`GitHubAPIError`, `GitLabAPIError`), so the scope node can catch it without importing `veritas.hosting` (T120).
+
+**Caller (T120)**: the scope node of a `--scope pr` review calls `pull_refs` once (in place of `head_sha`), then `list_root` at the head commit and `read_optional` for each root manifest, then `list_root` at the base commit and `read_optional` for the conventions files the base listing holds and for `.veritas/rules.md`. A file whose listed size is over 200,000 bytes is not fetched. Requests added per run: on GitHub at most 16 (2 listings, 10 manifests, 3 conventions files, 1 rules file); on GitLab each listing may take up to 50 pages, so at most 114. Each may be retried on 429 as below. Errors from these reads follow the exception in "Error Handling Contract".
 
 ---
 
@@ -206,9 +208,11 @@ A bare number (e.g. `123`) is **rejected** with exit code 1 and a clear stderr d
 
 ## Error Handling Contract
 
-All hosting API errors produce:
+All hosting API errors produce, except for project-context reads (below):
 1. Exit code 1 (fatal)
 2. Diagnostic message on stderr: `[error] {provider} API error: {status} — {detail}`
 3. No partial report emitted (FR-002 edge case: PR not found / access denied → clear failure, no misrepresentation)
+
+**Exception: project-context reads (T120, FR-009).** An error from `list_root` or `read_optional` while the scope node reads a PR's project context (any error but 404, which means absent; a 429 is still retried first) is not fatal. It becomes one problem line in the report's project context, naming what was being read and the error message (for example `reading pyproject.toml at the head commit failed: github API error: 502 — Bad Gateway (path: pyproject.toml); skipped`); the context becomes partial or unavailable and the review continues with its usual exit code. It is not added to the run's errors. A failed root listing means nothing is read from that commit. `pull_refs`, the PR file list and the PR's file contents stay fatal as above.
 
 Rate limiting (HTTP 429): retry with exponential backoff (max 3 retries, 1s/2s/4s delays). If all retries exhausted, treat as fatal.

@@ -9,7 +9,7 @@ import hashlib
 import re
 from pathlib import Path
 
-from tests.conftest import default_fake_llm
+from tests.conftest import EmptyRepoRoot, default_fake_llm
 
 from veritas.config.constants import LAST_REPORT_JSON
 from veritas.hosting.factory import HostingClients
@@ -97,7 +97,7 @@ def test_revision_appears_in_the_report_header(sample_project, settings):
 def test_pr_scope_keeps_the_head_commit_sha(monkeypatch, settings):
     from veritas.review import graph as graph_module
 
-    class Host:
+    class Host(EmptyRepoRoot):
         provider = "github"
 
         def head_sha(self, owner, repo, number):

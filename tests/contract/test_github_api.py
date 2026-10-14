@@ -316,3 +316,36 @@ def test_project_context_reads_send_only_gets_through_the_hooked_client():
     client.list_root(OWNER, REPO, "b")
     client.read_optional(OWNER, REPO, "README.md", "b")
     assert methods == ["GET", "GET", "GET"]
+
+
+# --- strict decoding for pyproject.toml (T120) ---------------------------------
+
+
+def _bytes_handler(data: bytes):
+    def handler(request: httpx.Request) -> httpx.Response:
+        content = base64.b64encode(data).decode()
+        return _json_response({"type": "file", "encoding": "base64", "content": content})
+
+    return handler
+
+
+def test_read_optional_strict_utf8_drops_a_leading_bom():
+    fetcher = _make_fetcher(_bytes_handler(b"\xef\xbb\xbf[project]\n"))
+    assert fetcher.read_optional(OWNER, REPO, "pyproject.toml", "h", strict_utf8=True) == "[project]\n"
+
+
+def test_read_optional_strict_utf8_raises_on_invalid_utf8():
+    fetcher = _make_fetcher(_bytes_handler(b'name = "caf\xe9"\n'))
+    with pytest.raises(UnicodeDecodeError):
+        fetcher.read_optional(OWNER, REPO, "pyproject.toml", "h", strict_utf8=True)
+
+
+def test_read_optional_default_decoding_is_unchanged():
+    """Without strict_utf8 a BOM is kept and invalid bytes are replaced, as before T120."""
+    fetcher = _make_fetcher(_bytes_handler(b'\xef\xbb\xbfname = "caf\xe9"\n'))
+    assert fetcher.read_optional(OWNER, REPO, "pyproject.toml", "h") == '\ufeffname = "caf\ufffd"\n'
+
+
+def test_fetcher_names_its_api_error():
+    """The scope node catches the fetcher's api_error without importing this module."""
+    assert GitHubFetcher.api_error is GitHubAPIError

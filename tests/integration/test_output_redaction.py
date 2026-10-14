@@ -12,7 +12,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from tests.conftest import APP_CONTENT, FakeLLM, canned_code_findings, fake_secret
+from tests.conftest import APP_CONTENT, EmptyRepoRoot, FakeLLM, canned_code_findings, fake_secret
 
 from veritas.cli.app import app
 from veritas.config.constants import LAST_REPORT_JSON, SUPPRESSIONS_PATH
@@ -28,7 +28,7 @@ MR_URL = f"https://oauth2:{GLPAT}@gitlab.com/group/repo/-/merge_requests/1"
 MASKED_MR_URL = "[REDACTED]gitlab.com/group/repo/-/merge_requests/1"
 
 
-class FakeGitLab:
+class FakeGitLab(EmptyRepoRoot):
     """Serves one MR (src/app.py and spec.md) and records every posted note."""
 
     provider = "gitlab"

@@ -27,7 +27,8 @@ class ProjectSources:
     """The project-context files the scope node read, for the context node (T116).
 
     ``origin`` says where they came from: the project root the reader walked
-    up to, or the start directory when it found none (T119). ``files`` holds
+    up to, or the start directory when it found none (T119); for a PR,
+    ``repository root at <head sha first 8>`` (T120). ``files`` holds
     ``(name, text)`` pairs in the order they were read, each name the file's
     path relative to ``origin`` with ``/`` separators (``AGENTS.md``,
     ``src/pkg/pyproject.toml``). It is a tuple of pairs rather than a dict, or a
@@ -36,7 +37,8 @@ class ProjectSources:
     any other state value, which a ``MappingProxyType`` cannot. The file count
     is a handful, so looking a name up with ``text()`` by a linear scan costs
     nothing. ``problems`` holds one short line per file the reader had to
-    skip (too large, unreadable, pyproject.toml not valid UTF-8; T118), for
+    skip (too large, unreadable, pyproject.toml not valid UTF-8; T118) and,
+    for a PR, per failed API read or rules file the PR changes (T120), for
     the report and the log.
 
     The parsers find a file by its role (``role``): ``pyproject.toml`` is

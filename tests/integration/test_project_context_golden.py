@@ -16,6 +16,11 @@ Cases l to o (T119) walk up from a module or file target to a project root
 marked by ``.git``. They are new behaviour, so their expected context, log,
 sources and origin are written by hand below rather than captured.
 
+Case g (a PR review) changed on purpose at T120: it no longer uses a
+hard-coded "unavailable for a remote PR review" note but reads the PR's
+repository root through the fetcher, like any other scope. Its fake root is
+empty, so g now renders case f's "nothing detectable" note with no log line.
+
 Case ``a`` reviews this repository, so its golden follows the repository's own
 ``pyproject.toml``: a dependency change there means recapturing it.
 """
@@ -30,6 +35,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import EmptyRepoRoot
 from tests.integration.project_context_cases import (
     CASE_K_SECRET,
     PR_TARGET,
@@ -50,8 +56,8 @@ GOLDEN = json.loads(
 )
 
 
-class _FakeFetcher:
-    """A PR with one changed file; enough for the scope node to finish."""
+class _FakeFetcher(EmptyRepoRoot):
+    """A PR with one changed file and an empty repository root at both commits."""
 
     def head_sha(self, owner, repo, number):
         return "abcd1234"
@@ -229,8 +235,14 @@ def test_no_ancestor_of_tmp_path_is_a_project_root(tmp_path):
         )
 
 
-def test_golden_g_pr_keeps_the_hard_coded_note():
-    assert _scope_then_context(ReviewScope.PR, PR_TARGET, fetcher=_FakeFetcher()) == GOLDEN["g"]
+def test_golden_g_pr_with_an_empty_repository_root():
+    """T120: a PR takes the local path; an empty root renders f's note."""
+    captured, run = _run_scope_then_context(ReviewScope.PR, PR_TARGET, fetcher=_FakeFetcher())
+    assert captured == GOLDEN["g"]
+    assert GOLDEN["g"] == GOLDEN["f"]
+    assert run.project_context_status is ProjectContextStatus.UNAVAILABLE
+    assert run.project_context_reason == "no manifest, conventions file or rules file found"
+    assert run.project_context_origin == "repository root at abcd1234"
 
 
 def test_goldens_state_the_limits_they_hit():
@@ -273,10 +285,12 @@ def test_case_k_secret_never_reaches_the_context_or_the_log(tmp_path):
     assert CASE_K_SECRET in (root / "AGENTS.md").read_text(encoding="utf-8")
 
 
-def test_pr_scope_writes_no_project_sources():
+def test_pr_scope_writes_project_sources_from_the_repository_root():
     state = _state(ReviewScope.PR, PR_TARGET)
-    result = make_scope_node(_scope_ctx(fetcher=_FakeFetcher()))(state)
-    assert result["project_sources"] is None
+    sources = make_scope_node(_scope_ctx(fetcher=_FakeFetcher()))(state)["project_sources"]
+    assert sources.origin == "repository root at abcd1234"
+    assert sources.files == ()
+    assert sources.problems == ()
 
 
 def test_scope_writes_project_sources_for_a_local_scope(tmp_path):

@@ -104,6 +104,10 @@ class GitHubFetcher:
     """Read-only GitHub client: PR details and refs, changed files, file
     contents, root listing."""
 
+    # The error every failed request raises, named here so the scope node can
+    # catch it without importing this module (T120).
+    api_error = GitHubAPIError
+
     def __init__(self, token: str, log: Log | None = None, *, base_url: str | None = None) -> None:
         self.log = log or Log()
         self.base_url = (base_url or BASE_URL).rstrip("/")
@@ -168,7 +172,9 @@ class GitHubFetcher:
             )
         return entries
 
-    def read_optional(self, owner: str, repo: str, path: str, ref: str) -> str | None:
+    def read_optional(
+        self, owner: str, repo: str, path: str, ref: str, *, strict_utf8: bool = False
+    ) -> str | None:
         """A file's text at ``ref``, or None when GitHub answers 404 (absent).
 
         Every other failure raises ``GitHubAPIError`` unchanged, so "absent"
@@ -176,6 +182,11 @@ class GitHubFetcher:
         file too large for the contents API (encoding ``"none"`` with empty
         content, GitHub's answer for 1-100 MB files) also raise, carrying the
         response's HTTP status, instead of reading as empty text.
+
+        Text is decoded as UTF-8 with invalid bytes replaced. With
+        ``strict_utf8`` (T120, for pyproject.toml) it is decoded as
+        ``utf-8-sig`` instead, so a leading byte-order mark is dropped and
+        invalid UTF-8 raises ``UnicodeDecodeError``, as the local reader does.
         """
         try:
             response = self._request(
@@ -205,7 +216,10 @@ class GitHubFetcher:
             )
         if encoding != "base64" or not isinstance(content, str):
             raise GitHubAPIError(status, f"unexpected file encoding {encoding!r}", path=path)
-        return base64.b64decode(content).decode("utf-8", errors="replace")
+        raw = base64.b64decode(content)
+        if strict_utf8:
+            return raw.decode("utf-8-sig")
+        return raw.decode("utf-8", errors="replace")
 
     def list_pr_files(self, owner: str, repo: str, number: int) -> list[dict]:
         return self._paginate(f"/repos/{owner}/{repo}/pulls/{number}/files", {"per_page": "100"})

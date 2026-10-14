@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import EmptyRepoRoot
 from veritas.config.settings import Settings
 from veritas.models.entities import ReviewRun, ReviewScope
 from veritas.hosting.resolver import parse_pr_target
@@ -43,7 +44,7 @@ def spec_project(tmp_path: Path) -> Path:
     return tmp_path
 
 
-class FakeHost:
+class FakeHost(EmptyRepoRoot):
     """Records every fetch so a test can prove what was and was not requested."""
 
     provider = "github"

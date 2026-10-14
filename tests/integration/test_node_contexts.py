@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 import veritas.review.nodes.scope as scope_module
-from tests.conftest import default_fake_llm
+from tests.conftest import EmptyRepoRoot, default_fake_llm
 from veritas.config.settings import Settings
 from veritas.hosting.factory import HostingClients
 from veritas.hosting.resolver import parse_pr_target
@@ -110,7 +110,7 @@ def _capture_contexts(monkeypatch) -> dict:
     return seen
 
 
-class _Fetcher:
+class _Fetcher(EmptyRepoRoot):
     def head_sha(self, owner, repo, number):
         return "abcd1234"
 

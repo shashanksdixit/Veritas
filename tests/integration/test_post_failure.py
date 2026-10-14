@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import FakeLLM, default_fake_llm, fake_secret
+from tests.conftest import EmptyRepoRoot, FakeLLM, default_fake_llm, fake_secret
 
 from veritas.config.constants import LAST_REPORT_JSON
 from veritas.config.settings import Settings
@@ -26,7 +26,7 @@ RAW_BODY = (
 )
 
 
-class ForbiddenHost:
+class ForbiddenHost(EmptyRepoRoot):
     """PR fetching works; posting the comment fails with a 403."""
 
     provider = "github"

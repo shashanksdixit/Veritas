@@ -791,14 +791,28 @@ def test_record_problems_with_nothing_detected_is_unavailable_with_the_problems(
     assert record["project_context_reason"] == "pyproject.toml is not valid UTF-8"
 
 
-def test_record_pr_review_is_unavailable_not_read_yet():
-    record = project_context_record(ReviewScope.PR, None)
-    assert record == {
-        "project_context_status": ProjectContextStatus.UNAVAILABLE,
-        "project_context_sources": [],
-        "project_context_reason": "not read for PR reviews yet",
-        "project_context_origin": None,
+def test_record_pr_review_follows_the_same_rules_and_keeps_its_origin_whole():
+    """T120: a PR's sources are recorded like a local review's; its origin is
+    not a path, so it is not passed through display_origin."""
+    sources = ProjectSources(
+        origin="repository root at abcd1234",
+        files=(("pyproject.toml", _PYPROJECT),),
+        problems=("AGENTS.md changed in this PR; the base version was used",),
+    )
+    assert project_context_record(ReviewScope.PR, sources) == {
+        "project_context_status": ProjectContextStatus.PARTIAL,
+        "project_context_sources": ["pyproject.toml"],
+        "project_context_reason": "AGENTS.md changed in this PR; the base version was used",
+        "project_context_origin": "repository root at abcd1234",
     }
+
+
+def test_record_pr_review_with_an_empty_root_is_unavailable_nothing_found():
+    sources = ProjectSources(origin="repository root at abcd1234", files=())
+    record = project_context_record(ReviewScope.PR, sources)
+    assert record["project_context_status"] is ProjectContextStatus.UNAVAILABLE
+    assert record["project_context_reason"] == "no manifest, conventions file or rules file found"
+    assert record["project_context_origin"] == "repository root at abcd1234"
 
 
 # --- problems the report states (T118) ---------------------------------------------

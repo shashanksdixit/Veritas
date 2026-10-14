@@ -21,7 +21,7 @@ from veritas.review import graph as graph_module
 from veritas.hosting.factory import HostingClients, build_hosting_client
 from veritas.utils.logging import Log
 
-from tests.conftest import default_fake_llm
+from tests.conftest import EmptyRepoRoot, default_fake_llm
 
 GITHUB_TOKEN_MISSING = (
     "PR review requires a GitHub token: set VERITAS_GITHUB_TOKEN "
@@ -94,7 +94,7 @@ def test_gitlab_builds_a_read_only_fetcher_and_a_poster_on_the_configured_instan
     assert clients.poster.client.event_hooks["request"] == []
 
 
-class _ReadOnlyHost:
+class _ReadOnlyHost(EmptyRepoRoot):
     """Fetcher fake: has no posting method, so a post sent here would fail."""
 
     def head_sha(self, owner, repo, number):
