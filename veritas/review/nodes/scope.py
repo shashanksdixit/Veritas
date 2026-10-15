@@ -29,7 +29,7 @@ from veritas.config.constants import (
     NATURAL_LANGUAGE_RULES_GLOB,
 )
 from veritas.models.entities import ExcludedFile, ReviewScope, SastStatus
-from veritas.review import ReviewNotFoundError
+from veritas.review import ReviewFatalError, ReviewNotFoundError
 from veritas.review.batching import plan_batches
 from veritas.review.contexts import ScopeContext
 from veritas.review.requirements_source import (
@@ -614,7 +614,16 @@ def make_scope_node(ctx: ScopeContext) -> Callable[[ReviewState], dict]:
         ctx.log.info(f"Scanning target in scope: {target}", scope=scope.value)
 
         if scope == ReviewScope.PR:
-            result = _fetch_pr(ctx)
+            # Fetching the PR is fatal by contract (contracts/hosting-api.md):
+            # without it there is nothing to review. The provider error becomes
+            # a ReviewFatalError, so the CLI prints it as one redacted [error]
+            # line and exits 1 before any report is written (T121). Only
+            # _fetch_pr's reads are fatal; the project-context reads below
+            # catch their own errors (T120).
+            try:
+                result = _fetch_pr(ctx)
+            except ctx.fetcher.api_error as exc:
+                raise ReviewFatalError(" ".join(str(exc).split())) from exc
         else:
             result = _run_local(scope, target, ctx.exclude)
 

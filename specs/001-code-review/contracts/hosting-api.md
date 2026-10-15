@@ -210,8 +210,8 @@ A bare number (e.g. `123`) is **rejected** with exit code 1 and a clear stderr d
 
 All hosting API errors produce, except for project-context reads (below):
 1. Exit code 1 (fatal)
-2. Diagnostic message on stderr: `[error] {provider} API error: {status} — {detail}`
-3. No partial report emitted (FR-002 edge case: PR not found / access denied → clear failure, no misrepresentation)
+2. Diagnostic message on stderr: `[error] {provider} API error: {status} — {detail}`, followed by ` (path: {path})` when the error names a file. Status 0 means a network failure (detail `network error: ...`). It is one line, never a traceback: line breaks in the response body are folded into single spaces, and the line is redacted (FR-013) like every `[error]` line. Nothing is written to stdout.
+3. No partial report emitted (FR-002 edge case: PR not found / access denied → clear failure, no misrepresentation): no report file, no `.veritas/last-report.json` and, with `--post`, no comment. The scope node turns an error from `pull_refs`, the PR file list or the PR's file contents into the CLI's fatal error before any later node runs (T121); a `last-report.json` from an earlier run is left as it was.
 
 **Exception: project-context reads (T120, FR-009).** An error from `list_root` or `read_optional` while the scope node reads a PR's project context (any error but 404, which means absent; a 429 is still retried first) is not fatal. It becomes one problem line in the report's project context, naming what was being read and the error message (for example `reading pyproject.toml at the head commit failed: github API error: 502 — Bad Gateway (path: pyproject.toml); skipped`); the context becomes partial or unavailable and the review continues with its usual exit code. It is not added to the run's errors. A failed root listing means nothing is read from that commit. `pull_refs`, the PR file list and the PR's file contents stay fatal as above.
 

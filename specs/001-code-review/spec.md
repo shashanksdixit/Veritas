@@ -32,7 +32,7 @@ A developer opens a pull request on the code hosting platform. A lead (or the de
 
 1. **Given** a hosted repository with an open pull request and valid hosting credentials configured, **When** the user runs Veritas targeting that PR, **Then** Veritas fetches the PR via the hosting provider's API and produces a full report without reading a local branch or diff.
 2. **Given** a PR whose changes only touch files of unsupported languages, **When** Veritas reviews it, **Then** the report is produced for the supported portions and explicitly notes any files skipped due to language support limits.
-3. **Given** a PR that is not found, is access-denied, or the hosting API is unreachable, **When** the user runs Veritas, **Then** the command fails with a clear diagnostic message on stderr, reports no successful exit, and does not emit a partial report that could be mistaken for a complete one.
+3. **Given** a PR that is not found, is access-denied, or the hosting API is unreachable, **When** the user runs Veritas, **Then** the command exits with code 1 and prints one line on stderr, `[error] {provider} API error: {status} — {detail}` (contracts/hosting-api.md), never a traceback, and writes no report file, no `.veritas/last-report.json` and no PR comment, so nothing could be mistaken for a complete review.
 
 ---
 

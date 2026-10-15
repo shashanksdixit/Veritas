@@ -245,6 +245,14 @@ constitution Principle VIII / FR-016.
   contexts, checked by the reachability test.
 
 ### Fixed
+- A hosting API error while fetching a PR no longer ends `veritas review
+  --scope pr` with a Python traceback (FR-002, T121). An error reading the PR
+  refs, its file list or its files (for example a 404, a 502 or a network
+  failure) now prints one line, `[error] github API error: 502 — Bad Gateway`
+  (with ` (path: ...)` when a file was being read), redacted like every
+  other error, and exits 1. No report file, `.veritas/last-report.json` or
+  PR comment is produced. Errors reading project context still only degrade
+  the context (T120).
 - A pyproject.toml that is not valid UTF-8 no longer stops a local review
   with a `UnicodeDecodeError` (FR-009, T118): it is skipped and the report
   says `pyproject.toml is not valid UTF-8, skipped`.
