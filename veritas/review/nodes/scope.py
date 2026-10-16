@@ -663,7 +663,15 @@ def make_scope_node(ctx: ScopeContext) -> Callable[[ReviewState], dict]:
         files: dict[str, str] = result["files"]
         requirement_sources, requirements = _discover_requirements(ctx.log, files)
         # SAST scans exactly the post-exclusion file set (FR-029).
-        sast = collect_sast(files, scope_value=scope.value, rules=ctx.opengrep_rules)
+        sast = collect_sast(
+            files, scope_value=scope.value, rules=ctx.opengrep_rules, jobs=ctx.opengrep_jobs
+        )
+        # T122: how long the scan took and with how many jobs, whenever the
+        # OpenGrep process exited (a timeout already names its limit below).
+        if sast.elapsed_seconds is not None:
+            ctx.log.info(
+                f"OpenGrep scan finished in {sast.elapsed_seconds:.1f} s (-j {sast.jobs})"
+            )
         if sast.degraded:
             ctx.log.warn(sast.degraded)
             # The detail is the same single line as the reason when the reason

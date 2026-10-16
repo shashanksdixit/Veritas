@@ -38,6 +38,7 @@ class ScopeContext:
     batch_chars: int
     max_batches: int
     opengrep_rules: str
+    opengrep_jobs: int
     fetcher: GitHubFetcher | GitLabFetcher | None
     pr: ParsedPR | None
 

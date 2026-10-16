@@ -416,7 +416,7 @@ during the run, and without a `__dict__`.
 | Context | Given to | Fields |
 |---------|----------|--------|
 | `ReviewContext` | context, code_quality, security, requirements, test_coverage, performance, verify | `llm: LLMClient`, `log: Log` |
-| `ScopeContext` | scope (graph metadata `veritas_role: "input"`) | `log: Log`, `exclude: tuple[str, ...]`, `batch_chars: int`, `max_batches: int`, `opengrep_rules: str`, `fetcher: GitHubFetcher \| GitLabFetcher \| None`, `pr: ParsedPR \| None` |
+| `ScopeContext` | scope (graph metadata `veritas_role: "input"`) | `log: Log`, `exclude: tuple[str, ...]`, `batch_chars: int`, `max_batches: int`, `opengrep_rules: str`, `opengrep_jobs: int`, `fetcher: GitHubFetcher \| GitLabFetcher \| None`, `pr: ParsedPR \| None` |
 | `RenderContext` | render (graph metadata `veritas_role: "output"`) | `log: Log`, `report_path: str`, `batch_chars: int`, `max_batches: int`, `store: SuppressionStore`, `poster: GitHubPoster \| GitLabPoster \| None`, `pr: ParsedPR \| None` |
 
 `fetcher` and `pr` are set only for `--scope pr`; `poster` only when `--post`

@@ -248,6 +248,8 @@ def run_review(
         # [security] opengrep_rules (FR-012): the configured rules source, so
         # collect_sast/run_opengrep scan with what the config asked for.
         opengrep_rules=settings.opengrep_rules,
+        # [security] opengrep_jobs (T122): OpenGrep's "-j" job count.
+        opengrep_jobs=settings.opengrep_jobs,
         fetcher=clients.fetcher if clients is not None else None,
         pr=parsed,
     )

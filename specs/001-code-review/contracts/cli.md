@@ -41,6 +41,7 @@ Options:
 | `VERITAS_MAX_CONCURRENCY` | Maximum concurrent LLM requests (default: 4, range 1-16) | --config value |
 | `VERITAS_MAX_OUTPUT_TOKENS` | Maximum output tokens per LLM request (default: 8192, min 256, max 65536) | --config value |
 | `VERITAS_OPENGREP_RULES` | SAST rules source: a registry ruleset name (`p/...` or `r/...`) or an existing local rules file/directory (default: `p/owasp-top-ten`) | --config value |
+| `VERITAS_OPENGREP_JOBS` | OpenGrep parallel job count, passed as `-j` (default: 4, min 1) | --config value |
 | `VERITAS_GITHUB_TOKEN` | GitHub API token (PR mode) | --config value |
 | `VERITAS_GITLAB_TOKEN` | GitLab API token (PR mode) | --config value |
 | `VERITAS_GITLAB_URL` | GitLab instance URL | --config value (default: https://gitlab.com) |
@@ -172,6 +173,10 @@ opengrep_rules = "p/owasp-top-ten"           # default: SAST rules source (FR-01
                                              #  in the report as ReviewRun.sast_rules.
                                              #  Anything else is rejected as an invalid
                                              #  configuration error before the run starts.
+opengrep_jobs = 4                            # default: OpenGrep parallel jobs ("-j", FR-012),
+                                             #  at least 1; a lower value is rejected as an
+                                             #  invalid configuration error. The scan's
+                                             #  time limit stays 120 s.
 ```
 
 **Privacy rule (constitution, FR-020):** API keys and tokens (`api_key`, `github_token`, `gitlab_token`) MUST be supplied via `VERITAS_*` environment variables, `.veritas/config.local.toml` (gitignored), or a file passed with `--config` other than `.veritas/config.toml`. The committed default config file `.veritas/config.toml` MUST NOT contain them; if it does, whether it is read by default or named with `--config` under any spelling (compared by resolved path), `veritas review` exits 1 with `[error] invalid configuration: {fields} must not be set in .veritas/config.toml, which is committed; put it in .veritas/config.local.toml or the environment variable {VERITAS_FIELDS} instead`.

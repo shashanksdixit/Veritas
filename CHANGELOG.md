@@ -50,6 +50,12 @@ constitution Principle VIII / FR-016.
   their text is not redacted, and neither are Click's own usage errors.
 
 ### Added
+- `[security] opengrep_jobs` (`VERITAS_OPENGREP_JOBS`, default 4) sets how many
+  parallel jobs OpenGrep runs with, passed as `-j <n>` (FR-012, T122). A value
+  below 1 is refused with `[error] invalid configuration: opengrep_jobs: Input
+  should be greater than or equal to 1` and exit 1. When the OpenGrep process
+  exits, stderr logs one line such as `[info] OpenGrep scan finished in 31.2 s
+  (-j 4)`. No schema change.
 - PR reviews now use project context (FR-009, FR-010, FR-011, T120). For
   `--scope pr` the manifests are read from the repository root at the PR head
   commit, and AGENTS.md / CONVENTIONS.md / STYLE.md and `.veritas/rules.md`
@@ -245,6 +251,13 @@ constitution Principle VIII / FR-016.
   contexts, checked by the reachability test.
 
 ### Fixed
+- OpenGrep no longer times out on larger reviews (FR-012, T122). Without `-j`,
+  OpenGrep 1.30.1 ran one job per detected core (14 on the measured machine)
+  and the same 116-file scan took 39 to 208 s, past the 120 s limit; with 4
+  jobs it took 24 to 41 s on every run. The limit stays 120 s. A timeout's
+  reason now states it, `OpenGrep scan timed out after 120 s`, in the report's
+  SAST line, the `SAST:` stdout line and the log, replacing `OpenGrep scan
+  timed out`.
 - A hosting API error while fetching a PR no longer ends `veritas review
   --scope pr` with a Python traceback (FR-002, T121). An error reading the PR
   refs, its file list or its files (for example a 404, a 502 or a network

@@ -26,6 +26,7 @@ from veritas.config.constants import (
     CONFIG_PATH,
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
+    DEFAULT_OPENGREP_JOBS,
     LOCAL_CONFIG_PATH,
 )
 
@@ -83,6 +84,11 @@ class Settings(BaseSettings):
             "or a local rules file/directory"
         ),
     )
+    # OpenGrep's parallel job count, passed as "-j <n>". Its own default is one
+    # job per detected core, which on a many-core machine made the same scan
+    # take anywhere from 39 s to past the 120 s limit; 4 jobs finished in
+    # 24-41 s on every run (T122).
+    opengrep_jobs: int = Field(default=DEFAULT_OPENGREP_JOBS, ge=1, description="VERITAS_OPENGREP_JOBS")
 
     @field_validator("opengrep_rules", mode="after")
     @classmethod
@@ -155,6 +161,7 @@ def _flatten_toml(data: dict) -> dict:
     flat["max_batches"] = review.get("max_batches")
     security = data.get("security", {})
     flat["opengrep_rules"] = security.get("opengrep_rules")
+    flat["opengrep_jobs"] = security.get("opengrep_jobs")
     return {k: v for k, v in flat.items() if v is not None}
 
 

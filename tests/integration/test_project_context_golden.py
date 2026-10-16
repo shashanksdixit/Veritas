@@ -77,6 +77,7 @@ def _scope_ctx(*, fetcher=None) -> ScopeContext:
         batch_chars=settings.batch_chars,
         max_batches=settings.max_batches,
         opengrep_rules=settings.opengrep_rules,
+        opengrep_jobs=settings.opengrep_jobs,
         fetcher=fetcher,
         pr=parse_pr_target(PR_TARGET) if fetcher is not None else None,
     )

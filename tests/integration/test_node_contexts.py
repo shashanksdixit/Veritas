@@ -205,7 +205,8 @@ def test_only_the_render_context_holds_the_store_and_the_poster():
 
     assert review == {"llm", "log"}
     assert scope == {
-        "log", "exclude", "batch_chars", "max_batches", "opengrep_rules", "fetcher", "pr"
+        "log", "exclude", "batch_chars", "max_batches", "opengrep_rules", "opengrep_jobs",
+        "fetcher", "pr",
     }
     assert render == {
         "log", "report_path", "batch_chars", "max_batches", "store", "poster", "pr"
@@ -219,7 +220,8 @@ def test_graph_nodes_carry_their_role(settings):
     review = ReviewContext(llm=default_fake_llm(), log=log)
     scope_ctx = ScopeContext(
         log=log, exclude=(), batch_chars=48000, max_batches=8,
-        opengrep_rules=settings.opengrep_rules, fetcher=None, pr=None,
+        opengrep_rules=settings.opengrep_rules, opengrep_jobs=settings.opengrep_jobs,
+        fetcher=None, pr=None,
     )
     render_ctx = RenderContext(
         log=log, report_path="unused.md", batch_chars=48000, max_batches=8,
@@ -282,7 +284,7 @@ def _contexts() -> list:
         ReviewContext(llm=None, log=log),
         ScopeContext(
             log=log, exclude=("vendor/",), batch_chars=1000, max_batches=1,
-            opengrep_rules="auto", fetcher=None, pr=None,
+            opengrep_rules="auto", opengrep_jobs=4, fetcher=None, pr=None,
         ),
         RenderContext(
             log=log, report_path="r.md", batch_chars=1000, max_batches=1,

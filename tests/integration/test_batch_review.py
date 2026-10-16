@@ -888,7 +888,7 @@ def test_render_withholds_non_sast_findings_when_verification_did_not_run(
 
     # One SAST finding, at a location no LLM finding cites, so it survives the
     # security node's own SAST de-duplication.
-    def _stub(files_seen, *, scope_value, rules=None, opengrep_bin="opengrep"):
+    def _stub(files_seen, *, scope_value, rules=None, opengrep_bin="opengrep", jobs=4):
         return OpengrepResult(
             findings=[
                 {

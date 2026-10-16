@@ -24,6 +24,9 @@ LAST_REPORT_JSON = ".veritas/last-report.json"
 
 REPORT_PATTERN = "veritas-report-{timestamp}.md"
 
+# [security] opengrep_jobs default: OpenGrep's parallel job count ("-j"), T122.
+DEFAULT_OPENGREP_JOBS = 4
+
 SUPPORTED_LANGUAGES = ("python", "java", "javascript", "csharp", "go", "rust")
 
 # Max files collected into a review scope (safety valve for very large trees).

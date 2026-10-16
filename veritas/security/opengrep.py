@@ -11,10 +11,11 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from veritas.config.constants import SUPPORTED_LANGUAGES
+from veritas.config.constants import DEFAULT_OPENGREP_JOBS, SUPPORTED_LANGUAGES
 from veritas.utils.logging import get_log
 from veritas.utils.redaction import redact_secrets
 
@@ -22,6 +23,13 @@ OPENGREP_NOT_FOUND = "OpenGrep not found on PATH"
 OPENGREP_SCAN_FAILED = "OpenGrep scan reported an error"
 OPENGREP_NO_JSON = "OpenGrep scan produced no parseable JSON"
 SAST_NO_FILES = "no files to scan"
+
+# The scan's time limit in seconds. Not configurable (T122 caps the job count
+# instead); the not-run reason on a timeout states it.
+OPENGREP_TIMEOUT_SECONDS = 120
+
+# The clock the scan is timed with; tests replace it to avoid real timing.
+_clock = time.monotonic
 
 # A failed scan is reported as ONE line of at most this many characters: the
 # degraded reason and the logged detail are the last non-empty line of the
@@ -51,6 +59,10 @@ class OpengrepResult:
     ``findings`` is the complete result set and ``degraded``, if set, says why
     coverage is still partial (unmapped results). When ``ran`` is False,
     ``degraded`` is the one-line reason the scan did not run (FR-012).
+
+    ``elapsed_seconds`` is how long the OpenGrep process ran, set whenever it
+    exited (not on a timeout or a missing binary); ``jobs`` is the ``-j``
+    value it ran with.
     """
 
     findings: list[dict] = field(default_factory=list)
@@ -58,6 +70,8 @@ class OpengrepResult:
     degraded: str | None = None
     scan_error: str | None = None
     rules: str = "p/owasp-top-ten"
+    elapsed_seconds: float | None = None
+    jobs: int | None = None
 
 
 def run_opengrep(
@@ -65,9 +79,10 @@ def run_opengrep(
     rules: str | None = None,
     *,
     opengrep_bin: str = "opengrep",
-    timeout: int = 120,
+    timeout: int = OPENGREP_TIMEOUT_SECONDS,
+    jobs: int = DEFAULT_OPENGREP_JOBS,
 ) -> OpengrepResult:
-    """Run ``opengrep scan --config <rules> --json -o <out> <target>``.
+    """Run ``opengrep scan --config <rules> -j <jobs> --json -o <out> <target>``.
 
     Returns raw JSON results (research.md §1 schema). If the binary is absent
     returns ``degraded="OpenGrep not found on PATH"`` (FR-012) instead of
@@ -85,11 +100,16 @@ def run_opengrep(
         "scan",
         "--config",
         resolved_rules,
+        # Without -j OpenGrep runs one job per detected core, which made scan
+        # times swing past the time limit (T122).
+        "-j",
+        str(jobs),
         "--json",
         "-o",
         out_json,
         target_dir,
     ]
+    started = _clock()
     try:
         # UTF-8 with replacement, not the locale codec: OpenGrep's scan summary
         # carries box-drawing characters, and on Windows a byte outside the
@@ -103,10 +123,11 @@ def run_opengrep(
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         if isinstance(exc, subprocess.TimeoutExpired):
-            reason = "OpenGrep scan timed out"
+            reason = f"OpenGrep scan timed out after {timeout} s"
         else:
             reason = OPENGREP_NOT_FOUND
-        return OpengrepResult(degraded=reason, rules=resolved_rules)
+        return OpengrepResult(degraded=reason, rules=resolved_rules, jobs=jobs)
+    timing = {"elapsed_seconds": _clock() - started, "jobs": jobs}
 
     if proc.returncode not in (0, 1, 2):
         # opengrep exits 0 on clean scan; certain rule/scan errors yield non-zero
@@ -115,6 +136,7 @@ def run_opengrep(
             degraded=detail or OPENGREP_SCAN_FAILED,
             scan_error=detail or None,
             rules=resolved_rules,
+            **timing,
         )
 
     try:
@@ -129,6 +151,7 @@ def run_opengrep(
             degraded=detail or OPENGREP_NO_JSON,
             scan_error=detail or None,
             rules=resolved_rules,
+            **timing,
         )
     finally:
         try:
@@ -144,7 +167,7 @@ def run_opengrep(
         if language_of(path) not in SUPPORTED_LANGUAGES:
             continue
         findings.append(result)
-    return OpengrepResult(findings=findings, ran=True, rules=resolved_rules)
+    return OpengrepResult(findings=findings, ran=True, rules=resolved_rules, **timing)
 
 
 def _map_result_path(result_path: str, tmpdir: str, files: dict[str, str]) -> str | None:
@@ -181,8 +204,9 @@ def collect_sast(
     scope_value: str,
     rules: str | None = None,
     opengrep_bin: str = "opengrep",
+    jobs: int = DEFAULT_OPENGREP_JOBS,
 ) -> OpengrepResult:
-    """Run OpenGrep over exactly the scoped files.
+    """Run OpenGrep over exactly the scoped files, with ``jobs`` parallel jobs.
 
     Scoped contents are materialized into a temp directory (relative paths
     preserved) so path matching is exact regardless of scope type; the temp
@@ -205,7 +229,7 @@ def collect_sast(
             os.makedirs(os.path.dirname(dest) or tmpdir, exist_ok=True)
             with open(dest, "w", encoding="utf-8", errors="replace") as fh:
                 fh.write(content)
-        result = run_opengrep(tmpdir, rules=rules, opengrep_bin=opengrep_bin)
+        result = run_opengrep(tmpdir, rules=rules, opengrep_bin=opengrep_bin, jobs=jobs)
         findings: list[dict] = []
         unmapped = 0
         for finding in result.findings:

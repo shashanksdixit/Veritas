@@ -55,7 +55,9 @@ coverage degrades gracefully with a specific one-line reason printed to stderr.
 The rules source is configurable - `[security] opengrep_rules`
 (`VERITAS_OPENGREP_RULES`), a registry ruleset such as `p/owasp-top-ten` or an
 existing local rules file/directory - and the source used is recorded in the
-report.
+report. OpenGrep runs with `[security] opengrep_jobs` (`VERITAS_OPENGREP_JOBS`,
+default 4) parallel jobs and a 120-second limit; stderr logs how long each scan
+took.
 
 ## Setup
 
@@ -263,6 +265,13 @@ opengrep_rules = "p/owasp-top-ten"           # default: SAST rules source. A reg
                                              #  line records it with whether the scan
                                              #  ran, its result count, or the reason it
                                              #  did not run; stdout prints "SAST: ...".
+opengrep_jobs = 4                            # default: OpenGrep parallel jobs, passed as
+                                             #  "-j" (at least 1). OpenGrep's own default
+                                             #  is one job per core, which can make scan
+                                             #  times swing past the fixed 120 s limit.
+                                             #  stderr logs "[info] OpenGrep scan finished
+                                             #  in <s> s (-j <n>)"; a timeout is reported
+                                             #  as "OpenGrep scan timed out after 120 s".
 ```
 
 ### Environment variables
@@ -278,6 +287,7 @@ opengrep_rules = "p/owasp-top-ten"           # default: SAST rules source. A reg
 | `VERITAS_MAX_CONCURRENCY` | Maximum concurrent LLM requests (default: 4, range 1-16) |
 | `VERITAS_MAX_OUTPUT_TOKENS` | Maximum output tokens per LLM request (default: 8192, min 256, max 65536) |
 | `VERITAS_OPENGREP_RULES` | SAST rules source (default: `p/owasp-top-ten`); a registry ruleset name `p/...`/`r/...` or an existing local rules file or directory |
+| `VERITAS_OPENGREP_JOBS` | OpenGrep parallel job count, passed as `-j` (default: 4, min 1) |
 | `VERITAS_GITHUB_TOKEN` | GitHub API token (PR mode) |
 | `VERITAS_GITLAB_TOKEN` | GitLab API token (PR mode) |
 | `VERITAS_GITLAB_URL` | GitLab instance URL (default: https://gitlab.com) |

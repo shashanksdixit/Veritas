@@ -114,7 +114,11 @@ def test_timeout_degrades(monkeypatch):
 
     monkeypatch.setattr("veritas.security.opengrep.subprocess.run", boom)
     result = run_opengrep("x")
-    assert "timed out" in (result.degraded or "")
+    # The reason names the limit actually used (T122).
+    assert result.degraded == "OpenGrep scan timed out after 120 s"
+    assert result.ran is False
+    assert result.elapsed_seconds is None
+    assert run_opengrep("x", timeout=7).degraded == "OpenGrep scan timed out after 7 s"
 
 
 def test_result_to_finding_mapping():
@@ -559,3 +563,151 @@ def test_real_opengrep_review_reports_ran_with_one_result(
     assert report.run.sast_reason is None
     assert f"- **SAST**: ran with `{rules}` — 1 result(s)" in md_lines
     assert "SAST: ran (1 result(s))" in stdout_lines
+
+
+# --- OpenGrep runs with a capped job count and its timing is visible (T122) ---
+
+
+def _jobs_flag(cmd: list[str]) -> list[str]:
+    """The "-j <n>" pair of a built command line (exactly one is expected)."""
+    assert cmd.count("-j") == 1, cmd
+    at = cmd.index("-j")
+    return cmd[at : at + 2]
+
+
+def test_run_passes_four_jobs_by_default(tmp_path, fake_opengrep):
+    run_opengrep(str(tmp_path))
+    cmd = fake_opengrep["saw_cmd"]
+    assert _jobs_flag(cmd) == ["-j", "4"]
+    # before the output options and the trailing target directory
+    assert cmd.index("-j") < cmd.index("--json")
+
+
+def _review_via_cli(monkeypatch, sample_project, config_path) -> None:
+    """Run `veritas review` with --config; fake_opengrep records the command built.
+
+    The path goes Settings -> ScopeContext -> collect_sast -> run_opengrep;
+    only subprocess.run is faked (by the fake_opengrep fixture).
+    """
+    from typer.testing import CliRunner
+
+    import veritas.cli.app as cli_app
+
+    _use_real_collect_sast(monkeypatch)
+
+    def fake_run_review(_settings, scope_val, target, **kwargs):
+        return run_review(_settings, scope_val, target, llm=default_fake_llm(), **kwargs)
+
+    monkeypatch.setattr(cli_app, "run_review", fake_run_review)
+    result = CliRunner().invoke(
+        cli_app.app,
+        [
+            "review", "--scope", "project", "--target", str(sample_project),
+            "--config", str(config_path),
+        ],
+    )
+    assert result.exit_code == 0, result.stderr
+
+
+def test_review_scans_with_four_jobs_by_default(
+    monkeypatch, sample_project, tmp_path, fake_opengrep
+):
+    config = tmp_path / "empty-config.toml"
+    config.write_text("", encoding="utf-8")
+    _review_via_cli(monkeypatch, sample_project, config)
+    assert _jobs_flag(fake_opengrep["saw_cmd"]) == ["-j", "4"]
+
+
+def test_review_scans_with_jobs_from_the_config_file(
+    monkeypatch, sample_project, tmp_path, fake_opengrep
+):
+    config = tmp_path / "jobs-config.toml"
+    config.write_text("[security]\nopengrep_jobs = 2\n", encoding="utf-8")
+    _review_via_cli(monkeypatch, sample_project, config)
+    assert _jobs_flag(fake_opengrep["saw_cmd"]) == ["-j", "2"]
+
+
+def test_review_scans_with_jobs_from_the_environment_over_the_config_file(
+    monkeypatch, sample_project, tmp_path, fake_opengrep
+):
+    config = tmp_path / "jobs-config.toml"
+    config.write_text("[security]\nopengrep_jobs = 3\n", encoding="utf-8")
+    monkeypatch.setenv("VERITAS_OPENGREP_JOBS", "2")
+    _review_via_cli(monkeypatch, sample_project, config)
+    assert _jobs_flag(fake_opengrep["saw_cmd"]) == ["-j", "2"]
+
+
+def test_a_timeout_names_the_limit_in_the_report_stdout_and_log(
+    monkeypatch, sample_project, settings, capsys
+):
+    import subprocess
+
+    _use_real_collect_sast(monkeypatch)
+    monkeypatch.setattr("veritas.security.opengrep.shutil.which", lambda _bin: "/fake/opengrep")
+
+    def timed_out(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs["timeout"])
+
+    monkeypatch.setattr("veritas.security.opengrep.subprocess.run", timed_out)
+
+    outcome = run_review(
+        settings, ReviewScope.PROJECT, str(sample_project), llm=default_fake_llm()
+    )
+    captured = capsys.readouterr()
+    report = Report.model_validate_json(Path(LAST_REPORT_JSON).read_text(encoding="utf-8"))
+    md_lines = Path(str(outcome.report_path)).read_text(encoding="utf-8").splitlines()
+
+    reason = "OpenGrep scan timed out after 120 s"
+    assert outcome.exit_code == 0
+    assert report.run.sast_status is SastStatus.NOT_RUN
+    assert report.run.sast_reason == reason
+    assert (
+        f"- **SAST**: not run — {reason} (rules configured: `p/owasp-top-ten`)"
+    ) in md_lines
+    assert f"SAST: not run — {reason}" in captured.out.splitlines()
+    assert f"[warn] {reason}" in captured.err.splitlines()
+    # a scan that never finished has no duration line
+    assert "OpenGrep scan finished" not in captured.err
+
+
+def _fake_clock(monkeypatch, *readings: float) -> None:
+    """Replace the scan clock so each call returns the next reading."""
+    values = iter(readings)
+    monkeypatch.setattr("veritas.security.opengrep._clock", lambda: next(values))
+
+
+def test_run_records_elapsed_time_and_jobs(monkeypatch, tmp_path, fake_opengrep):
+    _fake_clock(monkeypatch, 100.0, 131.25)
+    result = run_opengrep(str(tmp_path), jobs=2)
+    assert result.ran is True
+    assert result.elapsed_seconds == pytest.approx(31.25)
+    assert result.jobs == 2
+
+
+def test_a_failed_scan_that_exited_still_records_its_elapsed_time(
+    monkeypatch, stubbed_opengrep, tmp_path
+):
+    _fake_clock(monkeypatch, 10.0, 12.5)
+    stubbed_opengrep["stderr"] = "fatal: bad rules\n"
+    result = run_opengrep(str(tmp_path))
+    assert result.ran is False
+    assert result.degraded == "fatal: bad rules"
+    assert result.elapsed_seconds == pytest.approx(2.5)
+    assert result.jobs == 4
+
+
+def test_a_finished_scan_logs_its_duration_and_job_count(
+    monkeypatch, fake_scan, sample_project, settings, capsys
+):
+    _use_real_collect_sast(monkeypatch)
+    _fake_clock(monkeypatch, 100.0, 131.2)
+    fake_scan["paths"] = []
+
+    outcome = run_review(
+        settings, ReviewScope.PROJECT, str(sample_project), llm=default_fake_llm()
+    )
+    err_lines = capsys.readouterr().err.splitlines()
+
+    assert outcome.exit_code == 0
+    finished = [line for line in err_lines if "OpenGrep scan finished" in line]
+    assert finished == ["[info] OpenGrep scan finished in 31.2 s (-j 4)"]

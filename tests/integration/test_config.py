@@ -394,6 +394,67 @@ def test_cli_bad_opengrep_rules_prints_one_error_line_and_exits_1(tmp_path):
     )
     assert "Traceback" not in result.stderr
 
+
+# --- [security] opengrep_jobs (T122): OpenGrep's "-j" job count, at least 1 ---
+
+
+def test_opengrep_jobs_default_is_4():
+    assert Settings().opengrep_jobs == 4
+
+
+def test_opengrep_jobs_override_from_config_file(tmp_path):
+    path = tmp_path / "jobs.toml"
+    path.write_text("[security]\nopengrep_jobs = 2\n", encoding="utf-8")
+    assert load_settings(str(path)).opengrep_jobs == 2
+
+
+def test_opengrep_jobs_env_overrides_file(tmp_path, monkeypatch):
+    path = tmp_path / "jobs.toml"
+    path.write_text("[security]\nopengrep_jobs = 3\n", encoding="utf-8")
+    monkeypatch.setenv("VERITAS_OPENGREP_JOBS", "2")
+    assert load_settings(str(path)).opengrep_jobs == 2
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_cli_opengrep_jobs_below_1_in_config_prints_one_error_line_and_exits_1(
+    tmp_path, value
+):
+    from typer.testing import CliRunner
+
+    from veritas.cli.app import app
+
+    path = tmp_path / "bad-jobs.toml"
+    path.write_text(f"[security]\nopengrep_jobs = {value}\n", encoding="utf-8")
+    result = CliRunner().invoke(
+        app, ["review", "--scope", "project", "--target", ".", "--config", str(path)]
+    )
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr.strip() == (
+        "[error] invalid configuration: opengrep_jobs: "
+        "Input should be greater than or equal to 1"
+    )
+    assert "Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_cli_opengrep_jobs_below_1_in_env_prints_one_error_line_and_exits_1(
+    monkeypatch, value
+):
+    from typer.testing import CliRunner
+
+    from veritas.cli.app import app
+
+    monkeypatch.setenv("VERITAS_OPENGREP_JOBS", value)
+    result = CliRunner().invoke(app, ["review", "--scope", "project", "--target", "."])
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr.strip() == (
+        "[error] invalid configuration: opengrep_jobs: "
+        "Input should be greater than or equal to 1"
+    )
+    assert "Traceback" not in result.stderr
+
 # --- secrets are refused in the committed .veritas/config.toml (T107) ---------
 
 _COMMITTED_KEY = fake_secret("sk-", "CommittedConfigKey0123456789")

@@ -14,7 +14,7 @@ from veritas.suppression.fingerprint import compute_fingerprint
 from veritas.security.opengrep import OpengrepResult
 
 
-def _fixed_sast(files, *, scope_value, rules=None, opengrep_bin="opengrep"):
+def _fixed_sast(files, *, scope_value, rules=None, opengrep_bin="opengrep", jobs=4):
     raw = [
         {
             "path": "src/app.py",

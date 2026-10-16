@@ -81,6 +81,7 @@ def _runtime(exclude: list[str] | None = None, *, host=None) -> ScopeContext:
         batch_chars=settings.batch_chars,
         max_batches=settings.max_batches,
         opengrep_rules=settings.opengrep_rules,
+        opengrep_jobs=settings.opengrep_jobs,
         fetcher=host,
         pr=parse_pr_target("acme/widget#3") if host is not None else None,
     )
