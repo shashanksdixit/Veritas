@@ -5,11 +5,18 @@
 ### I. Grounded Verification (Anti-Hallucination)
 Every finding MUST be grounded in real project context and verified against a
 cited source before it reaches the user. Verification MUST be a grounded re-check
-that re-reads each finding's cited file and lines and confirms that the cited code
-exists there: the quoted text MUST match the file at the cited lines after
-whitespace normalisation and secret redaction are applied to both. Verification
-confirms the citation, not the claim: it does not and cannot confirm that what the
-finding says about that code is correct, and the report MUST state this limit.
+of each finding's citation against the reviewed files. For a finding that quotes
+code, verification re-reads the cited file and lines and confirms that the cited
+code exists there: the quoted text MUST match the file at the cited lines after
+whitespace normalisation and secret redaction are applied to both. For evidence
+that only references code (a file, optionally with a line or line range, and no
+quoted text), verification confirms only that the file is in the reviewed file set
+and that every cited line lies between 1 and the file's length; it does not confirm
+that those lines implement the requirement. A reference that fails either check
+MUST NOT be presented as evidence. In both cases verification confirms the
+citation, not the claim: it does not and cannot confirm that what a finding or
+evidence reference says about that code is correct, and the report MUST state this
+limit for code findings and for requirement evidence.
 Verification MUST NOT be a second LLM judging the first LLM's prose for
 plausibility — that approach inherits the same hallucination failure mode, since a
 hallucinated finding is usually stated in the same confident tone as a true one.
@@ -33,10 +40,14 @@ Principle I before appearing in a report. Every security finding MUST be labeled
 with its source (the SAST tool, or LLM-identified-and-verified) so a reader can
 calibrate trust per finding rather than assuming uniform provenance across the
 security category. The SAST tool itself MUST remain fully free with unambiguous,
-long-term-stable licensing — a paid tier or a history of ambiguous rule licensing
+long-term-stable licensing — a paid tier or a history of ambiguous engine licensing
 is disqualifying. Chosen tool: OpenGrep, a fully free LGPL-2.1 fork of Semgrep
 with no paid tier and restored cross-file taint analysis, rule-syntax-compatible
-with Semgrep.
+with Semgrep. The engine's licence does not cover rules: registry-hosted rulesets
+(for example p/owasp-top-ten) carry their own licence, the Semgrep Rules License.
+Using a registry ruleset is the user's licensing choice; a local rules file or
+directory is the alternative, and the documentation MUST say so wherever it names a
+registry ruleset.
 
 ### III. Requirement Traceability
 Every review MUST check the reviewed code against the project's actual
@@ -104,9 +115,11 @@ variability MUST NOT be treated as a defect.
 
 ### LLM Backend
 The LLM backend MUST be fully configurable and fully standalone — no runtime
-dependency on OpenCode, even though OpenCode is used to build Veritas. Default:
-free models via OpenRouter, queried at runtime for its `:free`-suffixed models
-(OpenAI-compatible API) rather than a hardcoded list. If the user configures their
+dependency on OpenCode, even though OpenCode is used to build Veritas. Default: a
+single fixed model and endpoint (OpenAI-compatible API), named in the specification
+and shipped as the configuration default; Veritas does not choose a model at
+runtime. The model actually used MUST be recorded in review provenance like any
+configured model. If the user configures their
 own API key (Claude, ChatGPT, or a self-hosted Ollama endpoint), that provider
 MUST be used instead. Ollama support/testing is deferred until the rest of the
 tool is complete.
@@ -184,4 +197,4 @@ MAJOR for backward-incompatible principle changes or removals, MINOR for added o
 materially expanded principles, PATCH for clarifications and wording fixes. Every
 PR and completed review MUST verify compliance with this constitution.
 
-**Version**: 6.0.1 | **Ratified**: 2026-09-15 | **Last Amended**: 2026-10-10
+**Version**: 7.0.0 | **Ratified**: 2026-09-15 | **Last Amended**: 2026-10-19
