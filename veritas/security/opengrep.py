@@ -63,6 +63,10 @@ class OpengrepResult:
     ``elapsed_seconds`` is how long the OpenGrep process ran, set whenever it
     exited (not on a timeout or a missing binary); ``jobs`` is the ``-j``
     value it ran with.
+
+    ``skipped`` is OpenGrep's own ``paths.skipped`` list (``{"path",
+    "reason"}`` entries, each a file or a directory) from a finished scan;
+    empty when it reported none (T123).
     """
 
     findings: list[dict] = field(default_factory=list)
@@ -72,6 +76,7 @@ class OpengrepResult:
     rules: str = "p/owasp-top-ten"
     elapsed_seconds: float | None = None
     jobs: int | None = None
+    skipped: list[dict] = field(default_factory=list)
 
 
 def run_opengrep(
@@ -82,7 +87,7 @@ def run_opengrep(
     timeout: int = OPENGREP_TIMEOUT_SECONDS,
     jobs: int = DEFAULT_OPENGREP_JOBS,
 ) -> OpengrepResult:
-    """Run ``opengrep scan --config <rules> -j <jobs> --json -o <out> <target>``.
+    """Run ``opengrep scan --config <rules> -j <jobs> --verbose --json -o <out> <target>``.
 
     Returns raw JSON results (research.md §1 schema). If the binary is absent
     returns ``degraded="OpenGrep not found on PATH"`` (FR-012) instead of
@@ -104,6 +109,9 @@ def run_opengrep(
         # times swing past the time limit (T122).
         "-j",
         str(jobs),
+        # Only with --verbose does the JSON list the paths OpenGrep skipped
+        # (paths.skipped), which the report states (T123).
+        "--verbose",
         "--json",
         "-o",
         out_json,
@@ -167,7 +175,10 @@ def run_opengrep(
         if language_of(path) not in SUPPORTED_LANGUAGES:
             continue
         findings.append(result)
-    return OpengrepResult(findings=findings, ran=True, rules=resolved_rules, **timing)
+    skipped = (data.get("paths") or {}).get("skipped") or []
+    return OpengrepResult(
+        findings=findings, ran=True, rules=resolved_rules, skipped=skipped, **timing
+    )
 
 
 def _map_result_path(result_path: str, tmpdir: str, files: dict[str, str]) -> str | None:
@@ -198,6 +209,91 @@ def _map_result_path(result_path: str, tmpdir: str, files: dict[str, str]) -> st
     return best
 
 
+def _map_skipped_dir(entry_path: str, tmpdir: str, files: dict[str, str]) -> str | None:
+    """Map a skipped directory entry to its path relative to the temp directory.
+
+    The same two steps as ``_map_result_path``: an exact resolution against the
+    temp directory first, then a suffix match on the backslash-normalised path,
+    the longest suffix that is a directory holding a scoped key winning.
+    Returns ``""`` for the temp directory itself and None when no scoped file
+    lies under the entry.
+    """
+    def holds_keys(prefix: str) -> bool:
+        return any(prefix == "" or key.startswith(prefix + "/") for key in files)
+
+    try:
+        rel = (Path(tmpdir) / entry_path).resolve().relative_to(Path(tmpdir).resolve())
+        prefix = "" if rel == Path(".") else rel.as_posix()
+    except (OSError, ValueError):
+        prefix = None
+    if prefix is not None and holds_keys(prefix):
+        return prefix
+    parts = [part for part in entry_path.replace("\\", "/").split("/") if part]
+    for start in range(len(parts)):
+        candidate = "/".join(parts[start:])
+        if holds_keys(candidate):
+            return candidate
+    return None
+
+
+# The degraded-reason clause for each skip reason OpenGrep reports (T123); any
+# other reason is stated as OpenGrep spells it.
+SKIP_IGNORE_LIST = "semgrepignore_patterns_match"
+SKIP_SIZE_LIMIT = "exceeded_size_limit"
+MAX_SKIPPED_NAMES = 3
+
+
+def _skipped_clauses(skipped: list[dict], tmpdir: str, files: dict[str, str]) -> list[str]:
+    """One "<n> file(s) not scanned (...)" clause per skip reason.
+
+    Clauses come in a fixed order whatever order OpenGrep lists its entries
+    in: the ignore list, the size limit, then any other reason alphabetically.
+
+    Each entry is mapped to the scoped files it covers: a file entry through
+    ``_map_result_path``, otherwise every scoped key under it as a directory.
+    Each scoped file is counted once; an entry covering no scoped file counts
+    nothing and is not named.
+    """
+    counted: set[str] = set()
+    by_reason: dict[str, tuple[set[str], set[str]]] = {}
+    for entry in skipped:
+        path = str(entry.get("path", ""))
+        reason = str(entry.get("reason", "")) or "unknown reason"
+        key = _map_result_path(path, tmpdir, files)
+        if key is not None:
+            covered, name = {key}, key
+        else:
+            prefix = _map_skipped_dir(path, tmpdir, files)
+            if prefix is None:
+                continue
+            covered = {k for k in files if prefix == "" or k.startswith(prefix + "/")}
+            name = f"{prefix}/" if prefix else "./"
+        new = covered - counted
+        if not new:
+            continue
+        counted |= new
+        keys, names = by_reason.setdefault(reason, (set(), set()))
+        keys |= new
+        names.add(name)
+
+    order = {SKIP_IGNORE_LIST: 0, SKIP_SIZE_LIMIT: 1}
+    clauses = []
+    for reason in sorted(by_reason, key=lambda r: (order.get(r, 2), r)):
+        keys, names = by_reason[reason]
+        if reason == SKIP_IGNORE_LIST:
+            shown = sorted(names)
+            listed = ", ".join(shown[:MAX_SKIPPED_NAMES])
+            if len(shown) > MAX_SKIPPED_NAMES:
+                listed += f", +{len(shown) - MAX_SKIPPED_NAMES} more"
+            why = f"OpenGrep's default ignore list: {listed}"
+        elif reason == SKIP_SIZE_LIMIT:
+            why = "over OpenGrep's 1 MB size limit"
+        else:
+            why = reason
+        clauses.append(f"{len(keys)} file(s) not scanned ({why})")
+    return clauses
+
+
 def collect_sast(
     files: dict[str, str],
     *,
@@ -213,7 +309,9 @@ def collect_sast(
     directory is created and cleaned up here (scope-preparation, not review
     analysis). Each result path is mapped back to its scoped file key; results
     that map to no reviewed file are counted and reported through the degraded
-    reason rather than silently dropped.
+    reason rather than silently dropped. Scoped files OpenGrep reports as
+    skipped are counted per reason and stated there too, after any unmapped
+    note; the scan still counts as ran (T123).
     """
     if not files:
         return OpengrepResult(degraded=SAST_NO_FILES, rules=rules or OpengrepResult.rules)
@@ -245,4 +343,7 @@ def collect_sast(
             )
             note = f"{unmapped} result(s) unmapped"
             result.degraded = f"{result.degraded}; {note}" if result.degraded else note
+        clauses = _skipped_clauses(result.skipped, tmpdir, files)
+        if clauses:
+            result.degraded = "; ".join(([result.degraded] if result.degraded else []) + clauses)
         return result

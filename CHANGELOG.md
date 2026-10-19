@@ -251,6 +251,19 @@ constitution Principle VIII / FR-016.
   contexts, checked by the reachability test.
 
 ### Fixed
+- The report now says which reviewed files OpenGrep did not scan (FR-012,
+  T123). OpenGrep's built-in ignore list (`tests/`, `build/`, `vendor/`,
+  `dist/`, `node_modules/`, `*.min.js` and others, at any depth) and its 1 MB
+  size limit skip files silently; on one 116-file PR it skipped the 57 under
+  `tests/` while the report said `SAST: ran (0 result(s))`. OpenGrep now runs
+  with `--verbose` so its JSON lists what it skipped, and the SAST reason gains
+  one clause per reason, for example `ran (0 result(s)) — 57 file(s) not
+  scanned (OpenGrep's default ignore list: tests/)` or `1 file(s) not scanned
+  (over OpenGrep's 1 MB size limit)`, after any `result(s) unmapped` note, in
+  the report's SAST line, the `SAST:` stdout line and the `[warn]` log line.
+  The status stays `ran`. Which files OpenGrep scans is unchanged. A file no
+  rule's language covers is neither scanned nor skipped and is not reported.
+  No schema change.
 - OpenGrep no longer times out on larger reviews (FR-012, T122). Without `-j`,
   OpenGrep 1.30.1 ran one job per detected core (14 on the measured machine)
   and the same 116-file scan took 39 to 208 s, past the 120 s limit; with 4

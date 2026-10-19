@@ -124,9 +124,10 @@ class ReviewRun(BaseModel):
     sast_rules: str | None = None
     # Report.schema_version 1.9.0 (FR-012): whether SAST ran, how many results
     # it reported for reviewed files (set only when it ran), and the one-line
-    # reason it did not run or ran degraded (e.g. unmapped results). All None
-    # when the run never reached SAST, so a report written before 1.9.0 still
-    # validates.
+    # reason it did not run or ran degraded (unmapped results, and reviewed
+    # files OpenGrep reported as skipped, one "; "-joined clause per reason,
+    # T123). All None when the run never reached SAST, so a report written
+    # before 1.9.0 still validates.
     sast_status: SastStatus | None = None
     sast_result_count: int | None = None
     sast_reason: str | None = None

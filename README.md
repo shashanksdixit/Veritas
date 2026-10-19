@@ -272,6 +272,13 @@ opengrep_jobs = 4                            # default: OpenGrep parallel jobs, 
                                              #  stderr logs "[info] OpenGrep scan finished
                                              #  in <s> s (-j <n>)"; a timeout is reported
                                              #  as "OpenGrep scan timed out after 120 s".
+                                             #  OpenGrep's default ignore list (tests/,
+                                             #  build/, vendor/, node_modules/, ...) and
+                                             #  1 MB size limit skip some files; the SAST
+                                             #  line then says, for example, "2 file(s)
+                                             #  not scanned (OpenGrep's default ignore
+                                             #  list: tests/)". Veritas does not change
+                                             #  which files OpenGrep scans.
 ```
 
 ### Environment variables

@@ -360,8 +360,13 @@ def test_real_opengrep_scans_a_local_rules_file(tmp_path):
 
 @pytest.fixture
 def fake_scan(monkeypatch):
-    """Stub a scan whose results carry the path strings the caller chooses."""
-    state: dict = {"paths": []}
+    """Stub a scan whose results carry the path strings the caller chooses.
+
+    ``paths_section`` is written as the JSON's "paths" key when set: a dict, or
+    a callable taking the scanned directory (the command's last argument) and
+    returning one. Left None, the output has no "paths" key at all.
+    """
+    state: dict = {"paths": [], "paths_section": None}
 
     class FakeProc:
         returncode = 0
@@ -370,22 +375,25 @@ def fake_scan(monkeypatch):
 
     def fake_run(cmd, **kwargs):
         out_json = cmd[-2]
-        with open(out_json, "w", encoding="utf-8") as fh:
-            json.dump(
+        data: dict = {
+            "results": [
                 {
-                    "results": [
-                        {
-                            "path": path,
-                            "check_id": "veritas.test.rule",
-                            "start": {"line": 5, "col": 1},
-                            "end": {"line": 5, "col": 20},
-                            "extra": {"severity": "ERROR", "message": "flagged"},
-                        }
-                        for path in state["paths"]
-                    ]
-                },
-                fh,
-            )
+                    "path": path,
+                    "check_id": "veritas.test.rule",
+                    "start": {"line": 5, "col": 1},
+                    "end": {"line": 5, "col": 20},
+                    "extra": {"severity": "ERROR", "message": "flagged"},
+                }
+                for path in state["paths"]
+            ]
+        }
+        section = state["paths_section"]
+        if callable(section):
+            section = section(cmd[-1])
+        if section is not None:
+            data["paths"] = section
+        with open(out_json, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
         return FakeProc()
 
     monkeypatch.setattr("veritas.security.opengrep.shutil.which", lambda _bin: "/fake/opengrep")
@@ -711,3 +719,215 @@ def test_a_finished_scan_logs_its_duration_and_job_count(
     assert outcome.exit_code == 0
     finished = [line for line in err_lines if "OpenGrep scan finished" in line]
     assert finished == ["[info] OpenGrep scan finished in 31.2 s (-j 4)"]
+
+
+# --- the report states which scoped files OpenGrep skipped (T123, FR-012) ---
+
+# A temp directory as OpenGrep on Windows spells it: backslashes, 8.3 short name.
+_SHORT_TMP = r"C:\Users\SHASHA~1\AppData\Local\Temp\veritas-sast-short"
+
+
+def _skipped(*entries: tuple[str, str]) -> dict:
+    """A "paths" section listing (path, reason) entries as skipped."""
+    return {
+        "scanned": [],
+        "skipped": [{"path": path, "reason": reason} for path, reason in entries],
+    }
+
+
+def test_run_passes_verbose_and_keeps_four_jobs(tmp_path, fake_opengrep):
+    run_opengrep(str(tmp_path))
+    cmd = fake_opengrep["saw_cmd"]
+    assert cmd.count("--verbose") == 1
+    assert _jobs_flag(cmd) == ["-j", "4"]
+    assert cmd.index("-j") < cmd.index("--verbose") < cmd.index("--json")
+
+
+def test_a_skipped_directory_counts_the_scoped_files_under_it(fake_scan):
+    fake_scan["paths"] = [rf"{_SHORT_TMP}\src\app.py"]
+    fake_scan["paths_section"] = _skipped(
+        (rf"{_SHORT_TMP}\tests", "semgrepignore_patterns_match")
+    )
+    files = {
+        "src/app.py": "import os\n",
+        "tests/test_app.py": "import os\n",
+        "tests/unit/test_more.py": "import os\n",
+    }
+    result = collect_sast(files, scope_value="project")
+    assert result.degraded == (
+        "2 file(s) not scanned (OpenGrep's default ignore list: tests/)"
+    )
+    assert result.ran is True
+    assert [f["path"] for f in result.findings] == ["src/app.py"]
+
+
+def test_a_skipped_file_over_the_size_limit_gives_the_size_clause(fake_scan):
+    fake_scan["paths_section"] = _skipped(
+        (rf"{_SHORT_TMP}\src\big.py", "exceeded_size_limit")
+    )
+    files = {"src/app.py": "import os\n", "src/big.py": "x = 1\n"}
+    result = collect_sast(files, scope_value="project")
+    assert result.degraded == "1 file(s) not scanned (over OpenGrep's 1 MB size limit)"
+    assert result.ran is True
+
+
+def test_unmapped_then_each_skip_reason_in_a_fixed_order(fake_scan):
+    fake_scan["paths"] = [r"C:\elsewhere\unrelated\main.py"]
+    # listed in the opposite order to the clauses, to pin the fixed order
+    fake_scan["paths_section"] = _skipped(
+        (rf"{_SHORT_TMP}\src\big.py", "exceeded_size_limit"),
+        (rf"{_SHORT_TMP}\lib\odd.py", "some_new_reason"),
+        (rf"{_SHORT_TMP}\tests", "semgrepignore_patterns_match"),
+        (rf"{_SHORT_TMP}\build", "semgrepignore_patterns_match"),
+    )
+    files = {
+        "src/app.py": "import os\n",
+        "src/big.py": "x = 1\n",
+        "lib/odd.py": "x = 1\n",
+        "tests/test_app.py": "import os\n",
+        "build/gen.py": "x = 1\n",
+    }
+    result = collect_sast(files, scope_value="project")
+    assert result.findings == []
+    assert result.degraded == (
+        "1 result(s) unmapped; "
+        "2 file(s) not scanned (OpenGrep's default ignore list: build/, tests/); "
+        "1 file(s) not scanned (over OpenGrep's 1 MB size limit); "
+        "1 file(s) not scanned (some_new_reason)"
+    )
+
+
+def test_no_skipped_list_means_nothing_was_skipped(fake_scan, tmp_path):
+    files = {"src/app.py": "import os\n"}
+
+    fake_scan["paths_section"] = None  # no "paths" key at all
+    assert run_opengrep(str(tmp_path)).skipped == []
+    assert collect_sast(files, scope_value="project").degraded is None
+
+    fake_scan["paths_section"] = {"scanned": [rf"{_SHORT_TMP}\src\app.py"]}
+    assert run_opengrep(str(tmp_path)).skipped == []
+    assert collect_sast(files, scope_value="project").degraded is None
+
+
+def test_a_skipped_entry_outside_the_scope_counts_nothing(fake_scan):
+    fake_scan["paths_section"] = _skipped(
+        (r"C:\elsewhere\vendor", "semgrepignore_patterns_match"),
+        (r"C:\elsewhere\big.py", "exceeded_size_limit"),
+        # the scan's own output file is never a scoped file
+        (rf"{_SHORT_TMP}\.opengrep-results-1.json", "exceeded_size_limit"),
+    )
+    files = {"src/app.py": "import os\n", "tests/test_app.py": "import os\n"}
+    result = collect_sast(files, scope_value="project")
+    assert result.degraded is None
+    assert result.ran is True
+
+
+def test_more_than_three_skipped_directories_name_three_then_the_rest(fake_scan):
+    dirs = ["vendor", "tests", "node_modules", "dist", "build"]
+    fake_scan["paths_section"] = _skipped(
+        *((rf"{_SHORT_TMP}\{d}", "semgrepignore_patterns_match") for d in dirs)
+    )
+    files = {f"{d}/x.py": "x = 1\n" for d in dirs}
+    files["src/app.py"] = "import os\n"
+    result = collect_sast(files, scope_value="project")
+    assert result.degraded == (
+        "5 file(s) not scanned (OpenGrep's default ignore list: "
+        "build/, dist/, node_modules/, +2 more)"
+    )
+
+
+def test_skipped_files_reach_the_report_markdown_stdout_and_log(
+    monkeypatch, fake_scan, sample_project, settings, capsys
+):
+    _use_real_collect_sast(monkeypatch)
+    (sample_project / "tests").mkdir()
+    (sample_project / "tests" / "test_app.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    # the scanned temp directory as OpenGrep spells it on Windows
+    fake_scan["paths_section"] = lambda target: _skipped(
+        (target.replace("/", "\\") + "\\tests", "semgrepignore_patterns_match")
+    )
+
+    outcome = run_review(
+        settings, ReviewScope.PROJECT, str(sample_project), llm=default_fake_llm()
+    )
+    report = Report.model_validate_json(Path(LAST_REPORT_JSON).read_text(encoding="utf-8"))
+    md_lines = Path(str(outcome.report_path)).read_text(encoding="utf-8").splitlines()
+    captured = capsys.readouterr()
+
+    reason = "1 file(s) not scanned (OpenGrep's default ignore list: tests/)"
+    assert outcome.exit_code == 0
+    assert report.run.sast_status is SastStatus.RAN
+    assert report.run.sast_result_count == 0
+    assert report.run.sast_reason == reason
+    assert f"- **SAST**: ran with `p/owasp-top-ten` — 0 result(s); {reason}" in md_lines
+    assert f"SAST: ran (0 result(s)) — {reason}" in captured.out.splitlines()
+    assert f"[warn] {reason}" in captured.err.splitlines()
+
+
+def test_a_failed_verbose_scan_still_reports_the_last_stderr_line(monkeypatch, tmp_path):
+    seen: dict = {}
+
+    class FakeProc:
+        returncode = 3
+        stdout = ""
+        # --verbose adds progress lines before the error; the last line still wins
+        stderr = (
+            "[INFO] Running 1 rule on 2 files\n"
+            "[DEBUG] skipping tests/ (semgrepignore_patterns_match)\n"
+            "fatal: invalid rules file\n"
+            "\n"
+        )
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr("veritas.security.opengrep.shutil.which", lambda _bin: "/fake/opengrep")
+    monkeypatch.setattr("veritas.security.opengrep.subprocess.run", fake_run)
+    result = run_opengrep(str(tmp_path))
+    assert "--verbose" in seen["cmd"]
+    assert result.ran is False
+    assert result.degraded == "fatal: invalid rules file"
+    assert result.scan_error == "fatal: invalid rules file"
+    assert result.skipped == []
+
+
+@pytest.mark.skipif(
+    shutil.which("opengrep") is None, reason="opengrep binary not on PATH"
+)
+def test_real_opengrep_reports_a_skipped_tests_directory(
+    monkeypatch, tmp_path, settings, capsys
+):
+    """The real binary skips tests/ by default; the report says so (T123)."""
+    _use_real_collect_sast(monkeypatch)
+    rules = tmp_path / "rules.yaml"
+    rules.write_text(
+        "rules:\n"
+        "  - id: veritas.test.os-system\n"
+        "    languages: [python]\n"
+        "    severity: ERROR\n"
+        "    message: os.system() call\n"
+        "    pattern: os.system(...)\n",
+        encoding="utf-8",
+    )
+    project = tmp_path / "proj"
+    for folder in ("src", "tests"):
+        (project / folder).mkdir(parents=True)
+        (project / folder / "target.py").write_text(
+            "import os\n\n\ndef run():\n    os.system(input())\n", encoding="utf-8"
+        )
+    configured = settings.model_copy(update={"opengrep_rules": str(rules)})
+
+    outcome = run_review(configured, ReviewScope.PROJECT, str(project), llm=default_fake_llm())
+    report, _md_lines, _stdout = _review_outputs(outcome, capsys)
+
+    assert report.run.sast_status is SastStatus.RAN
+    assert report.run.sast_reason == (
+        "1 file(s) not scanned (OpenGrep's default ignore list: tests/)"
+    )
+    # only the src/ call was scanned, so only it is counted
+    assert report.run.sast_result_count == 1
+    sast = [f for f in report.code_findings if f.source == "sast"]
+    assert [f.file for f in sast] == ["src/target.py"]

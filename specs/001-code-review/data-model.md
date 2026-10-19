@@ -102,8 +102,11 @@ class ReviewRun(BaseModel):
     # Report.schema_version 1.9.0 (FR-012): sast_status is "ran" (OpenGrep
     # finished and its JSON was parsed) or "not_run"; sast_result_count is the
     # number of results mapped to reviewed files, set only when it ran;
-    # sast_reason is one line, set when it did not run or ran degraded (e.g.
-    # "1 result(s) unmapped"). All None when the run never reached SAST, so a
+    # sast_reason is one line, set when it did not run or ran degraded: results
+    # mapped to no reviewed file ("1 result(s) unmapped") and reviewed files
+    # OpenGrep reported in paths.skipped, one clause per reason (e.g. "2 file(s)
+    # not scanned (OpenGrep's default ignore list: tests/)"), joined by "; "
+    # (T123, no schema change). All None when the run never reached SAST, so a
     # pre-1.9.0 report still validates.
     sast_status: SastStatus | None = None   # "ran" | "not_run"
     sast_result_count: int | None = None
