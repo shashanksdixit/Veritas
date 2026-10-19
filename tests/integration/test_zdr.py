@@ -279,8 +279,14 @@ def _no_work_spies(monkeypatch) -> dict:
     ("case", "env_overrides"),
     [
         # The anthropic route ignores base_url entirely, so it is refused even
-        # though the default base_url still points at OpenRouter.
-        ("anthropic-route", {"VERITAS_MODEL": "anthropic:claude-sonnet-4-6"}),
+        # when base_url points at OpenRouter.
+        (
+            "anthropic-route",
+            {
+                "VERITAS_MODEL": "anthropic:claude-sonnet-4-6",
+                "VERITAS_BASE_URL": "https://openrouter.ai/api/v1",
+            },
+        ),
         (
             "openai-route-on-openai",
             {
@@ -396,6 +402,41 @@ def test_data_retention_warning_printed_exactly_once_per_run(
     assert count == 1, f"expected 1 data-retention warning, saw {count}:\n{stderr}"
     assert ("free-tier models" in stderr) is expect_free_tier
     assert ("account agreement" in stderr) is expect_account
+
+
+_ACCOUNT_AGREEMENT_WARNING_OPENAI = (
+    "[warn] ZDR is OFF: data retention for this backend is governed by your "
+    "account agreement with openai. Set VERITAS_ZDR=true only if that agreement "
+    "already provides zero data retention (ZDR is enforced per request on "
+    "OpenRouter only)."
+)
+_OPENROUTER_WARNING_LINE = (
+    "[warn] ZDR is OFF: some free-tier models reserve the right to train on "
+    "inputs/outputs. Set VERITAS_ZDR=true for reviews of proprietary or "
+    "sensitive code."
+)
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected_line"),
+    [
+        ({}, _ACCOUNT_AGREEMENT_WARNING_OPENAI),
+        (
+            {"model": "openai:openai/gpt-4o-mini", "base_url": "https://openrouter.ai/api/v1"},
+            _OPENROUTER_WARNING_LINE,
+        ),
+    ],
+    ids=["default-openai", "configured-openrouter"],
+)
+def test_warning_wording_for_the_default_and_an_openrouter_backend(
+    sample_project, capsys, configured, expected_line
+):
+    """The default backend is OpenAI direct (T125), so with nothing configured
+    the warning is the account-agreement wording; OpenRouter keeps its own."""
+    settings = Settings(api_key="k", **configured)
+    run_review(settings, ReviewScope.PROJECT, str(sample_project), llm=default_fake_llm())
+    stderr_lines = capsys.readouterr().err.splitlines()
+    assert [line for line in stderr_lines if "ZDR is OFF" in line] == [expected_line]
 
 
 def test_warning_appears_once_even_with_many_llm_calls(sample_project, capsys):

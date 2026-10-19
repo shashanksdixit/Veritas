@@ -227,8 +227,8 @@ Configuration layers, lowest to highest precedence:
 ```toml
 # .veritas/config.toml
 [llm]
-base_url = "https://openrouter.ai/api/v1"   # default
-model = "openai/gpt-4o-mini"                 # default
+base_url = "https://api.openai.com/v1"      # default (OpenAI direct)
+model = "openai:gpt-4o-mini"                 # default; fixed, never chosen at runtime
 zdr = false                                  # default: off
 timeout_seconds = 120                        # default: per-request timeout in seconds,
                                               #  >= 1 (FR-019). A request that exceeds it
@@ -286,8 +286,8 @@ opengrep_jobs = 4                            # default: OpenGrep parallel jobs, 
 | Variable | Description |
 |----------|-------------|
 | `VERITAS_API_KEY` | LLM provider API key |
-| `VERITAS_BASE_URL` | LLM endpoint base URL (default: OpenRouter) |
-| `VERITAS_MODEL` | Model override (e.g. `openai:vendor/model` or `anthropic:claude-model`) |
+| `VERITAS_BASE_URL` | LLM endpoint base URL (default: `https://api.openai.com/v1`) |
+| `VERITAS_MODEL` | Model (default: `openai:gpt-4o-mini`; e.g. `openai:vendor/model` or `anthropic:claude-model`) |
 | `VERITAS_ZDR` | Zero-data-retention routing (`"true"`/`"false"`) |
 | `VERITAS_TIMEOUT_SECONDS` | Per-request LLM timeout in seconds (default: 120, min 1) |
 | `VERITAS_MAX_RETRIES` | Retry limit per LLM request (default: 2, range 0-10; 0 = no retry) |
@@ -307,22 +307,22 @@ PEM blocks) in all user-facing finding text.
 
 ### LLM model strings
 
-The model string is `<provider>:<model>`. For the default OpenRouter route the
-OpenAI-compatible provider is used and the part after the colon is OpenRouter's
+The model string is `<provider>:<model>`. The default is the fixed model
+`openai:gpt-4o-mini` at `https://api.openai.com/v1` (OpenAI direct, through the
+OpenAI-compatible provider); Veritas never picks a model at runtime. The report's
+`- **Model**:` line records the model actually used, without the provider prefix
+(`gpt-4o-mini` by default). On OpenRouter the part after the colon is OpenRouter's
 own catalog id (e.g. `openai:openai/gpt-4o-mini`). To use a native Anthropic
 (Claude) key, configure `VERITAS_MODEL=anthropic:claude-...` and install the
 `[anthropic]` extra. Without the extra, startup fails fast with the exact
 install command.
 
-### Direct OpenAI
+### Default backend: OpenAI direct
 
-Veritas can also talk straight to OpenAI by pointing the OpenAI-compatible route
-at OpenAI's own endpoint, with the key read from an environment variable (never
-a committed file):
+With no `base_url` or `model` configured, Veritas talks straight to OpenAI. Only
+the key is needed, read from an environment variable (never a committed file):
 
 ```bash
-export VERITAS_BASE_URL=https://api.openai.com/v1
-export VERITAS_MODEL=openai:gpt-4o-mini
 export VERITAS_API_KEY=$OPENAI_API_KEY
 
 uv run veritas review --scope project --target ./myproject
@@ -332,6 +332,23 @@ Note that ZDR (zero-data-retention routing) is an OpenRouter-only request field,
 so it MUST stay off on OpenAI or any other non-OpenRouter backend:
 `VERITAS_ZDR` must be unset or `false`, and a `zdr = true` configuration on this
 endpoint is refused before any code is fetched or sent.
+
+### Using OpenRouter instead
+
+OpenRouter is supported when configured. Set both the endpoint and an
+OpenRouter catalog model id, with an OpenRouter key:
+
+```bash
+export VERITAS_BASE_URL=https://openrouter.ai/api/v1
+export VERITAS_MODEL=openai:openai/gpt-4o-mini
+export VERITAS_API_KEY=$OPENROUTER_API_KEY
+
+uv run veritas review --scope project --target ./myproject
+```
+
+On OpenRouter, `VERITAS_ZDR=true` is enforced per request (see below), and an
+OpenRouter 402 `in_flight_budget_exhausted` answer is retried once after its
+Retry-After delay (at most 120 s).
 
 ## ZDR and privacy
 
@@ -352,7 +369,8 @@ Whenever ZDR is off (the default), Veritas prints a data-retention warning exact
 once per run, worded for the backend. On OpenRouter it warns that some free-tier
 models explicitly reserve the right to train on inputs/outputs and recommends ZDR
 for reviews of proprietary or sensitive code. On any other backend it warns that
-retention is governed by your account agreement with that provider. Enabling ZDR is
+retention is governed by your account agreement with that provider; this is the
+warning a default (OpenAI direct) run prints. Enabling ZDR is
 the user's informed choice.
 
 ## Suppression workflow

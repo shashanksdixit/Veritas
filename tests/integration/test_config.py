@@ -60,9 +60,11 @@ def test_no_veritas_env_var_is_inherited_from_the_shell():
 
 
 def test_defaults_apply():
+    """The fixed default backend is OpenAI direct (FR-019, T125)."""
     settings = Settings()
-    assert settings.base_url == "https://openrouter.ai/api/v1"
-    assert settings.model_runtime == "openai:openai/gpt-4o-mini"
+    assert settings.base_url == "https://api.openai.com/v1"
+    assert settings.model is None
+    assert settings.model_runtime == "openai:gpt-4o-mini"
     assert settings.zdr is False
     assert settings.provider == "github"
 
@@ -81,7 +83,8 @@ def test_config_hash_changes_with_model():
 
 def test_missing_config_ignored(tmp_path):
     settings = load_settings(str(tmp_path / "nope.toml"))
-    assert settings.model_runtime == "openai:openai/gpt-4o-mini"
+    assert settings.base_url == "https://api.openai.com/v1"
+    assert settings.model_runtime == "openai:gpt-4o-mini"
 
 
 def _write_review_config(tmp_path: Path, body: str) -> Path:

@@ -154,6 +154,19 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- The default LLM backend is now a fixed model and endpoint, OpenAI direct:
+  `openai:gpt-4o-mini` at `https://api.openai.com/v1` (FR-019, T125,
+  constitution 7.0.0). It was OpenRouter (`https://openrouter.ai/api/v1`,
+  `openai:openai/gpt-4o-mini`). Veritas never chooses a model at runtime; the
+  unused free-model discovery module `veritas/llm/models.py` is removed. With
+  the default backend the ZDR-off warning is the account-agreement wording
+  naming `openai`; the report's `- **Model**:` line reads `gpt-4o-mini`.
+  OpenRouter is still supported when configured, and its 402 retry and
+  per-request ZDR are unchanged. No schema change. Migration: if you relied on
+  the old OpenRouter default, set `VERITAS_BASE_URL=https://openrouter.ai/api/v1`
+  and `VERITAS_MODEL=openai:openai/gpt-4o-mini` (or `base_url` and `model` under
+  `[llm]` in `.veritas/config.toml`); an OpenRouter key in `VERITAS_API_KEY`
+  sent to the new default endpoint will be rejected by OpenAI.
 - Project-context sources are named by their path relative to the project
   root, with `/` separators (FR-009, T119), and `project_context_origin` is
   that root (the start directory when no root was found). A file at the root

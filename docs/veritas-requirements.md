@@ -78,14 +78,14 @@ This is a first-class design requirement, not an afterthought — motivated by d
 ## 10. LLM Backend
 
 - **Fully configurable**, and **fully standalone** — no runtime dependency on OpenCode itself, even though OpenCode is the tool used to build Veritas.
-- **Default**: free models via **OpenRouter**, queried at runtime for its `:free`-suffixed models (OpenAI-compatible API) rather than a hardcoded list.
+- **Default**: a single fixed model and endpoint, `openai:gpt-4o-mini` at `https://api.openai.com/v1` (OpenAI direct, OpenAI-compatible API), shipped as the configuration default; Veritas does not choose a model at runtime. OpenRouter is supported when configured.
 - **Override**: if the user configures their own API key (Claude, ChatGPT, etc.), that provider is used instead.
 - The same configured-key path also covers a **self-hosted Ollama** endpoint, if one is configured. Ollama support/testing is explicitly deferred until the rest of the tool is complete — not an early-stage priority.
 
 ## 11. Privacy
 
 - A **ZDR (zero data retention) toggle** for OpenRouter routing:
-  - **Off** during early development/testing — free models, privacy not a concern at that stage.
+  - **Off** by default.
   - **On** for production-level use — restricts routing to zero-data-retention (typically paid) endpoints only.
 - Motivation: some free-tier models on OpenRouter explicitly reserve the right to train on inputs/outputs; ZDR routing is the mechanism to guarantee that doesn't happen when it matters.
 

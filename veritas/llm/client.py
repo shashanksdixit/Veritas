@@ -1,7 +1,8 @@
 """LLM client (T007) — single entry point via LangChain's ``init_chat_model``.
 
 The resolved model string is ``<provider>:<model>`` (research.md §2):
-  * ``openai:...``   → OpenAI-compatible route (OpenRouter by default)
+  * ``openai:...``   → OpenAI-compatible route (OpenAI direct by default,
+    OpenRouter or any other compatible endpoint when base_url says so)
   * ``anthropic:...``→ native Anthropic route (requires the optional
     ``langchain-anthropic`` package — see FR-020 / T007).
 Never the openai SDK directly. Calls are wrapped with structured logging
@@ -72,9 +73,10 @@ def build_kwargs(settings: Settings) -> tuple[str, str, dict]:
             kwargs["api_key"] = settings.api_key
     else:
         # OpenAI-compatible route, reached by both the `openai` prefix and an
-        # unknown one: OpenRouter by default, or any base_url the user configures
-        # (e.g. a self-hosted OpenAI-compatible endpoint). Neither prefix has a
-        # native client of its own, so both are handled identically here.
+        # unknown one: OpenAI direct by default, or any base_url the user
+        # configures (OpenRouter, or e.g. a self-hosted OpenAI-compatible
+        # endpoint). Neither prefix has a native client of its own, so both
+        # are handled identically here.
         kwargs["base_url"] = settings.base_url
         if settings.api_key:
             kwargs["api_key"] = settings.api_key
@@ -89,8 +91,9 @@ def build_kwargs(settings: Settings) -> tuple[str, str, dict]:
         if settings.zdr and backend_is_openrouter(provider, settings.base_url):
             kwargs["extra_body"] = zdr_body_extras(True)
 
-    # model_id here is the backend's own model identifier (e.g. OpenRouter
-    # catalog id "openai/gpt-4o-mini" or Anthropic's "claude-sonnet-4-6").
+    # model_id here is the backend's own model identifier (e.g. OpenAI's
+    # "gpt-4o-mini", OpenRouter's catalog id "openai/gpt-4o-mini" or
+    # Anthropic's "claude-sonnet-4-6").
     return provider, model_id, kwargs
 
 

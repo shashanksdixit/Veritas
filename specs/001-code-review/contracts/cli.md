@@ -33,8 +33,8 @@ Options:
 | Variable | Description | Overrides |
 |----------|-------------|-----------|
 | `VERITAS_API_KEY` | LLM provider API key | --config value |
-| `VERITAS_BASE_URL` | LLM endpoint base URL | --config value |
-| `VERITAS_MODEL` | Model override | --config value |
+| `VERITAS_BASE_URL` | LLM endpoint base URL (default: `https://api.openai.com/v1`) | --config value |
+| `VERITAS_MODEL` | Model override (default: `openai:gpt-4o-mini`) | --config value |
 | `VERITAS_ZDR` | Enable ZDR routing ("true"/"false"); OpenRouter only — "true" on any other backend is a fatal error | --config value |
 | `VERITAS_TIMEOUT_SECONDS` | Per-request LLM timeout in seconds (default: 120, min 1) | --config value |
 | `VERITAS_MAX_RETRIES` | Retry limit per LLM request (default: 2, range 0-10) | --config value |
@@ -74,17 +74,19 @@ Report: ./veritas-report-20260916-143022.md
 Diagnostics and errors only:
 ```text
 [info] Scanning project in scope: ./myproject
-[warn] ZDR is OFF: some free-tier models reserve the right to train on inputs/outputs. Set VERITAS_ZDR=true for reviews of proprietary or sensitive code.
+[warn] ZDR is OFF: data retention for this backend is governed by your account agreement with openai. Set VERITAS_ZDR=true only if that agreement already provides zero data retention (ZDR is enforced per request on OpenRouter only).
 [warn] OpenGrep not found on PATH; security findings will be LLM-identified only
 [error] LLM provider rate-limited after 3/5 review types; report marked incomplete
 [warn] Failed to post report as PR comment: 403 Forbidden; report saved to ./veritas-report-20260916-143022.md
 ```
 
 Exactly one data-retention warning is printed per run, before any review work
-starts, and is worded for the configured backend: on OpenRouter the free-tier
-training warning shown above; on any other backend,
-`[warn] ZDR is OFF: data retention for this backend is governed by your account
-agreement with {provider}...`.
+starts, and is worded for the configured backend: on the default backend (OpenAI
+direct) and any other non-OpenRouter backend, the account-agreement warning shown
+above, naming the provider (`...your account agreement with {provider}...`); on
+OpenRouter, `[warn] ZDR is OFF: some free-tier models reserve the right to train
+on inputs/outputs. Set VERITAS_ZDR=true for reviews of proprietary or sensitive
+code.`
 
 With `VERITAS_ZDR=true` on a non-OpenRouter backend the run stops immediately with
 exit code 1 and no report — nothing is fetched, read, or sent:
@@ -139,8 +141,8 @@ Options:
 
 ```toml
 [llm]
-base_url = "https://openrouter.ai/api/v1"   # default
-model = "openai/gpt-4o-mini"                 # default (or free model discovered at runtime)
+base_url = "https://api.openai.com/v1"      # default (OpenAI direct)
+model = "openai:gpt-4o-mini"                 # default; fixed, never chosen at runtime
 zdr = false                                  # default: off; true = OpenRouter only (FR-021)
 timeout_seconds = 120                        # default: per-request timeout, >= 1 (FR-019)
 max_retries = 2                              # default: retry limit per request, 0-10 (FR-019)

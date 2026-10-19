@@ -18,7 +18,6 @@ from veritas.llm.client import (
     split_model_string,
     summarize_llm_error,
 )
-from veritas.llm.models import discover_free_models
 from veritas.models.entities import Report, ReviewScope
 from veritas.review.graph import run_review
 from veritas.utils.logging import Log
@@ -33,6 +32,62 @@ def test_split_model_string():
 def test_runtime_model_id_preserved(caplog):
     settings = Settings(api_key="k", model="openai:vendor/some-model")
     assert runtime_model_id(settings) == "vendor/some-model"
+
+
+# --- the fixed default backend and its provenance (FR-019, T125) ---
+
+
+class _CannedChat:
+    """Stands in for the LangChain chat model: every call answers "[]"."""
+
+    def invoke(self, messages, **kwargs):
+        from langchain_core.messages import AIMessage
+
+        return AIMessage(content="[]")
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected_model", "expected_base_url"),
+    [
+        ({}, "gpt-4o-mini", "https://api.openai.com/v1"),
+        (
+            {"model": "openai:openai/gpt-4o-mini", "base_url": "https://openrouter.ai/api/v1"},
+            "openai/gpt-4o-mini",
+            "https://openrouter.ai/api/v1",
+        ),
+    ],
+    ids=["default", "configured-openrouter"],
+)
+def test_review_run_records_the_model_actually_used(
+    monkeypatch, sample_project, configured, expected_model, expected_base_url
+):
+    """No llm is injected, so run_review builds the real LLMClient; only the
+    network-facing chat model is replaced. The model the client was built with
+    is the one the report names, for the default and for a configured model."""
+    from veritas.llm import client as client_module
+
+    built: list[dict] = []
+
+    def fake_init_chat_model(*, model, model_provider, **kwargs):
+        built.append(
+            {"model": model, "model_provider": model_provider, "base_url": kwargs.get("base_url")}
+        )
+        return _CannedChat()
+
+    monkeypatch.setattr(client_module, "init_chat_model", fake_init_chat_model)
+
+    outcome = run_review(
+        Settings(api_key="test-key", **configured), ReviewScope.PROJECT, str(sample_project)
+    )
+
+    assert outcome.exit_code == 0
+    assert built == [
+        {"model": expected_model, "model_provider": "openai", "base_url": expected_base_url}
+    ]
+    report = Report.model_validate_json(Path(LAST_REPORT_JSON).read_text(encoding="utf-8"))
+    assert report.run.model_name == expected_model
+    markdown = Path(outcome.report_path).read_text(encoding="utf-8")
+    assert f"- **Model**: `{expected_model}`" in markdown
 
 
 def test_zdr_off_sends_no_provider_block(capsys):
@@ -51,8 +106,9 @@ def test_zdr_off_sends_no_provider_block(capsys):
 
 def test_zdr_on_injects_provider_block():
     """extra_body, never model_kwargs: LangChain spreads model_kwargs as top-level
-    client arguments, where the OpenAI SDK rejects `provider` with a TypeError."""
-    settings = Settings(api_key="k", zdr=True)
+    client arguments, where the OpenAI SDK rejects `provider` with a TypeError.
+    OpenRouter is configured explicitly: it is not the default backend (T125)."""
+    settings = Settings(api_key="k", base_url="https://openrouter.ai/api/v1", zdr=True)
     _provider, _model, kwargs = build_kwargs(settings)
     assert kwargs["extra_body"] == {"provider": {"zdr": True, "data_collection": "deny"}}
     assert "model_kwargs" not in kwargs
@@ -68,39 +124,6 @@ def test_anthropic_without_optional_extra_raises():
     settings = Settings(model="anthropic:claude-x", api_key="k")
     with pytest.raises(RuntimeError, match="langchain-anthropic"):
         build_kwargs(settings)
-
-
-def test_discover_free_models_none_api_key_returns_empty(caplog):
-    models = discover_free_models("https://openrouter.ai/api/v1", None)
-    assert models == []
-
-
-def test_discover_free_models_filters(monkeypatch):
-    import httpx
-
-    class FakeTransport(httpx.MockTransport):
-        pass
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "data": [
-                    {"id": "meta-llama/llama-3.1-8b-instruct:free", "pricing": {"prompt": "0", "completion": "0"}},
-                    {"id": "openai/gpt-4o-mini", "pricing": {"prompt": "0.00015", "completion": "0.0006"}},
-                    {"id": "x/model:free", "pricing": {"prompt": "0.01", "completion": "0.01"}},
-                ]
-            },
-        )
-
-    fake_client = httpx.Client(transport=httpx.MockTransport(handler))
-
-    def fake_get(*args, **kwargs):
-        return fake_client.get(*args, **kwargs)
-
-    monkeypatch.setattr("veritas.llm.models.httpx.Client", lambda **kw: fake_client)
-    models = discover_free_models("https://openrouter.ai/api/v1", "k")
-    assert models == ["meta-llama/llama-3.1-8b-instruct:free"]
 
 
 # --- bounded requests (FR-019) ---

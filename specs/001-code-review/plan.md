@@ -8,7 +8,7 @@
 
 ## Summary
 
-Build Veritas: a CLI-based, multi-agent code review tool that fetches PRs remotely via hosting-provider APIs (GitHub/GitLab), performs grounded reviews (code quality, security/OWASP with SAST + LLM-verified findings, requirement traceability, test-coverage judgment, performance reasoning; each finding with its recommendation), verifies every finding against real source before emission, and outputs a Markdown report + compact stdout summary. Orchestrated via LangGraph with architectural read-only safety boundaries; LLM backend configurable via OpenRouter (free models default, ZDR toggle); suppressions managed via a git-tracked allowlist keyed by code fingerprint.
+Build Veritas: a CLI-based, multi-agent code review tool that fetches PRs remotely via hosting-provider APIs (GitHub/GitLab), performs grounded reviews (code quality, security/OWASP with SAST + LLM-verified findings, requirement traceability, test-coverage judgment, performance reasoning; each finding with its recommendation), verifies every finding against real source before emission, and outputs a Markdown report + compact stdout summary. Orchestrated via LangGraph with architectural read-only safety boundaries; LLM backend configurable (fixed default openai:gpt-4o-mini at https://api.openai.com/v1; OpenRouter supported when configured, with the ZDR toggle); suppressions managed via a git-tracked allowlist keyed by code fingerprint.
 
 ## Technical Context
 
@@ -19,7 +19,7 @@ Build Veritas: a CLI-based, multi-agent code review tool that fetches PRs remote
 |-----------|---------|---------|---------|
 | LangGraph | latest stable (resolve and record actual version in lockfile at install time — do not hardcode a version here that hasn't been verified against the live package index) | MIT | Review orchestration (StateGraph) |
 | langchain-core | latest | MIT | LLM provider abstraction |
-| langchain-openai | latest | MIT | OpenAI-compatible provider integration for init_chat_model (covers OpenRouter default + OpenAI) |
+| langchain-openai | latest | MIT | OpenAI-compatible provider integration for init_chat_model (covers the OpenAI default + OpenRouter) |
 | langchain-anthropic | latest | MIT | Anthropic native provider integration, installed when a user configures a Claude key directly (FR-020) |
 | openai SDK | latest | Apache-2.0 | Transitive dependency of `langchain-openai`; not called directly by Veritas code — all LLM calls go through `init_chat_model` |
 | httpx | 0.28.x | BSD-3-Clause | GitHub/GitLab REST API calls |
@@ -111,7 +111,6 @@ veritas/
 ├── llm/
 │   ├── __init__.py
 │   ├── client.py                    # LLM client via LangChain's init_chat_model (provider:model string resolved from config)
-│   ├── models.py                    # Free-model discovery, model selection
 │   └── zdr.py                       # ZDR toggle logic (provider.zdr and provider.data_collection params)
 ├── review/
 │   ├── __init__.py

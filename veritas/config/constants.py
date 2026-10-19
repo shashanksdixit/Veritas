@@ -14,8 +14,11 @@ SCHEMA_VERSION = "1.11.0"
 # the fallback when the header is missing.
 PROMPT_VERSION = "1.9.0"
 
-DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL = "openai:openai/gpt-4o-mini"
+# The fixed default LLM backend (FR-019, constitution v7.0.0 LLM Backend): OpenAI
+# direct. Veritas never chooses a model at runtime; a configured base_url/model
+# (OpenRouter included) replaces these.
+DEFAULT_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_MODEL = "openai:gpt-4o-mini"
 
 CONFIG_PATH = ".veritas/config.toml"
 LOCAL_CONFIG_PATH = ".veritas/config.local.toml"

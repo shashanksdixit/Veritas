@@ -50,7 +50,7 @@ def backend_is_openrouter(provider: str, base_url: str) -> bool:
     """True only when ZDR can actually be enforced for this route.
 
     The anthropic route talks to Anthropic's native API and ignores ``base_url``
-    entirely, so a left-over default OpenRouter ``base_url`` must not make it look
+    entirely, so a left-over OpenRouter ``base_url`` must not make it look
     supported (FR-020 native Claude path).
     """
     if provider == "anthropic":
