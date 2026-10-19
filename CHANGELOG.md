@@ -154,6 +154,23 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- Documentation: stale text brought in line with the current behaviour (T129).
+  `quickstart.md` no longer assumes OpenRouter is the default: the API-key
+  prerequisite names the configured backend (OpenAI direct by default),
+  Scenario 5 configures OpenRouter explicitly for ZDR and shows that
+  `VERITAS_ZDR=true` on the default backend is refused with exit 1, and
+  Scenarios 1, 3, 4, 6, 9 and 11 now show the current stderr, stdout and report
+  wording (the `SAST:` and `Context:` lines, source labels, the missing-token
+  error, the `--post` warning and rejection, the suppress output, the
+  verification-failure table, the no-requirements finding). research.md §2 is
+  marked superseded by T125; tasks T006-T009 carry superseded notes; T103 is
+  marked deferred past the v1 merge; plan.md's source tree gains
+  `veritas/hosting/types.py` and the missing test files, and its tool-binding
+  wording now says no node is bound to tools; README's schema marker shows a
+  placeholder instead of `1.0.0`; data-model.md's `model_name` example is
+  `gpt-4o-mini`; spec.md FR-026 lists the OpenGrep job count in `ScopeContext`
+  and FR-013 states the order of the evidence checks. No behaviour or schema
+  change.
 - Documentation: every place that names a registry SAST ruleset now states its
   licence (FR-012, T128, constitution 7.0.0 Principle II). README.md,
   `contracts/cli.md`, spec.md FR-012, the `opengrep_rules` setting description

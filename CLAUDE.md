@@ -5,7 +5,7 @@ Veritas is a Python CLI code reviewer (LangGraph/LangChain). Specs: specs/001-co
 
 ## Environment
 - Windows, Git Bash. Corporate SSL inspection: use `uv run --native-tls ...`; curl needs `--ssl-no-revoke`.
-- Tests: `uv run --native-tls pytest` (about 815 tests). One test needs `opengrep` on PATH.
+- Tests: `uv run --native-tls pytest` (about 1270 tests). One test needs `opengrep` on PATH.
 - A full run can be bounded with `timeout 1200 uv run --native-tls pytest ...`.
 
 ## Rules

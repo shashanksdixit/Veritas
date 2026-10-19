@@ -434,7 +434,8 @@ Each run writes a full GitHub-Flavored Markdown report to
 - requirement findings with status and evidence citations.
 
 The report schema is versioned: an HTML comment
-`<!-- veritas-report-schema: 1.0.0 -->` is emitted at the top, and breaking
+`<!-- veritas-report-schema: <schema version> -->`, carrying the report's
+schema version, is emitted at the top, and breaking
 changes are tracked in `CHANGELOG.md`. The machine-readable
 `.veritas/last-report.json` sidecar powers `veritas suppress`.
 

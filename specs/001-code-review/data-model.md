@@ -89,7 +89,7 @@ class ReviewRun(BaseModel):
     started_at: datetime
     completed_at: datetime | None = None
     # Provenance (constitution Principle I / FR-024)
-    model_name: str                  # e.g. "openai/gpt-4o-mini"
+    model_name: str                  # e.g. "gpt-4o-mini" (the default; "openai/gpt-4o-mini" when configured through OpenRouter)
     prompt_version: str              # versioned prompt hash or tag
     # Status
     report_status: ReportStatus = ReportStatus.INCOMPLETE

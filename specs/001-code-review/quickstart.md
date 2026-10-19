@@ -12,7 +12,7 @@ Validation scenarios proving the feature works end-to-end. Prerequisites listed 
 1. Python 3.12+ installed (`.python-version` = 3.12)
 2. Veritas installed: `pip install -e .` from repo root (installs Typer, LangGraph, openai, httpx)
 3. OpenGrep binary on PATH or at a configured path (v1.30.0; download from github.com/opengrep/opengrep/releases)
-4. OpenRouter API key set: `export VERITAS_API_KEY=sk-or-...`
+4. API key for the configured LLM backend set: `export VERITAS_API_KEY=...` (the default backend is OpenAI direct, `openai:gpt-4o-mini` at `https://api.openai.com/v1`, so an OpenAI key; an OpenRouter key only when `base_url` points at OpenRouter, as in Scenario 5)
 5. A test repository with Python/JS/Java code
 
 ---
@@ -24,12 +24,12 @@ veritas review --scope project --target ./myproject
 ```
 
 **Expected**:
-- stderr: `[info] Scanning project: ./myproject` + language/framework detection messages
-- stdout: Compact summary with counts by severity/category, requirement-status counts, overall verdict
-- File: `./veritas-report-<timestamp>.md` created with full Markdown report
+- stderr: `[info] Scanning target in scope: ./myproject` + `[info] Detected: ...` lines for the detected languages/frameworks, and the ZDR-off warning for the default backend (`[warn] ZDR is OFF: zero data retention cannot be enforced per request on this backend; data retention is governed by your account agreement with openai. ...`)
+- stdout: Compact summary with counts by severity/category, requirement-status counts, overall verdict, one `SAST: ran (<n> result(s))` line (followed by ` — <reason>` when it ran degraded, for example `<n> file(s) not scanned (OpenGrep's default ignore list: tests/)`), one `Context: <status> (<sources>)` line (`Context: unavailable — <reason>` when no project context was found), and `Report: veritas-report-<timestamp>.md`
+- File: `veritas-report-<timestamp>.md` created in the current directory with full Markdown report
 - Report contains sections for all 5 review types (code quality, security, requirements, test coverage, performance); each finding includes its own recommendation text rather than a separate 'suggested changes' section
-- Security findings include `source` label: either `(SAST)` or `(LLM-verified)`
-- If OpenGrep is not installed: `[warn] OpenGrep not found on PATH` + security findings are LLM-identified only + report states specific reason
+- Security findings carry a source label in their heading: `*(SAST)*` or `*(LLM-identified, citation verified)*`
+- If OpenGrep is not installed: stderr `[warn] OpenGrep not found on PATH`, stdout `SAST: not run — OpenGrep not found on PATH`, the report header `- **SAST**: not run — OpenGrep not found on PATH (rules configured: ...)`; security findings are LLM-identified only
 
 **Validates**: FR-001, FR-003, FR-009, FR-012, FR-015, FR-016, FR-022, FR-023, FR-025, SC-001, SC-008
 
@@ -60,7 +60,8 @@ veritas review --scope pr --target "myorg/myrepo#42"
 **Expected**:
 - Veritas fetches PR files and contents via GitHub API (no local git state read)
 - Report includes all review types for files changed in the PR
-- stdout summary shows `Report: ./veritas-report-<timestamp>.md`
+- stdout summary shows `Report: veritas-report-<timestamp>.md`
+- Without `VERITAS_GITHUB_TOKEN`: stderr `[error] PR review requires a GitHub token: set VERITAS_GITHUB_TOKEN (never commit tokens; see contracts/cli.md).`, exit code 1, no report written
 
 **Validates**: FR-002, US1 acceptance scenarios, SC-001
 
@@ -77,8 +78,8 @@ veritas review --scope pr --target "myorg/myrepo#42" --post
 - Report is generated and written to disk as usual
 - The full rendered Markdown is additionally posted as a comment on PR #42 via the GitHub API
 - Verify the Markdown renders correctly on GitHub's PR comment interface (no broken formatting, tables render, code blocks render)
-- If posting fails (e.g. revoke the token first): stderr shows a `[warn]` line naming the failure and the report file path; exit code is still 0; the report file itself is valid and complete
-- `--post` used with `--scope file` (or module/project) is rejected: exit code 1, clear stderr diagnostic, no review work performed
+- If posting fails (e.g. revoke the token first): stderr shows `[warn] Failed to post report as github comment: <failure, e.g. 403 Forbidden>; report saved to <report path>`; exit code is still 0; the report file itself is valid and complete
+- `--post` used with `--scope file` (or module/project) is rejected: stderr `[error] --post is only valid with --scope pr (FR-028); rejected before any review work starts.`, exit code 1, no review work performed
 
 **Validates**: FR-016, FR-028, SC-007
 
@@ -86,15 +87,25 @@ veritas review --scope pr --target "myorg/myrepo#42" --post
 
 ## Scenario 5: ZDR toggle (FR-021)
 
+ZDR is enforced per request only on OpenRouter, so this scenario configures OpenRouter explicitly (with an OpenRouter API key in `VERITAS_API_KEY`).
+
 ```bash
+export VERITAS_BASE_URL=https://openrouter.ai/api/v1
+export VERITAS_MODEL=openai:openai/gpt-4o-mini
+
 # With ZDR off (default):
 veritas review --scope file --target ./myproject/src/util.py
-# Verify: LLM request does NOT include provider.zdr in body
+# Verify: LLM request does NOT include provider.zdr in body; stderr carries the OpenRouter ZDR-off warning
 
 # With ZDR on:
 export VERITAS_ZDR=true
 veritas review --scope file --target ./myproject/src/util.py
 # Verify: LLM request includes provider.zdr: true in body
+
+# ZDR on with the default backend (OpenAI direct) is refused:
+unset VERITAS_BASE_URL VERITAS_MODEL
+veritas review --scope file --target ./myproject/src/util.py
+# Verify: exit code 1, stderr "[error] ZDR is only supported with OpenRouter. ... Nothing was sent. ...", no LLM request made
 ```
 
 **Validates**: FR-021
@@ -106,10 +117,11 @@ veritas review --scope file --target ./myproject/src/util.py
 ```bash
 # First: get a finding ID from the report
 veritas review --scope file --target ./myproject/src/auth.py
-# Note a finding ID from stdout summary
+# Note a finding ID from the report file (the stdout summary lists headline findings by file:line, not by ID)
 
-# Suppress it
+# Suppress it (or use --file <path> --line <n> instead of --finding-id)
 veritas suppress --finding-id "<finding-id>" --reason "Accepted risk"
+# Verify: stdout "Suppressed. Fingerprint: <sha256>  (use with 'veritas unsuppress --fingerprint' to reverse)"
 # Verify: .veritas/suppressions.json created/updated with fingerprint entry
 
 # Re-run: suppressed finding should NOT appear
@@ -162,9 +174,9 @@ Create a finding that cites a non-existent file/line (e.g. by a hallucinating LL
 3. Record as a verification-failure note in report summary
 
 **Expected**:
-- Verification-failure note appears in report summary
+- The report's `### Verification failures (FR-013)` section lists the failure in a table (Finding ID, File, Lines, Code, Reason); the stdout summary carries `Verification failures: <n> finding(s) excluded (FR-013), see full report`
 - The unverified finding does NOT appear in the findings list
-- Note is visible and attributable (includes finding ID, file, reason)
+- Note is visible and attributable (includes finding ID, file, reason code and reason)
 
 **Validates**: FR-013, SC-002, SC-003
 
@@ -189,7 +201,7 @@ veritas review --scope module --target ./myproject/src/auth/
 Run against a project with no `spec.md`, `requirements.md`, or equivalent.
 
 **Expected**:
-- Requirement findings report status `unclear` with explanation "No requirements documentation found"
+- One requirement finding `No requirements documentation found` with status `unclear`, explaining that no requirements documentation was found in the reviewed scope
 - No invented requirements
 - All other review types proceed normally
 

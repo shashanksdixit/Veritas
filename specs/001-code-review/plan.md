@@ -40,7 +40,7 @@ Build Veritas: a CLI-based, multi-agent code review tool that fetches PRs remote
 **Constraints**:
 - OpenGrep LGPL-2.1, invoked via subprocess (no Python API)
 - ZDR toggle off by default; when on, both `provider.zdr: true` and `provider.data_collection: "deny"` in the OpenRouter request body
-- All review nodes structurally bound to read-only tools only (constitution Read-Only Safety Boundary)
+- Each node receives only its own frozen context; no node is bound to tools (constitution Read-Only Safety Boundary)
 - Output schema versioned per constitution
 - Deterministic components (SAST, manifest parsing, citations) reproducible for the same input, configuration and SAST rules content; the SAST rules source is recorded in every report, and a local rules source makes SAST fully reproducible; LLM-narrated content may vary
 
@@ -107,7 +107,8 @@ veritas/
 │   ├── github.py                    # GitHub REST via httpx (PR files, contents, comments)
 │   ├── gitlab.py                    # GitLab REST via httpx
 │   ├── factory.py                   # HostingClients(fetcher, poster), build_hosting_client (T111)
-│   └── resolver.py                  # Parse --target PR ref → provider + owner/repo/id
+│   ├── resolver.py                  # Parse --target PR ref → provider + owner/repo/id
+│   └── types.py                     # Provider-neutral values returned by the hosting fetchers (T115)
 ├── llm/
 │   ├── __init__.py
 │   ├── client.py                    # LLM client via LangChain's init_chat_model (provider:model string resolved from config)
@@ -167,11 +168,26 @@ veritas/
 
 tests/
 ├── conftest.py                      # Shared fixtures: deterministic fake LLM, sample project, settings, fake_secret()
+├── boundary_walker.py               # Reachability walker for the read-only boundary test (T112, FR-026)
 ├── contract/
 │   ├── test_github_api.py           # GitHub API contract (mocked httpx)
 │   └── test_gitlab_api.py           # GitLab API contract (mocked httpx)
 ├── integration/
 │   ├── conftest.py                  # No real SAST binary, sandboxed CWD
+│   ├── data/
+│   │   └── project_context_golden.json # Project-context golden cases a-g (T116)
+│   ├── project_context_cases.py     # Builders for the project-context golden cases (T116, T118, T119)
+│   ├── test_project_context_golden.py # Project-context golden tests (T116, T118)
+│   ├── test_pr_project_context.py   # PR project context read through the hosting API (T120, FR-009–011)
+│   ├── test_hosting_clients.py      # Hosting fetcher/poster split, token errors (T110, T111)
+│   ├── test_node_contexts.py        # Frozen per-node contexts, hosting built before the graph (T111, FR-026)
+│   ├── test_read_only_boundary.py   # Read-only boundary verified by reachability (T112, FR-026)
+│   ├── test_pr_fetch_errors.py      # PR fetch API error → one [error] line, exit 1 (T121)
+│   ├── test_pr_withheld_content.py  # PR files with withheld content reported as not reviewed (T124, FR-029)
+│   ├── test_post_failure.py         # A failed --post never changes the exit code (T100, FR-028)
+│   ├── test_output_redaction.py     # Every finished output redacted where written or sent (T105, FR-013)
+│   ├── test_input_revision.py       # Local-scope input revision (T101, FR-024)
+│   ├── test_purgeable_artifacts.py  # Review artifacts are purgeable (T102, FR-030)
 │   ├── test_llm_provider.py         # LLM provider request/response contracts
 │   ├── test_llm_output_limit.py     # Provider error URL removal, [llm] max_output_tokens (FR-019, FR-029)
 │   ├── test_zdr.py                  # ZDR toggle (FR-021, T079)
@@ -198,6 +214,10 @@ tests/
     ├── test_scope_resolver.py       # PR ref parsing, scope validation
     ├── test_models.py               # Pydantic model validation
     ├── test_redaction.py            # redact_secrets() masking
+    ├── test_log_redaction.py        # Every log line and CLI error message redacted (T104, FR-013)
+    ├── test_llm_retry_after.py      # Retry-After parsing for the in-flight-budget retry (T114, FR-019)
+    ├── test_review_tools.py         # review/tools holds only the render node's write tools (T113)
+    ├── test_rules_licence_statement.py # SAST rules licence stated wherever a registry ruleset is named (T128)
     ├── test_llm_error_summary.py    # summarize_llm_error() one-line summaries (FR-029)
     ├── test_logging.py              # Atomic structured logging
     ├── test_languages.py            # Unsupported-language skip/note logic
@@ -213,7 +233,7 @@ tests/
     └── test_summary.py              # Verdict derivation (T041b)
 ```
 
-**Structure Decision**: Single project layout. All source under `veritas/` package (importable). CLI entry point via `veritas.main:app` (Typer). Tests mirror source structure. No frontend — CLI-only (constitution Principle VI). The `review/nodes/` directory separates each review-type node into its own module for clarity; the `review/tools/` directory separates read-only tools from write tools to enforce the constitutional boundary at the import level.
+**Structure Decision**: Single project layout. All source under `veritas/` package (importable). CLI entry point via `veritas.main:app` (Typer). Tests mirror source structure. No frontend — CLI-only (constitution Principle VI). The `review/nodes/` directory separates each review-type node into its own module for clarity; `review/tools/` holds only the render node's write tools.
 
 ## Complexity Tracking
 
