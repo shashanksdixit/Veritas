@@ -60,7 +60,9 @@ from veritas.review.contexts import ReviewContext
 from veritas.review.state import ReviewState
 from veritas.utils.redaction import redact_secrets
 
-_REF_LINE = re.compile(r"^(.+?):(\d+)$")
+# The line part of a requirement evidence reference, the text after the path's
+# first ":": one line ("42") or an inclusive range ("19-23") (FR-013).
+_REF_LINES = re.compile(r"(\d+)(?:-(\d+))?")
 
 # Snippets recorded on a VerificationFailure are redacted first, then capped at
 # this many characters (FR-013). Redaction must run first: truncating first
@@ -340,16 +342,48 @@ def correct_citation(finding: CodeFinding, files: dict[str, str]) -> CodeFinding
 EVIDENCE_UNCONFIRMED_EXPLANATION = "Its cited evidence could not be confirmed against the reviewed files."
 
 
+def _evidence_problem(ref: str, files: dict[str, str]) -> str | None:
+    """Why one evidence reference cannot be confirmed, or None when it can (FR-013).
+
+    A reference only points at code, so this confirms the pointer and nothing
+    more: the file is in the reviewed set and every cited line lies between 1 and
+    the file's length. It does not confirm that those lines implement the
+    requirement (constitution Principle I). Accepted shapes are ``path``,
+    ``path:N`` and ``path:A-B``; the line part is whatever follows the first
+    ":", so a reviewed path that itself contains ":" can only be cited bare.
+    """
+    text = ref.strip()
+    if not text:
+        return "empty reference"
+    if text in files:
+        return None
+    path, colon, line_part = text.partition(":")
+    if not colon:
+        return "file not in scope"
+    match = _REF_LINES.fullmatch(line_part)
+    if match is None:
+        return "unrecognised reference"
+    first = int(match.group(1))
+    last = int(match.group(2)) if match.group(2) is not None else first
+    if first > last:
+        return "invalid line range"
+    content = files.get(path)
+    if content is None:
+        return "file not in scope"
+    if first < 1 or last > len(content.splitlines()):
+        return "line out of range"
+    return None
+
+
 def partition_requirement_evidence(
     rf: RequirementFinding, files: dict[str, str]
 ) -> tuple[list[str], list[str]]:
     """Split a requirement's evidence into ``(confirmed, unconfirmed)`` (FR-013).
 
-    The checks are the ones this node has always made on a ``file:line`` reference
-    — the file must be in the reviewed set and the line must exist in it — and a
-    bare filename must name a reviewed file. Each unconfirmed entry carries the
-    cause as today (``"src/missing.py (file not in scope)"``) so the recorded
-    VerificationFailure still names the specific reference that failed.
+    See :func:`_evidence_problem` for what each reference is checked against.
+    Each unconfirmed entry carries its cause (``"src/missing.py (file not in
+    scope)"``) so the recorded VerificationFailure names the specific reference
+    that failed.
 
     Every status is checked, ``unclear`` included: an unclear requirement needs
     no evidence, but a reference it does cite is published like any other, so it
@@ -358,24 +392,11 @@ def partition_requirement_evidence(
     confirmed: list[str] = []
     unconfirmed: list[str] = []
     for ref in rf.evidence:
-        match = _REF_LINE.match(ref.strip())
-        if match:
-            path, line = match.group(1), int(match.group(2))
-            content = files.get(path)
-            if content is None:
-                unconfirmed.append(f"{ref} (file not in scope)")
-            elif line > len(content.splitlines()):
-                unconfirmed.append(f"{ref} (line out of range)")
-            else:
-                confirmed.append(ref)
-        elif ref.strip():
-            content = files.get(ref.strip())
-            if content is None:
-                unconfirmed.append(f"{ref} (file not in scope)")
-            else:
-                confirmed.append(ref)
-        else:
+        problem = _evidence_problem(ref, files)
+        if problem is None:
             confirmed.append(ref)
+        else:
+            unconfirmed.append(f"{ref} ({problem})")
     return (confirmed, unconfirmed)
 
 

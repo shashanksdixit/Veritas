@@ -275,6 +275,22 @@ constitution Principle VIII / FR-016.
   contexts, checked by the reachability test.
 
 ### Fixed
+- A requirement evidence reference is confirmed only when every cited line
+  exists (FR-013, T127, constitution v7.0.0 Principle I; no schema change).
+  `path:0` was confirmed and is now `(line out of range)`. `path:A-B` was
+  always reported as `(file not in scope)`; it is now confirmed when
+  1 <= A <= B <= the file's line count, `(line out of range)` outside that and
+  `(invalid line range)` when A > B. Any other text after the path's first
+  `:`, such as `path:2:5`, is `(unrecognised reference)` instead of
+  `(file not in scope)`, which now only means the path was not reviewed. An
+  empty or whitespace-only reference was confirmed and is now
+  `(empty reference)`. Unconfirmed references are removed, recorded as
+  `evidence_not_confirmed` failures and leave a satisfied or partial
+  requirement with no evidence unclear, as before. The Markdown report's
+  Requirement Findings section now states once, whenever any requirement lists
+  evidence: "Evidence verification confirms that each cited file is in the
+  reviewed set and the cited lines exist; it does not confirm that they
+  implement the requirement." The requirements prompt is unchanged.
 - A PR file whose content the hosting API withholds is no longer reviewed as
   an empty file (FR-029, T124). GitHub's contents API answers a 1-100 MB file
   with `"encoding": "none"` and no content, and the fetcher returned `""`: the

@@ -114,6 +114,13 @@ _VERDICT_LEGEND: tuple[tuple[str, str], ...] = (
 # Enough to recognise the requirement by; the full text is in the spec.
 NOT_ADDRESSED_TEXT_CHARS = 100
 
+# FR-013: the limit of evidence verification, stated once in the requirements
+# part of the report, as the code-findings note states it for citations.
+REQUIREMENT_EVIDENCE_NOTE = (
+    "Evidence verification confirms that each cited file is in the reviewed set and the cited "
+    "lines exist; it does not confirm that they implement the requirement."
+)
+
 _REASON_CODE_MEANINGS: dict[VerificationReasonCode, str] = {
     VerificationReasonCode.FILE_NOT_IN_SCOPE: "The cited file was not among the files reviewed.",
     VerificationReasonCode.LINE_OUT_OF_RANGE: "The cited line is past the end of the file.",
@@ -490,6 +497,16 @@ def render_markdown(report: Report) -> str:
     out.append("")
     if not report.requirement_findings:
         out.append("No requirement findings.")
+        out.append("")
+    # FR-013: what a confirmed evidence reference does and does not mean, stated
+    # once whenever an **Evidence** list below is rendered (not_addressed
+    # requirements render none).
+    if any(
+        rf.evidence
+        for rf in report.requirement_findings
+        if rf.status is not RequirementStatus.NOT_ADDRESSED
+    ):
+        out.append(REQUIREMENT_EVIDENCE_NOTE)
         out.append("")
     # not_addressed requirements get one compact block, not a section each: a spec
     # can hold dozens of them and a PR normally touches a handful, so rendering one

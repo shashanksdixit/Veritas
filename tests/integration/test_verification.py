@@ -9,6 +9,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from tests.conftest import fake_secret
 from veritas.models.entities import (
     Category,
@@ -255,6 +257,104 @@ def test_partition_checks_an_unclear_finding_line_by_line():
         ["src/app.py:3"],
         ["src/app.py:999 (line out of range)"],
     )
+
+
+# ---------------------------------------------------------------------------
+# T127 — an evidence reference is confirmed only when every cited line lies
+# between 1 and the file's length (constitution Principle I, FR-013)
+# ---------------------------------------------------------------------------
+
+# Three lines, so line 3 is the last line that exists and line 4 the first that does not.
+THREE_LINE_FILES = {"src/a.py": "a\nb\nc\n"}
+
+
+@pytest.mark.parametrize(
+    ("ref", "problem"),
+    [
+        ("src/a.py:1", None),
+        ("src/a.py:3", None),
+        ("src/a.py:0", "line out of range"),
+        ("src/a.py:4", "line out of range"),
+        ("src/a.py:1-3", None),
+        ("src/a.py:2-2", None),
+        ("src/a.py:2-4", "line out of range"),
+        ("src/a.py:0-2", "line out of range"),
+        ("src/a.py:3-2", "invalid line range"),
+        ("src/a.py:2:5", "unrecognised reference"),
+        ("src/missing.py:1", "file not in scope"),
+        ("src/missing.py", "file not in scope"),
+        ("src/a.py", None),
+        ("", "empty reference"),
+        ("   ", "empty reference"),
+    ],
+)
+def test_each_evidence_reference_form_is_checked(ref, problem):
+    rf = _requirement(RequirementStatus.SATISFIED, [ref])
+    confirmed, unconfirmed = partition_requirement_evidence(rf, THREE_LINE_FILES)
+    if problem is None:
+        assert (confirmed, unconfirmed) == ([ref], [])
+    else:
+        assert (confirmed, unconfirmed) == ([], [f"{ref} ({problem})"])
+
+
+def test_a_line_zero_reference_demotes_and_a_valid_range_stays_satisfied_through_run_review(
+    tmp_path, settings
+):
+    """End to end: line 0 does not exist, so it is not evidence; lines 1-3 do."""
+    from tests.conftest import FakeLLM
+
+    from veritas.config.constants import LAST_REPORT_JSON
+    from veritas.models.entities import Report, ReviewScope
+    from veritas.review.graph import run_review
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "x.py").write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+    feature = tmp_path / "specs" / "001-demo"
+    feature.mkdir(parents=True)
+    (feature / "spec.md").write_text(
+        "# Feature\n"
+        "\n"
+        "- **FR-001**: The system MUST set a.\n"
+        "- **FR-002**: The system MUST set a, b and c.\n",
+        encoding="utf-8",
+    )
+    llm = FakeLLM(
+        {
+            "extracted from the project's spec": json.dumps(
+                [
+                    {
+                        "id": "FR-001",
+                        "answer": "implemented",
+                        "evidence": ["src/x.py:0"],
+                        "explanation": "the code shows it",
+                    },
+                    {
+                        "id": "FR-002",
+                        "answer": "implemented",
+                        "evidence": ["src/x.py:1-3"],
+                        "explanation": "the code shows it",
+                    },
+                ]
+            )
+        }
+    )
+    outcome = run_review(settings, ReviewScope.PROJECT, str(tmp_path), llm=llm)
+    assert outcome.exit_code == 0
+
+    report = Report.model_validate_json(Path(LAST_REPORT_JSON).read_text(encoding="utf-8"))
+    by_ref = {rf.requirement_ref: rf for rf in report.requirement_findings}
+    assert by_ref["FR-001"].status is RequirementStatus.UNCLEAR
+    assert by_ref["FR-001"].evidence == []
+    assert by_ref["FR-001"].explanation == (
+        "Its cited evidence could not be confirmed against the reviewed files."
+    )
+    assert by_ref["FR-002"].status is RequirementStatus.SATISFIED
+    assert by_ref["FR-002"].evidence == ["src/x.py:1-3"]
+
+    (failure,) = report.summary.verification_failures
+    assert failure.finding_id == by_ref["FR-001"].id
+    assert failure.reason_code is VerificationReasonCode.EVIDENCE_NOT_CONFIRMED
+    assert failure.reason == "evidence not confirmed: src/x.py:0 (line out of range)"
 
 
 def test_every_requirement_reaches_the_report_even_with_bad_evidence():

@@ -193,7 +193,7 @@ class RequirementFinding(BaseModel):
     requirement_ref: str             # reference to requirement (title or ID)
     requirement_text: str            # the requirement statement
     status: RequirementStatus
-    evidence: list[str] = Field(default_factory=list)  # file:line refs
+    evidence: list[str] = Field(default_factory=list)  # "path", "path:N" or "path:A-B" refs; each confirmed only if the file was reviewed and every cited line is in 1..file length (FR-013)
     explanation: str
 ```
 

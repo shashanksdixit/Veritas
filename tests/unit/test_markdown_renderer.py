@@ -308,6 +308,41 @@ def test_the_status_counts_table_lists_not_addressed():
     assert "| Requirement status: not_addressed | 1 |" in md
 
 
+# --- T127: the limit of evidence verification is stated once (FR-013) ---
+
+EVIDENCE_NOTE = (
+    "Evidence verification confirms that each cited file is in the reviewed set and the cited "
+    "lines exist; it does not confirm that they implement the requirement."
+)
+
+
+def test_the_evidence_note_is_stated_once_when_requirement_evidence_is_listed():
+    second = _report_requirement()
+    second.id = "r-2"
+    second.requirement_ref = "REQ-2"
+    second.evidence = ["src/app.py:1-2", "src/app.py"]
+    md = render_markdown(_report(requirement_findings=[_report_requirement(), second]))
+    section = _requirement_section(md)
+    assert md.count(EVIDENCE_NOTE) == 1
+    # It opens the requirements section, ahead of the first Evidence list.
+    assert section.index(EVIDENCE_NOTE) < section.index("**Evidence**:")
+
+
+def test_the_evidence_note_is_absent_when_no_requirement_lists_evidence():
+    unclear = RequirementFinding(
+        id="r-u",
+        requirement_ref="REQ-U",
+        requirement_text="Supports project scope.",
+        status=RequirementStatus.UNCLEAR,
+        evidence=[],
+        explanation="Its cited evidence could not be confirmed against the reviewed files.",
+    )
+    for findings in ([], [unclear], [unclear, _not_addressed("FR-002")]):
+        md = render_markdown(_report(requirement_findings=findings))
+        assert EVIDENCE_NOTE not in md
+        assert "**Evidence**:" not in md
+
+
 def _report_requirement() -> RequirementFinding:
     return RequirementFinding(
         id="r-1",
