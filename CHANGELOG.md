@@ -154,6 +154,17 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- The ZDR-off warning on a non-OpenRouter backend no longer advises a setting
+  Veritas refuses (FR-021, T126). It read `... Set VERITAS_ZDR=true only if that
+  agreement already provides zero data retention ...`, but `VERITAS_ZDR=true` on
+  such a backend stops the run. It now reads `[warn] ZDR is OFF: zero data
+  retention cannot be enforced per request on this backend; data retention is
+  governed by your account agreement with <provider>. To enforce ZDR per
+  request, use OpenRouter with VERITAS_ZDR=true.` This is the line every
+  default (OpenAI direct) run prints. The anthropic route with an OpenRouter
+  `base_url` now gets this wording too, instead of the OpenRouter warning. The
+  OpenRouter warning, the fail-closed refusal and its message are unchanged. No
+  schema change.
 - The default LLM backend is now a fixed model and endpoint, OpenAI direct:
   `openai:gpt-4o-mini` at `https://api.openai.com/v1` (FR-019, T125,
   constitution 7.0.0). It was OpenRouter (`https://openrouter.ai/api/v1`,

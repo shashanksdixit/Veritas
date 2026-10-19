@@ -405,10 +405,14 @@ def test_data_retention_warning_printed_exactly_once_per_run(
 
 
 _ACCOUNT_AGREEMENT_WARNING_OPENAI = (
-    "[warn] ZDR is OFF: data retention for this backend is governed by your "
-    "account agreement with openai. Set VERITAS_ZDR=true only if that agreement "
-    "already provides zero data retention (ZDR is enforced per request on "
-    "OpenRouter only)."
+    "[warn] ZDR is OFF: zero data retention cannot be enforced per request on "
+    "this backend; data retention is governed by your account agreement with "
+    "openai. To enforce ZDR per request, use OpenRouter with VERITAS_ZDR=true."
+)
+_ACCOUNT_AGREEMENT_WARNING_ANTHROPIC = (
+    "[warn] ZDR is OFF: zero data retention cannot be enforced per request on "
+    "this backend; data retention is governed by your account agreement with "
+    "anthropic. To enforce ZDR per request, use OpenRouter with VERITAS_ZDR=true."
 )
 _OPENROUTER_WARNING_LINE = (
     "[warn] ZDR is OFF: some free-tier models reserve the right to train on "
@@ -422,21 +426,67 @@ _OPENROUTER_WARNING_LINE = (
     [
         ({}, _ACCOUNT_AGREEMENT_WARNING_OPENAI),
         (
+            {"model": "openai:gpt-4o-mini", "base_url": "http://127.0.0.1:8080/v1"},
+            _ACCOUNT_AGREEMENT_WARNING_OPENAI,
+        ),
+        (
+            {"model": "anthropic:claude-sonnet-4-6", "base_url": "https://openrouter.ai/api/v1"},
+            _ACCOUNT_AGREEMENT_WARNING_ANTHROPIC,
+        ),
+        (
             {"model": "openai:openai/gpt-4o-mini", "base_url": "https://openrouter.ai/api/v1"},
             _OPENROUTER_WARNING_LINE,
         ),
     ],
-    ids=["default-openai", "configured-openrouter"],
+    ids=[
+        "default-openai",
+        "openai-compatible-local",
+        "anthropic-route-openrouter-base-url",
+        "configured-openrouter",
+    ],
 )
 def test_warning_wording_for_the_default_and_an_openrouter_backend(
     sample_project, capsys, configured, expected_line
 ):
     """The default backend is OpenAI direct (T125), so with nothing configured
-    the warning is the account-agreement wording; OpenRouter keeps its own."""
+    the warning is the account-agreement wording, as for any other
+    non-OpenRouter backend (T126); OpenRouter keeps its own. The anthropic route
+    ignores base_url, so an OpenRouter base_url does not make it OpenRouter."""
     settings = Settings(api_key="k", **configured)
     run_review(settings, ReviewScope.PROJECT, str(sample_project), llm=default_fake_llm())
     stderr_lines = capsys.readouterr().err.splitlines()
     assert [line for line in stderr_lines if "ZDR is OFF" in line] == [expected_line]
+
+
+_NON_OPENROUTER_BACKENDS = [
+    ("openai", "https://api.openai.com/v1"),
+    ("openai", "http://127.0.0.1:8080/v1"),
+    ("openai", "https://openrouter.ai.evil.com/v1"),
+    ("openai", "https://evil-openrouter.ai/v1"),
+    ("openai", ""),
+    ("anthropic", "https://api.openai.com/v1"),
+    ("anthropic", "https://openrouter.ai/api/v1"),
+]
+
+
+@pytest.mark.parametrize(("provider", "base_url"), _NON_OPENROUTER_BACKENDS)
+def test_warning_never_advises_a_zdr_setting_the_gate_refuses(provider, base_url):
+    """T126: on a backend where VERITAS_ZDR=true is refused, the ZDR-off warning
+    must not tell the user to set it there; it may only point to OpenRouter."""
+    from veritas.review import ReviewFatalError
+    from veritas.review.graph import _gate_zdr
+
+    settings = Settings(
+        api_key="k", model=f"{provider}:some-model", base_url=base_url, zdr=True
+    )
+    with pytest.raises(ReviewFatalError, match="ZDR is only supported with OpenRouter"):
+        _gate_zdr(settings, Log(verbose=False))
+
+    text = zdr_warning_text(base_url, provider)
+    assert "Set VERITAS_ZDR=true only if" not in text
+    assert "free-tier" not in text
+    assert text.count("VERITAS_ZDR=true") == 1
+    assert text.endswith("To enforce ZDR per request, use OpenRouter with VERITAS_ZDR=true.")
 
 
 def test_warning_appears_once_even_with_many_llm_calls(sample_project, capsys):

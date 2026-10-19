@@ -368,10 +368,19 @@ account agreement with that provider and cannot be enforced by Veritas; set
 Whenever ZDR is off (the default), Veritas prints a data-retention warning exactly
 once per run, worded for the backend. On OpenRouter it warns that some free-tier
 models explicitly reserve the right to train on inputs/outputs and recommends ZDR
-for reviews of proprietary or sensitive code. On any other backend it warns that
-retention is governed by your account agreement with that provider; this is the
-warning a default (OpenAI direct) run prints. Enabling ZDR is
-the user's informed choice.
+for reviews of proprietary or sensitive code. On any other backend (including the
+Anthropic route, whatever its `base_url`) it warns that zero data retention cannot
+be enforced per request there, that retention is governed by your account
+agreement with that provider, and that ZDR is enforced per request by using
+OpenRouter with `VERITAS_ZDR=true`. This is the warning a default (OpenAI direct)
+run prints:
+
+```text
+[warn] ZDR is OFF: zero data retention cannot be enforced per request on this backend; data retention is governed by your account agreement with openai. To enforce ZDR per request, use OpenRouter with VERITAS_ZDR=true.
+```
+
+It does not suggest `VERITAS_ZDR=true` on that backend, because the run refuses
+it there. Enabling ZDR is the user's informed choice.
 
 ## Suppression workflow
 

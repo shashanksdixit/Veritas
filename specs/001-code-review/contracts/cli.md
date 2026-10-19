@@ -74,7 +74,7 @@ Report: ./veritas-report-20260916-143022.md
 Diagnostics and errors only:
 ```text
 [info] Scanning project in scope: ./myproject
-[warn] ZDR is OFF: data retention for this backend is governed by your account agreement with openai. Set VERITAS_ZDR=true only if that agreement already provides zero data retention (ZDR is enforced per request on OpenRouter only).
+[warn] ZDR is OFF: zero data retention cannot be enforced per request on this backend; data retention is governed by your account agreement with openai. To enforce ZDR per request, use OpenRouter with VERITAS_ZDR=true.
 [warn] OpenGrep not found on PATH; security findings will be LLM-identified only
 [error] LLM provider rate-limited after 3/5 review types; report marked incomplete
 [warn] Failed to post report as PR comment: 403 Forbidden; report saved to ./veritas-report-20260916-143022.md
@@ -82,11 +82,13 @@ Diagnostics and errors only:
 
 Exactly one data-retention warning is printed per run, before any review work
 starts, and is worded for the configured backend: on the default backend (OpenAI
-direct) and any other non-OpenRouter backend, the account-agreement warning shown
-above, naming the provider (`...your account agreement with {provider}...`); on
-OpenRouter, `[warn] ZDR is OFF: some free-tier models reserve the right to train
-on inputs/outputs. Set VERITAS_ZDR=true for reviews of proprietary or sensitive
-code.`
+direct) and any other non-OpenRouter backend (including the Anthropic route,
+whatever its base_url), the account-agreement warning shown above, naming the
+provider (`...your account agreement with {provider}...`); it never advises
+`VERITAS_ZDR=true` on that backend, which the run refuses (below), only using
+OpenRouter with it. On OpenRouter, `[warn] ZDR is OFF: some free-tier models
+reserve the right to train on inputs/outputs. Set VERITAS_ZDR=true for reviews
+of proprietary or sensitive code.`
 
 With `VERITAS_ZDR=true` on a non-OpenRouter backend the run stops immediately with
 exit code 1 and no report — nothing is fetched, read, or sent:

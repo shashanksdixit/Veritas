@@ -24,11 +24,11 @@ _OPENROUTER_WARNING = (
     "sensitive code."
 )
 
+# Never advises VERITAS_ZDR=true on this backend: _gate_zdr refuses that (T126).
 _OTHER_BACKEND_WARNING = (
-    "ZDR is OFF: data retention for this backend is governed by your account "
-    "agreement with {provider}. Set VERITAS_ZDR=true only if that agreement "
-    "already provides zero data retention (ZDR is enforced per request on "
-    "OpenRouter only)."
+    "ZDR is OFF: zero data retention cannot be enforced per request on this "
+    "backend; data retention is governed by your account agreement with "
+    "{provider}. To enforce ZDR per request, use OpenRouter with VERITAS_ZDR=true."
 )
 
 
@@ -66,7 +66,12 @@ def zdr_body_extras(zdr: bool) -> dict:
 
 
 def zdr_warning_text(base_url: str, provider: str = "") -> str:
-    """The per-run data-retention warning, worded for the configured backend."""
-    if is_openrouter(base_url):
+    """The per-run data-retention warning, worded for the configured backend.
+
+    The OpenRouter wording recommends VERITAS_ZDR=true, so it is chosen only where
+    _gate_zdr accepts that setting: the anthropic route with an OpenRouter
+    base_url gets the other-backend wording (T126).
+    """
+    if backend_is_openrouter(provider, base_url):
         return _OPENROUTER_WARNING
     return _OTHER_BACKEND_WARNING.format(provider=provider or base_url or "that provider")
