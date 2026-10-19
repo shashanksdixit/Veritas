@@ -15,6 +15,7 @@ from veritas.hosting.github import (
     _reject_writes,
 )
 from veritas.hosting.types import PullRefs, RootEntry
+from veritas.review import ContentWithheldError
 from veritas.utils.logging import Log
 
 BASE = "https://api.github.com"
@@ -349,3 +350,48 @@ def test_read_optional_default_decoding_is_unchanged():
 def test_fetcher_names_its_api_error():
     """The scope node catches the fetcher's api_error without importing this module."""
     assert GitHubFetcher.api_error is GitHubAPIError
+
+
+# --- withheld content (T124) ---------------------------------------------------
+
+
+def _contents_handler(payload: dict):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == f"/repos/{OWNER}/{REPO}/contents/data/big.py"
+        assert request.url.params.get("ref") == "sha123"
+        return _json_response(payload)
+
+    return handler
+
+
+def test_get_file_contents_raises_content_withheld_for_encoding_none():
+    """GitHub answers a 1-100 MB file with encoding "none" and empty content."""
+    handler = _contents_handler(
+        {"type": "file", "encoding": "none", "content": "", "size": 5_000_000}
+    )
+    with pytest.raises(ContentWithheldError) as exc:
+        _make_fetcher(handler).get_file_contents(OWNER, REPO, "data/big.py", "sha123")
+    assert exc.value.path == "data/big.py"
+    assert exc.value.reason == "content not provided by the hosting API (file over 1 MB)"
+    assert str(exc.value) == (
+        "content not provided by the hosting API (file over 1 MB) (path: data/big.py)"
+    )
+
+
+def test_get_file_contents_raises_content_withheld_for_another_encoding_with_no_content():
+    handler = _contents_handler({"type": "file", "encoding": "utf-8", "size": 12})
+    with pytest.raises(ContentWithheldError) as exc:
+        _make_fetcher(handler).get_file_contents(OWNER, REPO, "data/big.py", "sha123")
+    assert exc.value.reason == "content not provided by the hosting API (encoding 'utf-8')"
+
+
+def test_get_file_contents_returns_empty_text_for_a_genuinely_empty_file():
+    handler = _contents_handler({"type": "file", "encoding": "base64", "content": "", "size": 0})
+    assert _make_fetcher(handler).get_file_contents(OWNER, REPO, "data/big.py", "sha123") == ""
+
+
+def test_content_withheld_is_not_the_api_error():
+    """The scope node catches content_withheld before api_error, which stays fatal (T121)."""
+    assert GitHubFetcher.content_withheld is ContentWithheldError
+    assert not issubclass(ContentWithheldError, GitHubAPIError)

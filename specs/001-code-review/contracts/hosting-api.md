@@ -76,6 +76,8 @@ Response:
 
 **Error handling**: 404 → file not found or inaccessible; 403 → access denied; 422 → invalid ref.
 
+**`get_file_contents` (T124)**: base64 content is decoded as UTF-8 with invalid bytes replaced; a genuinely empty file (`"encoding": "base64"`, empty `content`, `size` 0) returns `""` and is reviewed. A file of 1–100 MB comes back with `"encoding": "none"` and empty `content`; that, and any other non-base64 encoding with empty `content`, raises `ContentWithheldError` (`veritas/review/__init__.py`, named by the fetcher as `content_withheld`) with the reason `content not provided by the hosting API (file over 1 MB)` (for `"none"`) or `content not provided by the hosting API (encoding '<encoding>')`, never returning `""`. It is not an API error: the scope node records the file as an excluded file with that reason (FR-029); it reaches no prompt and no SAST scan, and the run continues. Every HTTP or network error still raises `GitHubAPIError` and is fatal (see "Error Handling Contract").
+
 **`read_optional`**: 404 → `None` (absent); every other error raises. A directory path returns a JSON array, which raises `path is a directory, not a file`. A file of 1–100 MB comes back with `"encoding": "none"` and empty `content`, which raises `file too large for the contents API (encoding "none", no content)`. A `symlink` or `submodule` entry raises `path is a <type>, not a file`.
 
 ### List repository root (`list_root`)
@@ -150,9 +152,14 @@ Response:
   "file_name": "app.py",
   "file_path": "src/app.py",
   "encoding": "base64",
-  "content": "<base64-encoded file content>"
+  "content": "<base64-encoded file content>",
+  "size": 1476
 }
 ```
+
+**Large files**: GitLab's documentation (https://docs.gitlab.com/api/repository_files/, "Get file from repository") does not specify what this endpoint returns for a large file. It documents `content` as "Base64 encoded file content" and `size` as "Size of the raw Git blob in bytes", and says only that "For blobs larger than 10 MB, this endpoint has a rate limit of 5 requests per minute"; it gives no size limit and never mentions an `"encoding": "none"` answer.
+
+**`get_file_at_ref` (T124)**: base64 content is decoded as UTF-8 with invalid bytes replaced; a genuinely empty file (empty `content`, `size` 0 or absent) returns `""` and is reviewed. Because the documentation is silent, empty `content` with a non-zero `size` raises `ContentWithheldError` with the reason `content not provided by the hosting API (<size>-byte file returned empty)`, and `"encoding": "none"` with empty `content` raises it with `content not provided by the hosting API (encoding "none")`, never returning `""`. The scope node handles it as for GitHub's `get_file_contents`; every HTTP or network error still raises `GitLabAPIError` and is fatal.
 
 **`read_optional`**: 404 → `None` (absent); every other error raises. A response that is a JSON array (a directory) raises `path is a directory, not a file`; a missing or non-base64 encoding raises (`file has no content (encoding "none"); it may be too large` for `"none"`). The path is URL-encoded as one segment (`docs%2FSTYLE.md`).
 
@@ -211,7 +218,7 @@ A bare number (e.g. `123`) is **rejected** with exit code 1 and a clear stderr d
 All hosting API errors produce, except for project-context reads (below):
 1. Exit code 1 (fatal)
 2. Diagnostic message on stderr: `[error] {provider} API error: {status} — {detail}`, followed by ` (path: {path})` when the error names a file. Status 0 means a network failure (detail `network error: ...`). It is one line, never a traceback: line breaks in the response body are folded into single spaces, and the line is redacted (FR-013) like every `[error]` line. Nothing is written to stdout.
-3. No partial report emitted (FR-002 edge case: PR not found / access denied → clear failure, no misrepresentation): no report file, no `.veritas/last-report.json` and, with `--post`, no comment. The scope node turns an error from `pull_refs`, the PR file list or the PR's file contents into the CLI's fatal error before any later node runs (T121); a `last-report.json` from an earlier run is left as it was.
+3. No partial report emitted (FR-002 edge case: PR not found / access denied → clear failure, no misrepresentation): no report file, no `.veritas/last-report.json` and, with `--post`, no comment. The scope node turns an error from `pull_refs`, the PR file list or the PR's file contents into the CLI's fatal error before any later node runs (T121); a `last-report.json` from an earlier run is left as it was. A file whose content the provider withholds (`ContentWithheldError`, T124) is not an API error: it is reported as an excluded file with its reason and the review continues.
 
 **Exception: project-context reads (T120, FR-009).** An error from `list_root` or `read_optional` while the scope node reads a PR's project context (any error but 404, which means absent; a 429 is still retried first) is not fatal. It becomes one problem line in the report's project context, naming what was being read and the error message (for example `reading pyproject.toml at the head commit failed: github API error: 502 — Bad Gateway (path: pyproject.toml); skipped`); the context becomes partial or unavailable and the review continues with its usual exit code. It is not added to the run's errors. A failed root listing means nothing is read from that commit. `pull_refs`, the PR file list and the PR's file contents stay fatal as above.
 

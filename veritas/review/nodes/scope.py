@@ -12,7 +12,8 @@ input it reviewed (FR-024, constitution Principle I).
 
 Exclusion (FR-029): ``[review] exclude`` patterns are applied before file
 contents are fetched in every scope except ``file``, whose explicit target is
-always reviewed. SAST scans exactly the post-exclusion file set.
+always reviewed. SAST scans exactly the post-exclusion file set. A PR file
+whose content the hosting API withholds is excluded with a reason (T124).
 """
 
 from __future__ import annotations
@@ -96,12 +97,22 @@ def _is_excluded(path: str, patterns: Sequence[str], excluded: dict[str, str]) -
     return True
 
 
-def _excluded_files(excluded: dict[str, str]) -> list[ExcludedFile]:
-    return [ExcludedFile(path=path, pattern=pattern) for path, pattern in excluded.items()]
+def _excluded_files(
+    excluded: dict[str, str], withheld: dict[str, str] | None = None
+) -> list[ExcludedFile]:
+    """Pattern exclusions first, then files whose content the hosting API
+    withheld, each with its reason (T124)."""
+    entries = [ExcludedFile(path=path, pattern=pattern) for path, pattern in excluded.items()]
+    entries += [ExcludedFile(path=path, reason=reason) for path, reason in (withheld or {}).items()]
+    return entries
 
 
 def _log_exclusions(log, excluded: dict[str, str]) -> None:
-    """One info line naming each matching pattern and how many files it caught."""
+    """One info line naming each matching pattern and how many files it caught.
+
+    ``excluded`` maps path -> pattern for pattern exclusions only; withheld
+    files have their own warning, logged when the fetch is refused (T124).
+    """
     if not excluded:
         return
     counts: dict[str, int] = {}
@@ -425,6 +436,22 @@ def _fetch_pr(ctx: ScopeContext) -> dict:
     files: dict[str, str] = {}
     skipped: list[str] = []
     excluded: dict[str, str] = {}
+    # Path -> reason for files the hosting API answered without their content
+    # (T124): reported as excluded, never reviewed or scanned as empty.
+    withheld: dict[str, str] = {}
+
+    def fetch(path: str) -> None:
+        try:
+            if parsed.provider == "github":
+                content = host.get_file_contents(parsed.owner, parsed.repo, path, sha)
+            else:
+                content = host.get_file_at_ref(parsed.owner, parsed.repo, path, sha)
+        except host.content_withheld as exc:
+            withheld[path] = exc.reason
+            ctx.log.warn(f"scope: {path} not reviewed: {exc.reason}")
+            return
+        files[path] = content
+
     for item in items:
         path = _normalize_rel(item["filename"])
         if not is_supported(path):
@@ -433,11 +460,7 @@ def _fetch_pr(ctx: ScopeContext) -> dict:
         # FR-029: excluded before the remote fetch, never requested.
         if _is_excluded(path, patterns, excluded):
             continue
-        if parsed.provider == "github":
-            content = host.get_file_contents(parsed.owner, parsed.repo, path, sha)
-        else:
-            content = host.get_file_at_ref(parsed.owner, parsed.repo, path, sha)
-        files[path] = content
+        fetch(path)
 
     # FR-008: any file the PR touches that is a requirement source, found by
     # pattern rather than by an exact-name list, so a feature spec added under
@@ -445,19 +468,15 @@ def _fetch_pr(ctx: ScopeContext) -> dict:
     # available; this loop never looks outside the diff.
     for item in items:
         path = _normalize_rel(item["filename"])
-        if not is_requirements_source(path) or path in files:
+        if not is_requirements_source(path) or path in files or path in withheld:
             continue
         if _is_excluded(path, patterns, excluded):
             continue
-        if parsed.provider == "github":
-            content = host.get_file_contents(parsed.owner, parsed.repo, path, sha)
-        else:
-            content = host.get_file_at_ref(parsed.owner, parsed.repo, path, sha)
-        files[path] = content
+        fetch(path)
     return {
         "files": files,
         "skipped_languages": skipped,
-        "excluded_files": _excluded_files(excluded),
+        "excluded_files": _excluded_files(excluded, withheld),
         "input_revision": sha,
         "base_sha": refs.base_sha,
         "changed_paths": frozenset(changed),
@@ -619,7 +638,9 @@ def make_scope_node(ctx: ScopeContext) -> Callable[[ReviewState], dict]:
             # a ReviewFatalError, so the CLI prints it as one redacted [error]
             # line and exits 1 before any report is written (T121). Only
             # _fetch_pr's reads are fatal; the project-context reads below
-            # catch their own errors (T120).
+            # catch their own errors (T120). A file whose content the API
+            # withholds is not an error: _fetch_pr catches the fetcher's
+            # content_withheld first and records the file as excluded (T124).
             try:
                 result = _fetch_pr(ctx)
             except ctx.fetcher.api_error as exc:
@@ -628,7 +649,12 @@ def make_scope_node(ctx: ScopeContext) -> Callable[[ReviewState], dict]:
             result = _run_local(scope, target, ctx.exclude)
 
         _log_exclusions(
-            ctx.log, {entry.path: entry.pattern for entry in result["excluded_files"]}
+            ctx.log,
+            {
+                entry.path: entry.pattern
+                for entry in result["excluded_files"]
+                if entry.pattern is not None
+            },
         )
 
         # FR-029: batch the post-exclusion, supported-language source files only.

@@ -15,6 +15,7 @@ from veritas.hosting.gitlab import (
     _reject_writes,
 )
 from veritas.hosting.types import PullRefs, RootEntry
+from veritas.review import ContentWithheldError
 
 BASE = "https://gitlab.com"
 OWNER, REPO, IID = "group", "project", 7
@@ -410,3 +411,53 @@ def test_read_optional_default_decoding_is_unchanged():
 def test_fetcher_names_its_api_error():
     """The scope node catches the fetcher's api_error without importing this module."""
     assert GitLabFetcher.api_error is GitLabAPIError
+
+
+# --- withheld content (T124) ---------------------------------------------------
+# docs.gitlab.com/api/repository_files/ does not say what "Get file from
+# repository" returns for a large file, so Veritas treats empty content for a
+# blob of non-zero size, or encoding "none" with empty content, as withheld.
+
+
+def _file_handler(payload: dict):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.raw_path.split(b"?")[0] == (
+            b"/api/v4/projects/group%2Fproject/repository/files/data%2Fbig.py"
+        )
+        assert request.url.params.get("ref") == "sha123"
+        return _json_response(payload)
+
+    return handler
+
+
+def test_get_file_at_ref_raises_content_withheld_for_empty_content_with_a_size():
+    handler = _file_handler(
+        {"file_path": "data/big.py", "encoding": "base64", "content": "", "size": 5_000_000}
+    )
+    with pytest.raises(ContentWithheldError) as exc:
+        _make_fetcher(handler).get_file_at_ref(OWNER, REPO, "data/big.py", "sha123")
+    assert exc.value.path == "data/big.py"
+    assert exc.value.reason == (
+        "content not provided by the hosting API (5000000-byte file returned empty)"
+    )
+
+
+def test_get_file_at_ref_raises_content_withheld_for_encoding_none_with_no_content():
+    handler = _file_handler({"file_path": "data/big.py", "encoding": "none", "content": ""})
+    with pytest.raises(ContentWithheldError) as exc:
+        _make_fetcher(handler).get_file_at_ref(OWNER, REPO, "data/big.py", "sha123")
+    assert exc.value.reason == 'content not provided by the hosting API (encoding "none")'
+
+
+def test_get_file_at_ref_returns_empty_text_for_a_genuinely_empty_file():
+    handler = _file_handler(
+        {"file_path": "data/big.py", "encoding": "base64", "content": "", "size": 0}
+    )
+    assert _make_fetcher(handler).get_file_at_ref(OWNER, REPO, "data/big.py", "sha123") == ""
+
+
+def test_content_withheld_is_not_the_api_error():
+    """The scope node catches content_withheld before api_error, which stays fatal (T121)."""
+    assert GitLabFetcher.content_withheld is ContentWithheldError
+    assert not issubclass(ContentWithheldError, GitLabAPIError)

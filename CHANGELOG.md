@@ -251,6 +251,26 @@ constitution Principle VIII / FR-016.
   contexts, checked by the reachability test.
 
 ### Fixed
+- A PR file whose content the hosting API withholds is no longer reviewed as
+  an empty file (FR-029, T124). GitHub's contents API answers a 1-100 MB file
+  with `"encoding": "none"` and no content, and the fetcher returned `""`: the
+  model saw nothing, SAST scanned nothing and the coverage line counted the
+  file as reviewed. Both fetchers now raise `ContentWithheldError` for such a
+  file (GitHub: encoding `"none"`, or any other non-base64 encoding with empty
+  content; GitLab, whose documentation does not say what it returns for a
+  large file: empty content for a blob of non-zero size, or encoding `"none"`
+  with empty content). The scope node records it as an excluded file with the
+  reason, for example `content not provided by the hosting API (file over 1
+  MB)`, logs `[warn] scope: <path> not reviewed: <reason>`, and leaves it out
+  of every prompt and the SAST scan; the report's Coverage section lists it as
+  `` `<path>`: <reason> `` and the coverage line counts it as excluded. This
+  covers requirement sources the PR changes too. A genuinely empty file is
+  still reviewed, and every other fetch error is still fatal (T121).
+  Report schema **1.11.0**: `ExcludedFile` gains `reason` and its `pattern`
+  becomes optional; exactly one of the two is set. Migration: reports written
+  before 1.11.0 still validate (their excluded files have a pattern and no
+  reason); a consumer reading `coverage.excluded_files[].pattern` must allow
+  it to be `null` when `reason` is set.
 - The report now says which reviewed files OpenGrep did not scan (FR-012,
   T123). OpenGrep's built-in ignore list (`tests/`, `build/`, `vendor/`,
   `dist/`, `node_modules/`, `*.min.js` and others, at any depth) and its 1 MB

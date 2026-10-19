@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from veritas.config.settings import Settings
+from veritas.review import ContentWithheldError
 
 ENV_PREFIX = "VERITAS_"
 
@@ -64,6 +65,8 @@ class EmptyRepoRoot:
     """
 
     api_error = FakeHostingAPIError
+    # The real fetchers name the same class (T124).
+    content_withheld = ContentWithheldError
     BASE_SHA = "base0000"
 
     def pull_refs(self, owner, repo, number):

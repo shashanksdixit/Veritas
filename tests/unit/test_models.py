@@ -100,7 +100,7 @@ def test_report_roundtrip_json():
             verdict=V.CLEAN,
         ),
     )
-    assert report.schema_version == "1.10.0"
+    assert report.schema_version == "1.11.0"
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.run.id == report.run.id
 
@@ -364,7 +364,7 @@ def test_sast_rules_round_trips_at_schema_1_7_0():
             verdict=Verdict.CLEAN,
         ),
     )
-    assert report.schema_version == "1.10.0"
+    assert report.schema_version == "1.11.0"
 
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.run.sast_rules == "r/corp-pack"
@@ -425,10 +425,10 @@ def test_sast_status_fields_round_trip_at_schema_1_9_0(status, count, reason):
             sast_reason=reason,
         )
     )
-    assert report.schema_version == "1.10.0"
+    assert report.schema_version == "1.11.0"
 
     dumped = json.loads(report.model_dump_json())
-    assert dumped["schema_version"] == "1.10.0"
+    assert dumped["schema_version"] == "1.11.0"
     assert dumped["run"]["sast_status"] == status
 
     restored = Report.model_validate_json(report.model_dump_json())
@@ -506,10 +506,10 @@ def test_project_context_fields_round_trip_at_schema_1_10_0(status, sources, rea
             project_context_origin=origin,
         )
     )
-    assert report.schema_version == "1.10.0"
+    assert report.schema_version == "1.11.0"
 
     dumped = json.loads(report.model_dump_json())
-    assert dumped["schema_version"] == "1.10.0"
+    assert dumped["schema_version"] == "1.11.0"
     assert dumped["run"]["project_context_status"] == status
     assert dumped["run"]["project_context_sources"] == sources
 
@@ -565,3 +565,108 @@ def test_project_context_status_values():
         "partial",
         "unavailable",
     ]
+
+
+# --- schema 1.11.0 adds ExcludedFile.reason (T124, FR-029) ---
+
+
+def test_excluded_file_with_a_reason_round_trips_at_schema_1_11_0():
+    from veritas.models.entities import Coverage, ExcludedFile, Report
+
+    report = _report_with_run(
+        ReviewRun(
+            scope=ReviewScope.PR,
+            target="acme/widget#3",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.0.0",
+        )
+    ).model_copy(
+        update={
+            "coverage": Coverage(
+                batch_chars=48000,
+                max_batches=8,
+                batches_used=1,
+                reviewed_files=["src/app.py"],
+                excluded_files=[
+                    ExcludedFile(path=".specify/plan.py", pattern=".specify/"),
+                    ExcludedFile(
+                        path="data/big.py",
+                        reason="content not provided by the hosting API (file over 1 MB)",
+                    ),
+                ],
+            )
+        }
+    )
+    assert report.schema_version == "1.11.0"
+
+    dumped = json.loads(report.model_dump_json())
+    assert dumped["coverage"]["excluded_files"] == [
+        {"path": ".specify/plan.py", "pattern": ".specify/", "reason": None},
+        {
+            "path": "data/big.py",
+            "pattern": None,
+            "reason": "content not provided by the hosting API (file over 1 MB)",
+        },
+    ]
+    restored = Report.model_validate_json(report.model_dump_json())
+    assert restored.coverage == report.coverage
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"pattern": ".specify/", "reason": "content not provided by the hosting API (file over 1 MB)"},
+        {},
+        {"pattern": None, "reason": None},
+    ],
+    ids=["both", "neither", "both-none"],
+)
+def test_excluded_file_needs_exactly_one_of_pattern_or_reason(fields):
+    from veritas.models.entities import ExcludedFile
+
+    with pytest.raises(ValidationError, match="exactly one of pattern or reason"):
+        ExcludedFile(path="src/app.py", **fields)
+
+
+def test_a_1_10_report_with_pattern_only_excluded_files_still_validates():
+    """Schema 1.11.0 is additive: a 1.10.0 excluded file has a pattern and no reason key."""
+    from veritas.models.entities import Report
+
+    pre_1_11 = {
+        "schema_version": "1.10.0",
+        "run": {
+            "scope": "project",
+            "target": ".",
+            "config_hash": "h",
+            "model_name": "m",
+            "prompt_version": "1.0.0",
+            "report_status": "complete",
+        },
+        "code_findings": [],
+        "requirement_findings": [],
+        "summary": {
+            "total_code_findings": 0,
+            "total_requirement_findings": 0,
+            "verification_failure_count": 0,
+            "verdict": "Clean",
+        },
+        "coverage": {
+            "batch_chars": 48000,
+            "max_batches": 8,
+            "batches_used": 1,
+            "reviewed_files": ["src/app.py"],
+            "split_files": [],
+            "excluded_files": [{"path": ".specify/plan.py", "pattern": ".specify/"}],
+            "not_reviewed_files": [],
+        },
+        "failed_batches": [],
+    }
+
+    restored = Report.model_validate(pre_1_11)
+
+    assert restored.schema_version == "1.10.0"
+    [entry] = restored.coverage.excluded_files
+    assert entry.path == ".specify/plan.py"
+    assert entry.pattern == ".specify/"
+    assert entry.reason is None

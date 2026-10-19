@@ -111,8 +111,9 @@ class ReviewState(TypedDict):
     files: dict[str, str]
     skipped_languages: Annotated[list[str], add]
     # Files withheld before fetching by an exclusion pattern (FR-029), each with
-    # the pattern that matched. The scope node is the only writer and is the
-    # sole authority on the set, so this is an overwrite channel.
+    # the pattern that matched, then PR files whose content the hosting API
+    # withheld, each with its reason (T124). The scope node is the only writer
+    # and is the sole authority on the set, so this is an overwrite channel.
     excluded_files: list[ExcludedFile]
     # Planned code-review batches over the post-exclusion source files (FR-029).
     # None until the scope node builds it; every code review type uses this one

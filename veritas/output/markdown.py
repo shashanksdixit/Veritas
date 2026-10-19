@@ -12,6 +12,7 @@ from veritas.models.entities import (
     Category,
     CodeFinding,
     Coverage,
+    ExcludedFile,
     FailedBatch,
     ProjectContextStatus,
     Report,
@@ -277,11 +278,19 @@ def _render_coverage(out: list[str], coverage: Coverage) -> None:
     _coverage_details(
         out,
         "Excluded files",
-        [f"`{item.path}` (pattern `{item.pattern}`)" for item in coverage.excluded_files],
+        [_excluded_line(item) for item in coverage.excluded_files],
     )
     _coverage_details(
         out, "Not reviewed files", [f"`{path}`" for path in coverage.not_reviewed_files]
     )
+
+
+def _excluded_line(item: ExcludedFile) -> str:
+    """An excluded file with the pattern that matched, or with the reason it was
+    left out when no pattern did (T124)."""
+    if item.pattern is not None:
+        return f"`{item.path}` (pattern `{item.pattern}`)"
+    return f"`{item.path}`: {item.reason}"
 
 
 def sast_header_line(run: ReviewRun) -> str | None:

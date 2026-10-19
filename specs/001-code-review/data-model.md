@@ -269,8 +269,13 @@ class Summary(BaseModel):
     verdict: Verdict                 # derived per FR-015; see Verdict enum
 
 class ExcludedFile(BaseModel):
-    path: str        # relative path that was excluded
-    pattern: str     # the exclusion pattern that matched (FR-029)
+    """Exactly one of pattern and reason is set (model validator)."""
+    path: str                   # relative path that was excluded
+    pattern: str | None = None  # the exclusion pattern that matched (FR-029)
+    reason: str | None = None   # schema 1.11.0 (T124): why a PR file was left
+                                # out without a pattern, e.g. "content not
+                                # provided by the hosting API (file over 1 MB)";
+                                # a pre-1.11.0 report has pattern only
 
 class Coverage(BaseModel):
     """Code-review coverage for a run (FR-029)."""
@@ -295,7 +300,7 @@ class FailedBatch(BaseModel):
 
 class Report(BaseModel):
     """The full review deliverable (FR-016)."""
-    schema_version: str = "1.10.0"   # semver; bump on any breaking change to
+    schema_version: str = "1.11.0"   # semver; bump on any breaking change to
                                       # Report/CodeFinding/RequirementFinding shape,
                                       # per CHANGELOG.md (constitution Principle VIII)
     run: ReviewRun

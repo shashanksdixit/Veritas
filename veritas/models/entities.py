@@ -8,7 +8,7 @@ from datetime import datetime
 from enum import Enum
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from veritas.config.constants import SCHEMA_VERSION
 
@@ -240,10 +240,21 @@ class Summary(BaseModel):
 
 
 class ExcludedFile(BaseModel):
-    """A path withheld from review by an exclusion pattern (FR-029)."""
+    """A path withheld from review (FR-029): by an exclusion pattern, or with a
+    reason when the hosting API did not provide its content (schema 1.11.0,
+    T124). Exactly one of ``pattern`` and ``reason`` is set, so a report
+    written before 1.11.0 (pattern only) still validates.
+    """
 
     path: str
-    pattern: str
+    pattern: str | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_cause(self) -> ExcludedFile:
+        if (self.pattern is None) == (self.reason is None):
+            raise ValueError("an excluded file has exactly one of pattern or reason")
+        return self
 
 
 class Coverage(BaseModel):

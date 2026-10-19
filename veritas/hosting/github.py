@@ -17,6 +17,7 @@ import time
 import httpx
 
 from veritas.hosting.types import PullRefs, RootEntry
+from veritas.review import ContentWithheldError
 from veritas.utils.logging import Log
 
 BASE_URL = "https://api.github.com"
@@ -107,6 +108,9 @@ class GitHubFetcher:
     # The error every failed request raises, named here so the scope node can
     # catch it without importing this module (T120).
     api_error = GitHubAPIError
+    # What get_file_contents raises when GitHub withholds a file's content
+    # (T124); the scope node records the file as excluded.
+    content_withheld = ContentWithheldError
 
     def __init__(self, token: str, log: Log | None = None, *, base_url: str | None = None) -> None:
         self.log = log or Log()
@@ -225,6 +229,14 @@ class GitHubFetcher:
         return self._paginate(f"/repos/{owner}/{repo}/pulls/{number}/files", {"per_page": "100"})
 
     def get_file_contents(self, owner: str, repo: str, path: str, ref: str) -> str:
+        """A changed file's text at ``ref`` for review.
+
+        GitHub answers a 1-100 MB file with ``encoding: "none"`` and empty
+        content. That, and any other non-base64 encoding with empty content,
+        raises ``ContentWithheldError`` (T124) instead of returning "", so the
+        file is reported as not reviewed rather than reviewed as empty. A
+        genuinely empty file (base64, empty content) still returns "".
+        """
         response = self._request(
             "GET",
             f"/repos/{owner}/{repo}/contents/{path.lstrip('/')}",
@@ -232,9 +244,17 @@ class GitHubFetcher:
             path=path,
         )
         data = response.json()
-        if data.get("encoding") == "base64":
+        encoding = data.get("encoding")
+        if encoding == "base64":
             return base64.b64decode(data.get("content", "")).decode("utf-8", errors="replace")
-        return str(data.get("content", ""))
+        content = str(data.get("content") or "")
+        if encoding == "none":
+            raise ContentWithheldError(path, "content not provided by the hosting API (file over 1 MB)")
+        if not content:
+            raise ContentWithheldError(
+                path, f"content not provided by the hosting API (encoding {encoding!r})"
+            )
+        return content
 
     def close(self) -> None:
         self.client.close()

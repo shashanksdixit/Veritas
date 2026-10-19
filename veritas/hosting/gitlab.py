@@ -17,6 +17,7 @@ from urllib.parse import quote
 import httpx
 
 from veritas.hosting.types import PullRefs, RootEntry
+from veritas.review import ContentWithheldError
 from veritas.utils.logging import Log
 
 DEFAULT_URL = "https://gitlab.com"
@@ -103,6 +104,9 @@ class GitLabFetcher:
     # The error every failed request raises, named here so the scope node can
     # catch it without importing this module (T120).
     api_error = GitLabAPIError
+    # What get_file_at_ref raises when GitLab withholds a file's content
+    # (T124); the scope node records the file as excluded.
+    content_withheld = ContentWithheldError
 
     def __init__(self, token: str, log: Log | None = None, *, base_url: str = DEFAULT_URL) -> None:
         self.log = log or Log()
@@ -233,9 +237,24 @@ class GitLabFetcher:
             path=path,
         )
         data = response.json()
-        if data.get("encoding") == "base64":
-            return base64.b64decode(data.get("content", "")).decode("utf-8", errors="replace")
-        return str(data.get("content", ""))
+        encoding = data.get("encoding")
+        content = data.get("content") or ""
+        size = data.get("size")
+        # T124: GitLab's documentation does not say what this endpoint returns
+        # for a large file (contracts/hosting-api.md). Empty content for a
+        # blob GitLab says is not empty, or encoding "none" with empty
+        # content, is withheld content, never an empty file.
+        if not content and encoding == "none":
+            raise ContentWithheldError(
+                path, 'content not provided by the hosting API (encoding "none")'
+            )
+        if not content and isinstance(size, int) and size > 0:
+            raise ContentWithheldError(
+                path, f"content not provided by the hosting API ({size}-byte file returned empty)"
+            )
+        if encoding == "base64":
+            return base64.b64decode(content).decode("utf-8", errors="replace")
+        return str(content)
 
     def close(self) -> None:
         self.client.close()
