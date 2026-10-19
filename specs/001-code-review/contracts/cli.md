@@ -40,7 +40,7 @@ Options:
 | `VERITAS_MAX_RETRIES` | Retry limit per LLM request (default: 2, range 0-10) | --config value |
 | `VERITAS_MAX_CONCURRENCY` | Maximum concurrent LLM requests (default: 4, range 1-16) | --config value |
 | `VERITAS_MAX_OUTPUT_TOKENS` | Maximum output tokens per LLM request (default: 8192, min 256, max 65536) | --config value |
-| `VERITAS_OPENGREP_RULES` | SAST rules source: a registry ruleset name (`p/...` or `r/...`) or an existing local rules file/directory (default: `p/owasp-top-ten`) | --config value |
+| `VERITAS_OPENGREP_RULES` | SAST rules source: a registry ruleset name (`p/...` or `r/...`) or an existing local rules file/directory (default: `p/owasp-top-ten`). Registry rulesets carry the Semgrep Rules License, not OpenGrep's LGPL-2.1; using one is the user's licensing choice, and local rules are the alternative | --config value |
 | `VERITAS_OPENGREP_JOBS` | OpenGrep parallel job count, passed as `-j` (default: 4, min 1) | --config value |
 | `VERITAS_GITHUB_TOKEN` | GitHub API token (PR mode) | --config value |
 | `VERITAS_GITLAB_TOKEN` | GitLab API token (PR mode) | --config value |
@@ -173,8 +173,14 @@ opengrep_rules = "p/owasp-top-ten"           # default: SAST rules source (FR-01
                                              #  A registry ruleset name starting with
                                              #  "p/" or "r/", or an existing local rules
                                              #  file or directory - a local source makes
-                                             #  SAST reproducible. The value is recorded
-                                             #  in the report as ReviewRun.sast_rules.
+                                             #  SAST reproducible. Registry rulesets are
+                                             #  not covered by OpenGrep's LGPL-2.1
+                                             #  licence; they carry the Semgrep Rules
+                                             #  License, and using one is the user's
+                                             #  licensing choice. A local rules file or
+                                             #  directory is the alternative. The value
+                                             #  is recorded in the report as
+                                             #  ReviewRun.sast_rules.
                                              #  Anything else is rejected as an invalid
                                              #  configuration error before the run starts.
 opengrep_jobs = 4                            # default: OpenGrep parallel jobs ("-j", FR-012),

@@ -55,7 +55,10 @@ coverage degrades gracefully with a specific one-line reason printed to stderr.
 The rules source is configurable - `[security] opengrep_rules`
 (`VERITAS_OPENGREP_RULES`), a registry ruleset such as `p/owasp-top-ten` or an
 existing local rules file/directory - and the source used is recorded in the
-report. OpenGrep runs with `[security] opengrep_jobs` (`VERITAS_OPENGREP_JOBS`,
+report. Registry rulesets such as `p/owasp-top-ten` are not covered by
+OpenGrep's LGPL-2.1 licence; they carry the Semgrep Rules License, and using
+one is your licensing choice. A local rules file or directory is the
+alternative. OpenGrep runs with `[security] opengrep_jobs` (`VERITAS_OPENGREP_JOBS`,
 default 4) parallel jobs and a 120-second limit; stderr logs how long each scan
 took.
 
@@ -96,7 +99,10 @@ inspection proxy:
   TLS certificate errors from the LLM or hosting API, never as a clean message.
 - OpenGrep is a separate binary with its own HTTP client: it downloads registry
   rules (a `p/...` or `r/...` `opengrep_rules` value) itself, outside Python's
-  `certifi` bundle, so give it a CA bundle that includes your company root:
+  `certifi` bundle, so give it a CA bundle that includes your company root
+  (registry rulesets carry the Semgrep Rules License, not OpenGrep's LGPL-2.1,
+  so using one is your licensing choice; a local rules file or directory needs
+  no download and is the alternative):
 
   ```bash
   export REQUESTS_CA_BUNDLE=/path/to/company-root-bundle.pem
@@ -261,7 +267,12 @@ opengrep_rules = "p/owasp-top-ten"           # default: SAST rules source. A reg
                                              #  existing local rules file or directory.
                                              #  A registry ruleset may change over time;
                                              #  a local rules source makes SAST
-                                             #  reproducible. The report's "- **SAST**"
+                                             #  reproducible. Registry rulesets are not
+                                             #  covered by OpenGrep's LGPL-2.1 licence;
+                                             #  they carry the Semgrep Rules License,
+                                             #  and using one is your licensing choice.
+                                             #  A local rules file or directory is the
+                                             #  alternative. The report's "- **SAST**"
                                              #  line records it with whether the scan
                                              #  ran, its result count, or the reason it
                                              #  did not run; stdout prints "SAST: ...".
@@ -293,7 +304,7 @@ opengrep_jobs = 4                            # default: OpenGrep parallel jobs, 
 | `VERITAS_MAX_RETRIES` | Retry limit per LLM request (default: 2, range 0-10; 0 = no retry) |
 | `VERITAS_MAX_CONCURRENCY` | Maximum concurrent LLM requests (default: 4, range 1-16) |
 | `VERITAS_MAX_OUTPUT_TOKENS` | Maximum output tokens per LLM request (default: 8192, min 256, max 65536) |
-| `VERITAS_OPENGREP_RULES` | SAST rules source (default: `p/owasp-top-ten`); a registry ruleset name `p/...`/`r/...` or an existing local rules file or directory |
+| `VERITAS_OPENGREP_RULES` | SAST rules source (default: `p/owasp-top-ten`); a registry ruleset name `p/...`/`r/...` or an existing local rules file or directory. Registry rulesets carry the Semgrep Rules License, not OpenGrep's LGPL-2.1; using one is your licensing choice, and local rules are the alternative |
 | `VERITAS_OPENGREP_JOBS` | OpenGrep parallel job count, passed as `-j` (default: 4, min 1) |
 | `VERITAS_GITHUB_TOKEN` | GitHub API token (PR mode) |
 | `VERITAS_GITLAB_TOKEN` | GitLab API token (PR mode) |

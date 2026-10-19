@@ -4,6 +4,11 @@ OpenGrep exposes no Python API; it is invoked via subprocess (LGPL-2.1 engine,
 CLI-only). Output is the semgrep-compatible ``--json`` cli_output schema.
 Missing binary degrades security coverage with a specific reason rather than
 failing the run (FR-012).
+
+Rules licence (constitution Principle II): registry rulesets such as the
+default ``p/owasp-top-ten`` are not covered by OpenGrep's LGPL-2.1 licence;
+they carry the Semgrep Rules License, and using one is the user's licensing
+choice. A local rules file or directory is the alternative.
 """
 
 from __future__ import annotations
@@ -92,6 +97,11 @@ def run_opengrep(
     Returns raw JSON results (research.md §1 schema). If the binary is absent
     returns ``degraded="OpenGrep not found on PATH"`` (FR-012) instead of
     raising. Results for files outside supported languages are filtered here.
+
+    ``rules`` defaults to the registry ruleset ``p/owasp-top-ten``, which
+    carries the Semgrep Rules License, not OpenGrep's LGPL-2.1; using it is the
+    caller's licensing choice, and a local rules file or directory is the
+    alternative.
     """
     from veritas.utils.languages import language_of
 

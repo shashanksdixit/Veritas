@@ -154,6 +154,13 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- Documentation: every place that names a registry SAST ruleset now states its
+  licence (FR-012, T128, constitution 7.0.0 Principle II). README.md,
+  `contracts/cli.md`, spec.md FR-012, the `opengrep_rules` setting description
+  and the OpenGrep module docstrings say that registry rulesets such as
+  `p/owasp-top-ten` are not covered by OpenGrep's LGPL-2.1 licence, carry the
+  Semgrep Rules License, and are the user's licensing choice, with a local
+  rules file or directory as the alternative. No behaviour or schema change.
 - The ZDR-off warning on a non-OpenRouter backend no longer advises a setting
   Veritas refuses (FR-021, T126). It read `... Set VERITAS_ZDR=true only if that
   agreement already provides zero data retention ...`, but `VERITAS_ZDR=true` on

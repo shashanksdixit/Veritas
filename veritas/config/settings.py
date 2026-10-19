@@ -76,12 +76,18 @@ class Settings(BaseSettings):
     max_batches: int = Field(default=8, ge=1, description="VERITAS_MAX_BATCHES")
     # [security] section (FR-012): the SAST rules source, recorded in the report
     # as ReviewRun.sast_rules. A registry ruleset may change over time; a local
-    # rules file or directory makes SAST reproducible.
+    # rules file or directory makes SAST reproducible. Registry rulesets such as
+    # the default are not covered by OpenGrep's LGPL-2.1 licence; they carry the
+    # Semgrep Rules License, and using one is the user's licensing choice. A
+    # local rules file or directory is the alternative (constitution Principle II).
     opengrep_rules: str = Field(
         default="p/owasp-top-ten",
         description=(
             "VERITAS_OPENGREP_RULES: registry ruleset name (p/... or r/...) "
-            "or a local rules file/directory"
+            "or a local rules file/directory. Registry rulesets such as "
+            "p/owasp-top-ten carry the Semgrep Rules License, not OpenGrep's "
+            "LGPL-2.1; using one is your licensing choice, and local rules "
+            "are the alternative"
         ),
     )
     # OpenGrep's parallel job count, passed as "-j <n>". Its own default is one
