@@ -154,6 +154,21 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- Documentation: plan.md's Constitution Check re-run against constitution
+  v7.0.0 and the code at 2ea72ad (T099). Each of the 13 gate rows now
+  describes the code as it is, with file and line references and the tests
+  that prove it: the Privacy row names every place a key may come from
+  (`.veritas/config.local.toml`, `--config`, `VERITAS_*`) and the refusal of
+  keys in the committed `.veritas/config.toml`; the Grounded Verification row
+  covers requirement-evidence verification and both stated limits; the
+  Principle II and Licensing rows state the OpenGrep (LGPL-2.1) versus Semgrep
+  Rules License split. "All gates PASS" is replaced by the actual result:
+  9 PASS, 1 PASS with deferral (Privacy, T103) and 3 FAIL, namely Grounded
+  Verification and SAST-Grounded & Verified Security (an LLM code finding with
+  no quoted code is reported as citation verified without its lines being
+  bounds-checked) and Fixed Review Scope (a finding with an empty
+  recommendation is reported). T099 stays open. No behaviour, schema or test
+  change.
 - Documentation: stale text brought in line with the current behaviour (T129).
   `quickstart.md` no longer assumes OpenRouter is the default: the API-key
   prerequisite names the configured backend (OpenAI direct by default),
