@@ -97,4 +97,4 @@ def test_unsupported_file_scope_skipped_note(scope_tree):
     target = str(scope_tree / "vendored.md")
     result = _run_local("file", target, [])
     assert result["files"] == {_normalize_rel_target(target): "docs"}
-    assert _normalize_rel_target(target) in result["skipped_languages"]
+    assert result["unsupported_files"] == [_normalize_rel_target(target)]

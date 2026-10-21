@@ -242,8 +242,9 @@ class Summary(BaseModel):
 class ExcludedFile(BaseModel):
     """A path withheld from review (FR-029): by an exclusion pattern, or with a
     reason when the hosting API did not provide its content (schema 1.11.0,
-    T124). Exactly one of ``pattern`` and ``reason`` is set, so a report
-    written before 1.11.0 (pattern only) still validates.
+    T124) or a local file is over 1 MB (T130). Exactly one of ``pattern`` and
+    ``reason`` is set, so a report written before 1.11.0 (pattern only) still
+    validates.
     """
 
     path: str
@@ -267,6 +268,11 @@ class Coverage(BaseModel):
     split_files: list[str] = Field(default_factory=list)
     excluded_files: list[ExcludedFile] = Field(default_factory=list)
     not_reviewed_files: list[str] = Field(default_factory=list)
+    # Schema 1.12.0 (FR-022, FR-008, T130): files in a language Veritas does
+    # not review, and the requirement sources read, in FR-008 discovery order.
+    # Both default to empty, so a report written before 1.12.0 still validates.
+    unsupported_files: list[str] = Field(default_factory=list)
+    requirement_sources: list[str] = Field(default_factory=list)
 
 
 class FailedBatch(BaseModel):

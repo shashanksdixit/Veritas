@@ -157,11 +157,11 @@ def test_coverage_line_text_is_exact():
     report = _report().model_copy(update={"coverage": _coverage()})
     lines = render_compact(report).splitlines()
     assert (
-        "Coverage: 3 reviewed (1 split), 2 excluded, 1 not reviewed; 3/8 batches" in lines
+        "Coverage: 3 reviewed (1 split), 2 excluded, 0 unsupported, 1 not reviewed; 3/8 batches" in lines
     )
     # Directly after the category line.
     assert lines.index("Security: 12") + 1 == lines.index(
-        "Coverage: 3 reviewed (1 split), 2 excluded, 1 not reviewed; 3/8 batches"
+        "Coverage: 3 reviewed (1 split), 2 excluded, 0 unsupported, 1 not reviewed; 3/8 batches"
     )
 
 
@@ -183,9 +183,26 @@ def test_coverage_line_counts_an_empty_run():
             )
         }
     )
-    assert "Coverage: 0 reviewed (0 split), 0 excluded, 0 not reviewed; 0/8 batches" in render_compact(
+    assert "Coverage: 0 reviewed (0 split), 0 excluded, 0 unsupported, 0 not reviewed; 0/8 batches" in render_compact(
         report
     )
+
+
+def test_coverage_line_counts_unsupported_files():
+    """T130 (FR-022): unsupported-language files are counted between excluded
+    and not reviewed; requirement sources read are not counted on the line."""
+    report = _report().model_copy(
+        update={
+            "coverage": _coverage(
+                unsupported_files=["a.cob", "b.lua"],
+                requirement_sources=["README.md"],
+            )
+        }
+    )
+    lines = render_compact(report).splitlines()
+    assert [line for line in lines if line.startswith("Coverage:")] == [
+        "Coverage: 3 reviewed (1 split), 2 excluded, 2 unsupported, 1 not reviewed; 3/8 batches"
+    ]
 
 
 # --- one SAST line says whether the scan ran, and why not (T109, FR-012) ---

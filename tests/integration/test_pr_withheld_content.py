@@ -116,7 +116,7 @@ def _assert_withheld(outcome, report, md, stdout, stderr, llm, scans, path, reas
     assert f"- `{path}`: {reason}" in md
     # Compact stdout: one coverage line counting it as excluded.
     assert [line for line in stdout if line.startswith("Coverage:")] == [
-        "Coverage: 1 reviewed (0 split), 1 excluded, 0 not reviewed; 1/8 batches"
+        "Coverage: 1 reviewed (0 split), 1 excluded, 0 unsupported, 0 not reviewed; 1/8 batches"
     ]
     # One warning naming the file and the reason.
     assert f"[warn] scope: {path} not reviewed: {reason}" in stderr
@@ -168,6 +168,12 @@ def test_withheld_requirement_source_is_excluded_not_read_as_empty(monkeypatch, 
         ExcludedFile(path="docs/requirements.md", reason=GITHUB_REASON)
     ]
     assert f"- `docs/requirements.md`: {GITHUB_REASON}" in md
+    # T130: only excluded, never also unsupported or a requirement source read.
+    assert report.coverage.unsupported_files == []
+    assert report.coverage.requirement_sources == []
+    assert "| Files skipped (unsupported language) | 0 |" in md
+    assert "| Requirement sources read | 0 |" in md
+    assert "Unsupported-language files (" not in md
     assert "[warn] scope: docs/requirements.md not reviewed: " + GITHUB_REASON in stderr
     # Not read as an empty requirements document: the run found none at all.
     assert [f.requirement_ref for f in report.requirement_findings] == [
@@ -187,7 +193,7 @@ def test_genuinely_empty_changed_file_is_reviewed_not_excluded(monkeypatch, caps
     assert report.coverage.excluded_files == []
     assert "| Files excluded | 0 |" in md
     assert [line for line in stdout if line.startswith("Coverage:")] == [
-        "Coverage: 2 reviewed (0 split), 0 excluded, 0 not reviewed; 1/8 batches"
+        "Coverage: 2 reviewed (0 split), 0 excluded, 0 unsupported, 0 not reviewed; 1/8 batches"
     ]
     assert not any("not reviewed:" in line for line in stderr)
     assert any("src/empty.py" in system + user for system, user in llm.calls)

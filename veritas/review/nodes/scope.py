@@ -14,10 +14,19 @@ Exclusion (FR-029): ``[review] exclude`` patterns are applied before file
 contents are fetched in every scope except ``file``, whose explicit target is
 always reviewed. SAST scans exactly the post-exclusion file set. A PR file
 whose content the hosting API withholds is excluded with a reason (T124).
+
+Coverage buckets (FR-022, FR-029, T130): every path the scope lists or walks,
+apart from ``_SKIP_DIRS``, ``_SKIP_FILES`` and default-named reports
+(``_SKIP_FILE_GLOB``; the walk only), lands in exactly one of, in this
+order: excluded by a pattern (matched whatever the language); excluded with a
+reason (content withheld by the hosting API, or a local file over 1 MB, never
+read); a requirement source that was read; a supported-language file, batched
+for review; an unsupported-language file, listed and not reviewed.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import os
 from pathlib import Path
@@ -28,6 +37,7 @@ from veritas.config.constants import (
     CONVENTIONS_FILENAMES,
     MAX_SCOPE_FILES,
     NATURAL_LANGUAGE_RULES_GLOB,
+    REPORT_PATTERN,
 )
 from veritas.models.entities import ExcludedFile, ReviewScope, SastStatus
 from veritas.review import ReviewFatalError, ReviewNotFoundError
@@ -66,12 +76,22 @@ _SKIP_DIRS = {
     "dist",
     "target",
     ".tox",
+    # Veritas's own state (last-report.json, suppressions.json, config, rules).
+    # Project context reads config.toml and rules.md directly, not through the
+    # walk, so skipping the directory here does not affect it (T130).
+    ".veritas",
 }
 _SKIP_FILES = {
     ".gitignore",
     ".python-version",
 }
+# Reports written under the default name, so an earlier run's report is never
+# walked as part of the project (T130). A report written to a custom --output
+# path inside the project is still walked and listed.
+_SKIP_FILE_GLOB = REPORT_PATTERN.format(timestamp="*")
 _MAX_FILE_BYTES = 1_000_000
+# The reason recorded for a local file over _MAX_FILE_BYTES (FR-029, T130).
+TOO_LARGE_REASON = "file over 1 MB, not read"
 
 
 def _normalize_rel(path: str) -> str:
@@ -98,12 +118,12 @@ def _is_excluded(path: str, patterns: Sequence[str], excluded: dict[str, str]) -
 
 
 def _excluded_files(
-    excluded: dict[str, str], withheld: dict[str, str] | None = None
+    excluded: dict[str, str], reasons: dict[str, str] | None = None
 ) -> list[ExcludedFile]:
-    """Pattern exclusions first, then files whose content the hosting API
-    withheld, each with its reason (T124)."""
+    """Pattern exclusions first, then files left out for a reason: content the
+    hosting API withheld (T124) or a local file over 1 MB (T130)."""
     entries = [ExcludedFile(path=path, pattern=pattern) for path, pattern in excluded.items()]
-    entries += [ExcludedFile(path=path, reason=reason) for path, reason in (withheld or {}).items()]
+    entries += [ExcludedFile(path=path, reason=reason) for path, reason in (reasons or {}).items()]
     return entries
 
 
@@ -144,7 +164,8 @@ def _collect_requirement_docs(
     pattern in FR-008 priority order, so a spec-kit feature spec anywhere under
     the tree is found, not just the eight root/docs names. Relative keys, same
     normalization as walked source files. Exclusion patterns apply here too,
-    before the file is read (FR-029).
+    before the file is read (FR-029). A source over 1 MB is not read; the walk
+    has already recorded it as excluded with ``TOO_LARGE_REASON`` (T130).
     """
     docs: dict[str, str] = {}
     root_path = Path(root)
@@ -362,33 +383,42 @@ def _read_project_sources(start: str) -> ProjectSources:
 def _walk_local_scope(
     root: str, scope: ReviewScope, patterns: Sequence[str]
 ) -> tuple[dict[str, str], list[str], list[ExcludedFile]]:
+    """Walk ``root``: ``(files, unsupported, excluded)`` (FR-022, FR-029, T130).
+
+    ``files`` holds the supported-language files read; ``unsupported`` the
+    relative paths of files in a language Veritas does not review, which the
+    scope node lists in Coverage unless they were read as requirement sources;
+    ``excluded`` the pattern exclusions, then the files over 1 MB.
+    """
     root_path = Path(root)
     if not root_path.is_dir():
         raise ReviewNotFoundError(f"target directory does not exist or is not readable: {root}")
     files: dict[str, str] = {}
-    skipped: list[str] = []
+    unsupported: list[str] = []
     excluded: dict[str, str] = {}
+    too_large: dict[str, str] = {}
     for dirpath, dirnames, filenames in os.walk(root_path):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
         for name in filenames:
-            if name in _SKIP_FILES:
+            if name in _SKIP_FILES or fnmatch.fnmatchcase(name, _SKIP_FILE_GLOB):
                 continue
             full = Path(dirpath) / name
             if not full.is_file():
                 continue
+            rel = _normalize_rel(str(full.relative_to(root_path)))
+            # FR-029: excluded before the language check and before the file is
+            # read, so an excluded file of any language is reported as excluded
+            # and never occupies a slot against MAX_SCOPE_FILES.
+            if _is_excluded(rel, patterns, excluded):
+                continue
             try:
                 if full.stat().st_size > _MAX_FILE_BYTES:
-                    skipped.append(_normalize_rel(str(full)))
+                    too_large[rel] = TOO_LARGE_REASON
                     continue
             except OSError:
                 continue
-            rel = _normalize_rel(str(full.relative_to(root_path)))
             if not is_supported(rel):
-                skipped.append(rel)
-                continue
-            # FR-029: excluded before the file is read, so it never occupies a
-            # slot against MAX_SCOPE_FILES.
-            if _is_excluded(rel, patterns, excluded):
+                unsupported.append(rel)
                 continue
             if len(files) >= MAX_SCOPE_FILES:
                 break
@@ -398,7 +428,7 @@ def _walk_local_scope(
                 continue
         if len(files) >= MAX_SCOPE_FILES:
             break
-    return files, skipped, _excluded_files(excluded)
+    return files, unsupported, _excluded_files(excluded, too_large)
 
 
 def _fetch_pr(ctx: ScopeContext) -> dict:
@@ -434,7 +464,7 @@ def _fetch_pr(ctx: ScopeContext) -> dict:
                 items.append({"filename": change["new_path"]})
 
     files: dict[str, str] = {}
-    skipped: list[str] = []
+    unsupported: list[str] = []
     excluded: dict[str, str] = {}
     # Path -> reason for files the hosting API answered without their content
     # (T124): reported as excluded, never reviewed or scanned as empty.
@@ -454,11 +484,14 @@ def _fetch_pr(ctx: ScopeContext) -> dict:
 
     for item in items:
         path = _normalize_rel(item["filename"])
-        if not is_supported(path):
-            skipped.append(path)
-            continue
-        # FR-029: excluded before the remote fetch, never requested.
+        # FR-029: excluded before the language check and the remote fetch, so
+        # an excluded file of any language is reported as excluded and never
+        # requested.
         if _is_excluded(path, patterns, excluded):
+            continue
+        if not is_supported(path):
+            # The scope node drops the requirement sources read below (T130).
+            unsupported.append(path)
             continue
         fetch(path)
 
@@ -475,7 +508,7 @@ def _fetch_pr(ctx: ScopeContext) -> dict:
         fetch(path)
     return {
         "files": files,
-        "skipped_languages": skipped,
+        "unsupported_files": unsupported,
         "excluded_files": _excluded_files(excluded, withheld),
         "input_revision": sha,
         "base_sha": refs.base_sha,
@@ -606,21 +639,24 @@ def _read_pr_project_sources(
 def _run_local(scope: ReviewScope, target: str, patterns: Sequence[str]) -> dict:
     if scope == ReviewScope.FILE:
         # An explicit --scope file target is always reviewed, even when it
-        # matches an exclusion pattern (FR-029).
+        # matches an exclusion pattern (FR-029). An unsupported-language target
+        # is not code-reviewed and is listed as unsupported (FR-022, T130); it
+        # stays in ``files``, so SAST still scans it, as before.
         content = _read_local_file(target)
         files: dict[str, str] = {_normalize_rel(target): content}
-        skipped: list[str] = []
+        unsupported: list[str] = []
         if not is_supported(_normalize_rel(target)):
-            skipped.append(_normalize_rel(target))
+            unsupported.append(_normalize_rel(target))
         excluded: list[ExcludedFile] = []
     else:
-        files, skipped, excluded = _walk_local_scope(target, scope, patterns)
-        excluded_by_path = {entry.path: entry.pattern for entry in excluded}
-        files.update(_collect_requirement_docs(target, patterns, excluded_by_path))
-        excluded = _excluded_files(excluded_by_path)
+        files, unsupported, excluded = _walk_local_scope(target, scope, patterns)
+        by_pattern = {entry.path: entry.pattern for entry in excluded if entry.pattern is not None}
+        by_reason = {entry.path: entry.reason for entry in excluded if entry.reason is not None}
+        files.update(_collect_requirement_docs(target, patterns, by_pattern))
+        excluded = _excluded_files(by_pattern, by_reason)
     return {
         "files": files,
-        "skipped_languages": skipped,
+        "unsupported_files": unsupported,
         "excluded_files": excluded,
         "input_revision": local_input_revision(files),
     }
@@ -688,6 +724,11 @@ def make_scope_node(ctx: ScopeContext) -> Callable[[ReviewState], dict]:
 
         files: dict[str, str] = result["files"]
         requirement_sources, requirements = _discover_requirements(ctx.log, files)
+        # FR-022/T130: computed after requirement discovery, so each path is in
+        # one Coverage bucket: a source that was read is a requirement source,
+        # and a path already excluded (a withheld source) stays excluded.
+        placed = set(requirement_sources) | {entry.path for entry in result["excluded_files"]}
+        unsupported_files = [path for path in result["unsupported_files"] if path not in placed]
         # SAST scans exactly the post-exclusion file set (FR-029).
         sast = collect_sast(
             files, scope_value=scope.value, rules=ctx.opengrep_rules, jobs=ctx.opengrep_jobs
@@ -728,7 +769,7 @@ def make_scope_node(ctx: ScopeContext) -> Callable[[ReviewState], dict]:
             project_sources = _read_project_sources(_project_context_start(scope, target))
         return {
             "files": files,
-            "skipped_languages": result["skipped_languages"],
+            "unsupported_files": unsupported_files,
             "excluded_files": result["excluded_files"],
             "batch_plan": plan,
             "test_indexes": test_indexes,

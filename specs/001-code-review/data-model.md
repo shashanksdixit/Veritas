@@ -272,9 +272,11 @@ class ExcludedFile(BaseModel):
     """Exactly one of pattern and reason is set (model validator)."""
     path: str                   # relative path that was excluded
     pattern: str | None = None  # the exclusion pattern that matched (FR-029)
-    reason: str | None = None   # schema 1.11.0 (T124): why a PR file was left
+    reason: str | None = None   # schema 1.11.0 (T124): why a file was left
                                 # out without a pattern, e.g. "content not
-                                # provided by the hosting API (file over 1 MB)";
+                                # provided by the hosting API (file over 1 MB)"
+                                # for a PR file, or "file over 1 MB, not read"
+                                # for a local file (T130);
                                 # a pre-1.11.0 report has pattern only
 
 class Coverage(BaseModel):
@@ -286,6 +288,12 @@ class Coverage(BaseModel):
     split_files: list[str]           # subset of reviewed_files reviewed across more than one batch
     excluded_files: list[ExcludedFile]
     not_reviewed_files: list[str]    # in scope but cut by max_batches
+    unsupported_files: list[str] = []    # schema 1.12.0 (T130, FR-022): files in a
+                                         # language Veritas does not review; not
+                                         # excluded and not a requirement source read
+    requirement_sources: list[str] = []  # schema 1.12.0 (T130, FR-008): sources read,
+                                         # in FR-008 discovery order; a pre-1.12.0
+                                         # report loads with both lists empty
 
 class FailedBatch(BaseModel):
     """One LLM batch call that failed (FR-027, FR-029)."""
@@ -300,7 +308,7 @@ class FailedBatch(BaseModel):
 
 class Report(BaseModel):
     """The full review deliverable (FR-016)."""
-    schema_version: str = "1.11.0"   # semver; bump on any breaking change to
+    schema_version: str = "1.12.0"   # semver; bump on any breaking change to
                                       # Report/CodeFinding/RequirementFinding shape,
                                       # per CHANGELOG.md (constitution Principle VIII)
     run: ReviewRun

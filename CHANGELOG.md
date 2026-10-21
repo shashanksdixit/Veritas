@@ -299,6 +299,42 @@ constitution Principle VIII / FR-016.
   contexts, checked by the reachability test.
 
 ### Fixed
+- Every file the scope lists or walks now appears in exactly one Coverage
+  bucket (FR-022, FR-029, T130). Files in a language Veritas does not review
+  were collected and never shown, and the requirement sources read
+  (`specs/.../spec.md`, `README.md`) were counted among them. A local
+  supported file over 1 MB appeared nowhere in Coverage, and an unsupported
+  file under an excluded directory was never matched against the exclusion
+  patterns, because the language check came first. Each path is now placed, in
+  this order: excluded by a pattern (matched whatever the language); excluded
+  with a reason (content withheld by the hosting API, T124, or a local file over
+  1 MB, recorded as `file over 1 MB, not read` with its path relative to the
+  scope root and never read); a requirement source that was read; a
+  supported-language file, batched as before; otherwise an unsupported-language
+  file. A `--scope file` target in an unsupported language is listed as
+  unsupported and is still passed to SAST, as before. The Markdown Coverage
+  table gains `| Files skipped (unsupported language) | <n> |` and
+  `| Requirement sources read | <n> |` rows and matching `<details>` blocks,
+  `Unsupported-language files (<n>)` and `Requirement sources (<n>)`; the
+  Coverage sentence adds "Files in a language Veritas does not review are
+  listed, not reviewed (FR-022)."; the compact line becomes
+  `Coverage: <r> reviewed (<s> split), <e> excluded, <u> unsupported, <n> not
+  reviewed; <b>/<m> batches`. The local walk now always skips Veritas's own
+  files, the `.veritas/` directory and reports named `veritas-report-*.md`,
+  so a review after an earlier run does not list that run's report or
+  `.veritas/last-report.json`; project context still reads
+  `.veritas/config.toml` and `.veritas/rules.md` directly. A report written
+  with a custom `--output` path inside the project is still listed. Two
+  known gaps remain and FR-029 states them: a local file whose size check or
+  read fails with an operating-system error, and files beyond the walk's
+  500-file `MAX_SCOPE_FILES` limit, are skipped without appearing in
+  Coverage. The internal state channel `skipped_languages`
+  is renamed `unsupported_files` and is written only by the scope node.
+  Report schema **1.12.0**: `Coverage` gains `unsupported_files` and
+  `requirement_sources` (FR-008 order), both lists defaulting to empty.
+  Migration: reports written before 1.12.0 still validate, with both lists
+  empty; a consumer parsing the compact coverage line must allow the new
+  `<u> unsupported` count between `excluded` and `not reviewed`.
 - A requirement evidence reference is confirmed only when every cited line
   exists (FR-013, T127, constitution v7.0.0 Principle I; no schema change).
   `path:0` was confirmed and is now `(line out of range)`. `path:A-B` was

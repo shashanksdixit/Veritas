@@ -100,7 +100,7 @@ def test_report_roundtrip_json():
             verdict=V.CLEAN,
         ),
     )
-    assert report.schema_version == "1.11.0"
+    assert report.schema_version == "1.12.0"
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.run.id == report.run.id
 
@@ -364,7 +364,7 @@ def test_sast_rules_round_trips_at_schema_1_7_0():
             verdict=Verdict.CLEAN,
         ),
     )
-    assert report.schema_version == "1.11.0"
+    assert report.schema_version == "1.12.0"
 
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.run.sast_rules == "r/corp-pack"
@@ -425,10 +425,10 @@ def test_sast_status_fields_round_trip_at_schema_1_9_0(status, count, reason):
             sast_reason=reason,
         )
     )
-    assert report.schema_version == "1.11.0"
+    assert report.schema_version == "1.12.0"
 
     dumped = json.loads(report.model_dump_json())
-    assert dumped["schema_version"] == "1.11.0"
+    assert dumped["schema_version"] == "1.12.0"
     assert dumped["run"]["sast_status"] == status
 
     restored = Report.model_validate_json(report.model_dump_json())
@@ -506,10 +506,10 @@ def test_project_context_fields_round_trip_at_schema_1_10_0(status, sources, rea
             project_context_origin=origin,
         )
     )
-    assert report.schema_version == "1.11.0"
+    assert report.schema_version == "1.12.0"
 
     dumped = json.loads(report.model_dump_json())
-    assert dumped["schema_version"] == "1.11.0"
+    assert dumped["schema_version"] == "1.12.0"
     assert dumped["run"]["project_context_status"] == status
     assert dumped["run"]["project_context_sources"] == sources
 
@@ -598,7 +598,7 @@ def test_excluded_file_with_a_reason_round_trips_at_schema_1_11_0():
             )
         }
     )
-    assert report.schema_version == "1.11.0"
+    assert report.schema_version == "1.12.0"
 
     dumped = json.loads(report.model_dump_json())
     assert dumped["coverage"]["excluded_files"] == [
@@ -670,3 +670,59 @@ def test_a_1_10_report_with_pattern_only_excluded_files_still_validates():
     assert entry.path == ".specify/plan.py"
     assert entry.pattern == ".specify/"
     assert entry.reason is None
+
+
+# --- schema 1.12.0 adds Coverage.unsupported_files and requirement_sources (T130) ---
+
+
+def test_a_1_11_coverage_without_the_new_lists_loads_with_them_empty():
+    """Schema 1.12.0 is additive: a 1.11.0 coverage has neither key."""
+    from veritas.models.entities import Coverage
+
+    coverage = Coverage.model_validate(
+        {
+            "batch_chars": 48000,
+            "max_batches": 8,
+            "batches_used": 1,
+            "reviewed_files": ["src/app.py"],
+            "split_files": [],
+            "excluded_files": [
+                {"path": "data/big.py", "pattern": None, "reason": "content not provided"}
+            ],
+            "not_reviewed_files": [],
+        }
+    )
+    assert coverage.unsupported_files == []
+    assert coverage.requirement_sources == []
+
+
+def test_unsupported_files_and_requirement_sources_round_trip_at_schema_1_12_0():
+    from veritas.models.entities import Coverage, Report
+
+    report = _report_with_run(
+        ReviewRun(
+            scope=ReviewScope.PROJECT,
+            target=".",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.0.0",
+        )
+    ).model_copy(
+        update={
+            "coverage": Coverage(
+                batch_chars=48000,
+                max_batches=8,
+                batches_used=1,
+                reviewed_files=["c.py"],
+                unsupported_files=["a.cob", "b.lua"],
+                requirement_sources=["specs/001-x/spec.md", "README.md"],
+            )
+        }
+    )
+    assert report.schema_version == "1.12.0"
+
+    dumped = json.loads(report.model_dump_json())
+    assert dumped["coverage"]["unsupported_files"] == ["a.cob", "b.lua"]
+    assert dumped["coverage"]["requirement_sources"] == ["specs/001-x/spec.md", "README.md"]
+    restored = Report.model_validate_json(report.model_dump_json())
+    assert restored.coverage == report.coverage

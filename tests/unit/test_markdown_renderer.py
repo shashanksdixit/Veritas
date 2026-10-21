@@ -82,7 +82,7 @@ def _report(**overrides) -> Report:
 
 def test_schema_version_comment_top():
     md = render_markdown(_report())
-    assert md.startswith("<!-- veritas-report-schema: 1.11.0 -->")
+    assert md.startswith("<!-- veritas-report-schema: 1.12.0 -->")
 
 
 def test_sections_present():
@@ -716,8 +716,68 @@ def test_coverage_renders_counts_table():
     assert "| Files reviewed | 3 |" in section
     assert "| Files split across batches | 1 |" in section
     assert "| Files excluded | 2 |" in section
+    assert "| Files skipped (unsupported language) | 0 |" in section
     assert "| Files not reviewed (batch limit) | 1 |" in section
+    assert "| Requirement sources read | 0 |" in section
     assert "| Batches used | 5 of 8 |" in section
+
+
+def test_coverage_table_counts_unsupported_files_and_requirement_sources():
+    """T130 (FR-022, FR-008): two rows, in the documented order."""
+    coverage = _coverage(
+        unsupported_files=["a.cob", "b.lua"],
+        requirement_sources=["specs/001-x/spec.md", "README.md", "docs/prd.md"],
+    )
+    section = _section(render_markdown(_report(coverage=coverage)), "### Coverage (FR-029)")
+    rows = [line for line in section.splitlines() if line.startswith("| ")]
+    assert rows[2:] == [
+        "| Files split across batches | 1 |",
+        "| Files excluded | 1 |",
+        "| Files skipped (unsupported language) | 2 |",
+        "| Files not reviewed (batch limit) | 1 |",
+        "| Requirement sources read | 3 |",
+        "| Batches used | 3 of 8 |",
+    ]
+
+
+def test_coverage_details_blocks_for_unsupported_files_and_requirement_sources():
+    coverage = _coverage(
+        unsupported_files=["a.cob", "b.lua"],
+        requirement_sources=["specs/001-x/spec.md", "README.md"],
+    )
+    section = _section(render_markdown(_report(coverage=coverage)), "### Coverage (FR-029)")
+    assert (
+        "<details>\n<summary>Unsupported-language files (2)</summary>\n\n"
+        "- `a.cob`\n- `b.lua`\n\n</details>" in section
+    )
+    assert (
+        "<details>\n<summary>Requirement sources (2)</summary>\n\n"
+        "- `specs/001-x/spec.md`\n- `README.md`\n\n</details>" in section
+    )
+    labels = [line.split(" (")[0] for line in section.splitlines() if line.startswith("<summary>")]
+    assert labels == [
+        "<summary>Reviewed files",
+        "<summary>Split files",
+        "<summary>Excluded files",
+        "<summary>Unsupported-language files",
+        "<summary>Not reviewed files",
+        "<summary>Requirement sources",
+    ]
+
+
+def test_coverage_no_details_block_for_empty_unsupported_or_requirement_lists():
+    section = _section(render_markdown(_report(coverage=_coverage())), "### Coverage (FR-029)")
+    assert "Unsupported-language files (" not in section
+    assert "Requirement sources (" not in section
+    assert section.count("<details>") == 4
+
+
+def test_coverage_sentence_says_unsupported_files_are_listed_not_reviewed():
+    md = render_markdown(_report(coverage=_coverage()))
+    assert (
+        "Files matching an exclusion pattern are not reviewed. Files in a language "
+        "Veritas does not review are listed, not reviewed (FR-022)." in md
+    )
 
 
 def test_coverage_details_block_for_each_non_empty_list():

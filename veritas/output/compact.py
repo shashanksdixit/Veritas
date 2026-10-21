@@ -102,6 +102,7 @@ def _coverage_line(coverage: Coverage) -> str:
         f"Coverage: {len(coverage.reviewed_files)} reviewed "
         f"({len(coverage.split_files)} split), "
         f"{len(coverage.excluded_files)} excluded, "
+        f"{len(coverage.unsupported_files)} unsupported, "
         f"{len(coverage.not_reviewed_files)} not reviewed; "
         f"{coverage.batches_used}/{coverage.max_batches} batches"
     )

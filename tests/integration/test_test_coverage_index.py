@@ -166,7 +166,7 @@ def _state(target: str) -> dict:
         "run": run,
         "phase": "scope",
         "files": {},
-        "skipped_languages": [],
+        "unsupported_files": [],
         "excluded_files": [],
         "batch_plan": None,
         "test_indexes": None,

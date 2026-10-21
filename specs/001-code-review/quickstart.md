@@ -216,6 +216,7 @@ Run against a project containing `.cob`, `.lua`, and `.py` files.
 **Expected**:
 - `.cob` and `.lua` files are skipped and explicitly noted in the report
 - `.py` files are fully reviewed
-- Report contains a note listing skipped files/reasons
+- Coverage shows "| Files skipped (unsupported language) | 2 |", lists the `.cob` and `.lua` paths, and the compact line includes "2 unsupported"
+- Running the review again from the project directory still shows 2: the earlier `veritas-report-*.md` and the `.veritas/` directory are always skipped (a report written with a custom `--output` path inside the project would be listed)
 
 **Validates**: FR-022

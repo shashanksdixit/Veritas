@@ -94,7 +94,8 @@ def _coverage(state: ReviewState, ctx: RenderContext) -> Coverage | None:
     """Coverage describing the batch plan (FR-029), or None when there is none.
 
     Coverage describes WHICH code the plan covered (budgets, batches used,
-    reviewed/split/not-reviewed paths, and what exclusion withheld). It does not
+    reviewed/split/not-reviewed paths, what exclusion withheld, the files in an
+    unsupported language and the requirement sources read, T130). It does not
     describe review success: a batch whose LLM call failed is reported through
     the errors channel and sets an incomplete report status (FR-027), not here.
 
@@ -112,6 +113,8 @@ def _coverage(state: ReviewState, ctx: RenderContext) -> Coverage | None:
         split_files=list(plan.split_files),
         excluded_files=list(state.get("excluded_files", [])),
         not_reviewed_files=list(plan.not_reviewed_files),
+        unsupported_files=list(state.get("unsupported_files", [])),
+        requirement_sources=list(state.get("requirement_sources", [])),
     )
 
 

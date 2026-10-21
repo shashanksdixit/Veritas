@@ -109,11 +109,16 @@ class ReviewState(TypedDict):
     phase: str
     # Files scoped for review: relative path -> decoded content.
     files: dict[str, str]
-    skipped_languages: Annotated[list[str], add]
+    # Files in a language Veritas does not review (FR-022), listed in Coverage:
+    # every such path the scope considered that was neither excluded nor read
+    # as a requirement source (T130). The scope node is the only writer, so
+    # this is an overwrite channel.
+    unsupported_files: list[str]
     # Files withheld before fetching by an exclusion pattern (FR-029), each with
     # the pattern that matched, then PR files whose content the hosting API
-    # withheld, each with its reason (T124). The scope node is the only writer
-    # and is the sole authority on the set, so this is an overwrite channel.
+    # withheld (T124) or local files over 1 MB (T130), each with its reason.
+    # The scope node is the only writer and is the sole authority on the set,
+    # so this is an overwrite channel.
     excluded_files: list[ExcludedFile]
     # Planned code-review batches over the post-exclusion source files (FR-029).
     # None until the scope node builds it; every code review type uses this one

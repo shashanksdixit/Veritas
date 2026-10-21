@@ -14,7 +14,7 @@ import pytest
 
 from tests.conftest import EmptyRepoRoot
 from veritas.config.settings import Settings
-from veritas.models.entities import ReviewRun, ReviewScope
+from veritas.models.entities import ExcludedFile, ReviewRun, ReviewScope
 from veritas.hosting.resolver import parse_pr_target
 from veritas.review.contexts import ScopeContext
 from veritas.review.nodes import scope as scope_module
@@ -96,7 +96,7 @@ def _state(target: str, scope: ReviewScope = ReviewScope.PROJECT) -> ReviewState
         "run": run,
         "phase": "scope",
         "files": {},
-        "skipped_languages": [],
+        "unsupported_files": [],
         "excluded_files": [],
         "batch_plan": None,
         "project_context": None,
@@ -138,13 +138,16 @@ def test_project_scope_excludes_before_reading(exclusion_tree, monkeypatch):
 
     assert set(result["files"]) == {"src/app.py", "README.md"}
     assert _patterns(result["excluded_files"]) == {
+        ".specify/nested.md": ".specify/",
         ".specify/scripts/plan.py": ".specify/",
         "web/app.min.js": "*.min.js",
         "docs/requirements.md": "docs/",
     }
-    # Excluded directories are not language skips.
-    assert ".specify/nested.md" in result["skipped_languages"]
-    assert ".specify/nested.md" not in _patterns(result["excluded_files"])
+    # T130: patterns are matched before the language check, so an unsupported
+    # file under an excluded directory is excluded, not unsupported; README.md
+    # was read as a requirement source, so it is not unsupported either.
+    assert result["unsupported_files"] == ["notes.cob"]
+    assert result["requirement_sources"] == ["README.md"]
 
 
 def test_excluded_requirement_doc_not_read(exclusion_tree):
@@ -217,8 +220,8 @@ def test_pr_scope_excluded_files_are_never_fetched(monkeypatch):
         ".specify/scripts/plan.py": ".specify/",
         "spec.md": "spec.md",
     }
-    # An unsupported-language file is handled by the language filter as before.
-    assert "notes.cob" in result["skipped_languages"]
+    # An unsupported-language file no pattern matches is listed as unsupported.
+    assert result["unsupported_files"] == ["notes.cob"]
     assert "notes.cob" not in _patterns(result["excluded_files"])
 
 
@@ -248,7 +251,9 @@ def test_pr_scope_requirements_source_excluded_and_not_fetched(monkeypatch):
     assert _patterns(result["excluded_files"]) == {"docs/requirements.md": "docs/"}
 
 
-def test_pr_scope_unsupported_file_under_excluded_dir_not_recorded(monkeypatch):
+def test_pr_scope_unsupported_file_under_excluded_dir_is_excluded(monkeypatch):
+    """T130: the pattern is matched before the language check, so the file is
+    reported as excluded with its pattern, not as unsupported."""
     contents = {"src/app.py": "x = 1\n", ".specify/data.cob": "IDENTIFICATION DIVISION.\n"}
     host = FakeHost(contents)
     _stub_sast(monkeypatch)
@@ -256,9 +261,81 @@ def test_pr_scope_unsupported_file_under_excluded_dir_not_recorded(monkeypatch):
     runtime = _runtime([".specify/"], host=host)
     target = "acme/widget#3"
     result = make_scope_node(runtime)(_state(target, ReviewScope.PR))
-    assert result["excluded_files"] == []
-    assert ".specify/data.cob" in result["skipped_languages"]
+    assert _patterns(result["excluded_files"]) == {".specify/data.cob": ".specify/"}
+    assert result["unsupported_files"] == []
     assert host.fetched == ["src/app.py"]
+
+
+def test_pr_scope_every_path_lands_in_exactly_one_bucket(monkeypatch):
+    """T130 (FR-022, FR-029): excluded, requirement source read, reviewed or
+    unsupported, and never two of these."""
+    contents = {
+        "src/app.py": "x = 1\n",
+        "specs/001-x/spec.md": "- **FR-001**: The system MUST work.\n",
+        "README.md": "# demo\n",
+        "specs/old/spec.md": "- **FR-001**: Old.\n",
+        ".specify/memory/c.md": "# constitution\n",
+        "docs/plan.md": "# plan\n",
+        "notes.cob": "IDENTIFICATION DIVISION.\n",
+    }
+    host = FakeHost(contents)
+    seen = _stub_sast(monkeypatch)
+
+    runtime = _runtime([".specify/", "specs/old/"], host=host)
+    result = make_scope_node(runtime)(_state("acme/widget#3", ReviewScope.PR))
+
+    assert result["unsupported_files"] == ["docs/plan.md", "notes.cob"]
+    assert result["requirement_sources"] == ["specs/001-x/spec.md", "README.md"]
+    assert _patterns(result["excluded_files"]) == {
+        "specs/old/spec.md": "specs/old/",
+        ".specify/memory/c.md": ".specify/",
+    }
+    assert list(result["batch_plan"].reviewed_files) == ["src/app.py"]
+    # Only the reviewed file and the two sources used were requested.
+    assert sorted(host.fetched) == ["README.md", "specs/001-x/spec.md", "src/app.py"]
+    assert sorted(seen) == ["README.md", "specs/001-x/spec.md", "src/app.py"]
+    # Every path is in exactly one bucket.
+    buckets = (
+        result["unsupported_files"]
+        + result["requirement_sources"]
+        + [entry.path for entry in result["excluded_files"]]
+        + list(result["batch_plan"].reviewed_files)
+    )
+    assert sorted(buckets) == sorted(contents)
+
+
+def test_local_supported_file_over_1_mb_is_excluded_with_a_reason(tmp_path, monkeypatch):
+    """T130: a local file over 1 MB is not read and is recorded as excluded with
+    its path relative to the scope root, never as unsupported."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "src" / "big.py").write_text("y = 2\n" * 200_000, encoding="utf-8")
+    (tmp_path / "notes.cob").write_text("IDENTIFICATION DIVISION.\n", encoding="utf-8")
+    seen = _stub_sast(monkeypatch)
+
+    result = make_scope_node(_runtime([]))(_state(str(tmp_path)))
+
+    assert result["excluded_files"] == [
+        ExcludedFile(path="src/big.py", reason="file over 1 MB, not read")
+    ]
+    assert result["unsupported_files"] == ["notes.cob"]
+    assert "src/big.py" not in result["files"]
+    assert list(result["batch_plan"].reviewed_files) == ["src/app.py"]
+    assert sorted(seen) == ["src/app.py"]
+
+
+def test_file_scope_unsupported_target_is_listed_and_still_scanned(exclusion_tree, monkeypatch):
+    """T130: an unsupported --scope file target is not code-reviewed and is
+    listed as unsupported; SAST still receives it, as before."""
+    seen = _stub_sast(monkeypatch)
+    target = str(exclusion_tree / "notes.cob")
+    result = make_scope_node(_runtime([]))(_state(target, ReviewScope.FILE))
+
+    rel = target.replace("\\", "/")
+    assert result["unsupported_files"] == [rel]
+    assert list(result["batch_plan"].reviewed_files) == []
+    assert result["excluded_files"] == []
+    assert seen == [rel]
 
 
 def test_sast_receives_post_exclusion_file_set(exclusion_tree, monkeypatch):
@@ -276,7 +353,7 @@ def test_exclusion_logged_once_with_pattern_counts(exclusion_tree, monkeypatch):
     make_scope_node(runtime)(_state(str(exclusion_tree)))
     assert [
         e for e in events if e.startswith("scope: excluded")
-    ] == ["scope: excluded 2 file(s): .specify/ (1), *.min.js (1)"]
+    ] == ["scope: excluded 3 file(s): .specify/ (2), *.min.js (1)"]
 
 
 def test_no_exclusion_log_line_when_nothing_excluded(exclusion_tree, monkeypatch):

@@ -252,7 +252,8 @@ def _render_coverage(out: list[str], coverage: Coverage) -> None:
     out.append(
         f"Code is reviewed in batches of up to {coverage.batch_chars} characters, "
         f"at most {coverage.max_batches} batches per review type, with application "
-        "code before test files. Files matching an exclusion pattern are not reviewed."
+        "code before test files. Files matching an exclusion pattern are not reviewed. "
+        "Files in a language Veritas does not review are listed, not reviewed (FR-022)."
     )
     out.append("")
 
@@ -274,7 +275,9 @@ def _render_coverage(out: list[str], coverage: Coverage) -> None:
             ("Files reviewed", str(len(coverage.reviewed_files))),
             ("Files split across batches", str(len(coverage.split_files))),
             ("Files excluded", str(len(coverage.excluded_files))),
+            ("Files skipped (unsupported language)", str(len(coverage.unsupported_files))),
             ("Files not reviewed (batch limit)", str(len(coverage.not_reviewed_files))),
+            ("Requirement sources read", str(len(coverage.requirement_sources))),
             ("Batches used", f"{coverage.batches_used} of {coverage.max_batches}"),
         ],
     )
@@ -288,7 +291,15 @@ def _render_coverage(out: list[str], coverage: Coverage) -> None:
         [_excluded_line(item) for item in coverage.excluded_files],
     )
     _coverage_details(
+        out,
+        "Unsupported-language files",
+        [f"`{path}`" for path in coverage.unsupported_files],
+    )
+    _coverage_details(
         out, "Not reviewed files", [f"`{path}`" for path in coverage.not_reviewed_files]
+    )
+    _coverage_details(
+        out, "Requirement sources", [f"`{path}`" for path in coverage.requirement_sources]
     )
 
 

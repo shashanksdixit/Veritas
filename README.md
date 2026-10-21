@@ -417,8 +417,18 @@ veritas unsuppress --fingerprint <sha256>
 ## Supported languages
 
 Primary: Python, Java. Also supported: JavaScript/TypeScript, C#/.NET, Go, Rust.
-Files of any other language are skipped and explicitly noted in the report; the
-rest of the scope is reviewed normally.
+Files of any other language are not reviewed: the report's Coverage section
+lists them as unsupported-language files and the stdout coverage line counts
+them, unless an exclusion pattern matched them or they were read as a
+requirement source. The rest of the scope is reviewed normally.
+
+A local review always skips some names: version-control, virtual-environment,
+editor and build directories (`.git/`, `.venv/`, `node_modules/`, `build/`,
+`dist/` and similar), `.gitignore`, `.python-version`, Veritas's own
+`.veritas/` directory and reports named `veritas-report-*.md`. These never
+appear in Coverage. `.veritas/config.toml` and `.veritas/rules.md` are still
+read as configuration and project context. A report written with a custom
+`--output` path inside the project is not skipped: the next review lists it.
 
 ## Report output
 
