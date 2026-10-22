@@ -79,7 +79,7 @@ Use **plain `httpx` (BSD-3-Clause)** for both GitHub and GitLab REST APIs direct
   - PyGithub: **LGPL-3.0** (actively seeking maintainers — bus-factor concern)
   - python-gitlab: **LGPL-3.0-or-later**
   - githubkit: **MIT** but GitHub-only (doesn't cover GitLab)
-- httpx is BSD-3-Clause with permissive deps (httpcore BSD-3-Clause, h11 MIT). Only `certifi` is MPL-2.0 (weak file-level copyleft, acceptable for use). Avoids all LGPL concerns.
+- httpx is BSD-3-Clause with permissive deps (httpcore BSD-3-Clause, h11 MIT). Of httpx's own dependencies, only `certifi` is MPL-2.0 (file-level copyleft, used unmodified; see § 6, which also covers orjson). Avoids all LGPL concerns.
 - Uniform auth/retry/pagination layer across both providers.
 
 ### REST endpoints (minimal surface)
@@ -171,7 +171,8 @@ Typer: MIT. Click (vendored internally): BSD-3-Clause. Rich: MIT. All permissive
 | Rich (Typer dep) | MIT | pypi.org/project/rich |
 | Click (vendored in Typer) | BSD-3-Clause | pypi.org/project/click |
 | pytest | MIT | pypi.org/project/pytest |
-| certifi (httpx dep) | MPL-2.0 | pypi.org/project/certifi |
+| certifi 2026.7.22 (transitive runtime, via httpx, httpcore, langchain-openai and requests) | MPL-2.0 | installed metadata: `License: MPL-2.0`; classifier `Mozilla Public License 2.0 (MPL 2.0)` |
+| orjson 3.12.0 (transitive runtime, via langgraph-sdk and langsmith) | MPL-2.0 AND (Apache-2.0 OR MIT) | installed metadata: `License-Expression: MPL-2.0 AND (Apache-2.0 OR MIT)`; classifiers Apache, MIT and MPL 2.0 |
 | OpenGrep binary | LGPL-2.1 (engine) | github.com/opengrep/opengrep |
 
-No GPL-family licenses in the Python dependency tree (MPL-2.0 on certifi is file-level copyleft, generally acceptable for linking/use).
+Not every runtime dependency is permissive. Checked 2026-10-22: `uv export --no-dev --no-hashes --format requirements-txt` lists 55 runtime packages (optional extras such as `anthropic` are not included), and the licence fields (`License-Expression`, `License`, licence classifiers) of the 54 installed ones were read with `importlib.metadata`. The 8 direct runtime dependencies (`[project].dependencies`: langgraph, langchain, langchain-core, langchain-openai, httpx, typer, pydantic, pydantic-settings) are all MIT or BSD-3-Clause. Exactly two installed packages carry a copyleft licence, both MPL-2.0 and both transitive: certifi (`License: MPL-2.0`; pulled in by httpx, httpcore, langchain-openai and requests) and orjson (`License-Expression: MPL-2.0 AND (Apache-2.0 OR MIT)`, so its MPL-2.0 part applies in addition to the permissive choice; pulled in by langgraph-sdk and langsmith). Every other installed runtime package is permissive (MIT, BSD, Apache-2.0, ISC, PSF-2.0 or CNRI-Python), and none has empty licence fields. MPL-2.0 is a file-level copyleft licence: modified versions of MPL-covered files stay under MPL-2.0, and their source must be made available when they are distributed, while code that only uses those files is not affected. Veritas uses both packages unmodified, as installed dependencies, and does not copy or change their files. No GPL, LGPL or AGPL licence (nor EPL or CDDL) appears among the 54 installed runtime packages. Not checked: httpx2-jsfetch, which is listed only for `sys_platform == 'emscripten'` and is not installed, and the optional `anthropic` extra (langchain-anthropic), which is not installed here.

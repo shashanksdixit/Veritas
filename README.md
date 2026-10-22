@@ -501,7 +501,12 @@ pytest
 ```
 
 Veritas is built on Python 3.12, Typer, Pydantic v2, LangChain/LangGraph (via
-`init_chat_model`), and httpx. All runtime Python dependencies are permissive-licensed
-(MIT / BSD-3-Clause / Apache-2.0); the OpenGrep SAST engine is the sole
-LGPL-2.1 component (no paid tier). Constitution governance details live in
+`init_chat_model`), and httpx. The direct runtime Python dependencies are
+permissive-licensed (MIT or BSD-3-Clause). Of the installed runtime packages,
+exactly two, both transitive, carry MPL-2.0, a file-level copyleft licence, and
+Veritas uses both unmodified: certifi (`MPL-2.0`, through httpx, httpcore,
+langchain-openai and requests) and orjson (`MPL-2.0 AND (Apache-2.0 OR MIT)`,
+through langgraph-sdk and langsmith); none is GPL, LGPL or AGPL. The OpenGrep
+SAST engine is the sole LGPL-2.1 component (no paid tier). See
+`specs/001-code-review/research.md` § 6. Constitution governance details live in
 `.specify/memory/constitution.md`.

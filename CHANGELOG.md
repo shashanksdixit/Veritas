@@ -160,20 +160,32 @@ constitution Principle VIII / FR-016.
   v8.0.0, and spec.md FR-003 and FR-005 say code findings carry recommendation
   text and requirement findings carry an explanation (T134).
 - Documentation: plan.md's Constitution Check re-run against constitution
-  v7.0.0 and the code at 2ea72ad (T099). Each of the 13 gate rows now
-  describes the code as it is, with file and line references and the tests
-  that prove it: the Privacy row names every place a key may come from
-  (`.veritas/config.local.toml`, `--config`, `VERITAS_*`) and the refusal of
-  keys in the committed `.veritas/config.toml`; the Grounded Verification row
-  covers requirement-evidence verification and both stated limits; the
-  Principle II and Licensing rows state the OpenGrep (LGPL-2.1) versus Semgrep
-  Rules License split. "All gates PASS" is replaced by the actual result:
-  9 PASS, 1 PASS with deferral (Privacy, T103) and 3 FAIL, namely Grounded
-  Verification and SAST-Grounded & Verified Security (an LLM code finding with
-  no quoted code is reported as citation verified without its lines being
-  bounds-checked) and Fixed Review Scope (a finding with an empty
-  recommendation is reported). T099 stays open. No behaviour, schema or test
-  change.
+  v8.0.0 and the code at 8cc0488 (schema 1.15.0, prompts 1.9.0), and T099
+  closed. Each of the 13 gate rows describes the code as it is, with file and
+  line references, the tests that prove it and, for the three gates that
+  failed at the 2026-10-21 re-run (2ea72ad, v7.0.0), the probes that now pass:
+  an unquoted code finding citing lines 0-0, -3 to -1 or 2-99 of a 2-line file
+  is rejected as `line_out_of_range` (T132), a code finding with a missing or
+  whitespace recommendation is rejected as `recommendation_missing` (T133),
+  and a requirement finding with a blank explanation is marked unclear and
+  recorded as `explanation_missing` (T134). Result: 11 PASS, 2 PASS with
+  deferral (Fixed Review Scope, T131: files beyond `MAX_SCOPE_FILES` or
+  unreadable are not reported, `.gitignore` is not respected in the local
+  walk, `_SKIP_FILES` is not applied in the PR path; Privacy & Data Handling,
+  T103) and 0 FAIL. Stale line references and the schema version (1.12.0 →
+  1.15.0) in the rows are corrected; all 75 test references in the rows
+  resolve to collected tests or test files. research.md § 6 (licensing)
+  corrected: it listed certifi only as an httpx dependency and left out
+  orjson. The licence metadata of all 54 installed runtime packages listed by
+  `uv export --no-dev` was read: the 8 direct runtime dependencies are MIT or
+  BSD-3-Clause, and exactly two transitive packages carry MPL-2.0 (certifi
+  `MPL-2.0`, through httpx, httpcore, langchain-openai and requests; orjson
+  `MPL-2.0 AND (Apache-2.0 OR MIT)`, through langgraph-sdk and langsmith);
+  none is GPL, LGPL or AGPL. httpx2-jsfetch (emscripten only) and the optional
+  `anthropic` extra are not installed and were not checked. MPL-2.0 is
+  file-level copyleft and Veritas uses both packages unmodified. README's
+  "All runtime Python dependencies are permissive-licensed" is replaced to
+  match. No behaviour, schema or test change.
 - Documentation: stale text brought in line with the current behaviour (T129).
   `quickstart.md` no longer assumes OpenRouter is the default: the API-key
   prerequisite names the configured backend (OpenAI direct by default),
