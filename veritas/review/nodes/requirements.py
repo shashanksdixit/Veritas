@@ -9,7 +9,10 @@ Two paths, chosen by whether the scope node extracted structured requirements
   before (T038), for a project whose documentation has no parseable FR lines.
 
 Both paths produce RequirementFinding with status + evidence; explanations are
-redacted on the way in (constitution Privacy & Data Handling). Both also answer a
+redacted on the way in (constitution Privacy & Data Handling). The structured
+path writes a fixed explanation only for a status it concludes itself (gap,
+unclear, not_addressed); every other explanation is the reviewer's, and one left
+empty is caught by verification (T134, FR-005). Both also answer a
 scope-dependent question: in PR scope a requirement the pull request carries no code
 for is ``not_addressed`` rather than a ``gap``, because the PR review is asking
 whether this change implements it, not whether the project does (FR-007).
@@ -202,13 +205,19 @@ def _every_batch_answered_not_in_this_batch(
 
 
 def _deciding_explanation(given: list[tuple[str, dict]], deciding: str) -> str:
-    """The explanation of the first answer that decided the status."""
+    """The first non-empty explanation among the answers that decided the status.
+
+    Returns ``""`` when none of them gave one. A satisfied or partial status says
+    the code was judged, so the generic "could not be judged" reason would
+    contradict it; the empty explanation is left for verification, which marks
+    the requirement unclear and records ``explanation_missing`` (T134, FR-005).
+    """
     for answer, payload in given:
         if answer == deciding:
             explanation = str(payload.get("explanation", "")).strip()
             if explanation:
                 return explanation
-    return _CANNOT_JUDGE_REASON
+    return ""
 
 
 def _unclear_reason(kinds: set[str], given: list[tuple[str, dict]], total_batches: int) -> str:

@@ -139,6 +139,9 @@ _REASON_CODE_MEANINGS: dict[VerificationReasonCode, str] = {
         "The finding gave no recommendation, so it could not be reported as actionable."
     ),
     VerificationReasonCode.EVIDENCE_NOT_CONFIRMED: "A requirement's cited evidence could not be confirmed.",
+    VerificationReasonCode.EXPLANATION_MISSING: (
+        "A requirement finding gave no explanation for its status, so it was marked unclear."
+    ),
 }
 
 

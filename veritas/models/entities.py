@@ -62,6 +62,8 @@ class VerificationReasonCode(str, Enum):
     # Schema 1.14.0 (T133): a non-SAST code finding that gives no recommendation.
     RECOMMENDATION_MISSING = "recommendation_missing"
     EVIDENCE_NOT_CONFIRMED = "evidence_not_confirmed"
+    # Schema 1.15.0 (T134): a requirement finding that gives no explanation.
+    EXPLANATION_MISSING = "explanation_missing"
 
 
 class RequirementStatus(str, Enum):

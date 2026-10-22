@@ -69,6 +69,7 @@ class VerificationReasonCode(str, Enum):
     SNIPPET_MISSING = "snippet_missing"                  # schema 1.13.0 (T132): a non-SAST code finding quotes no code
     RECOMMENDATION_MISSING = "recommendation_missing"    # schema 1.14.0 (T133): a non-SAST code finding gives no recommendation (absent, empty or only whitespace)
     EVIDENCE_NOT_CONFIRMED = "evidence_not_confirmed"    # a RequirementFinding evidence citation could not be confirmed
+    EXPLANATION_MISSING = "explanation_missing"          # schema 1.15.0 (T134): a RequirementFinding gives no explanation (absent, empty or only whitespace); it is kept, marked unclear
 ```
 
 ---
@@ -201,7 +202,10 @@ class RequirementFinding(BaseModel):
     requirement_text: str            # the requirement statement
     status: RequirementStatus
     evidence: list[str] = Field(default_factory=list)  # "path", "path:N" or "path:A-B" refs; each confirmed only if the file was reviewed and every cited line is in 1..file length (FR-013)
-    explanation: str
+    explanation: str                 # required, non-empty (FR-005); no recommendation field. Absent, empty or
+                                     # whitespace-only: verification marks the finding unclear with the fixed
+                                     # explanation "The reviewer gave no explanation for this requirement's
+                                     # status." and records explanation_missing (T134)
 ```
 
 ### SuppressionEntry (spec Key Entity: "Suppression Entry")
@@ -315,7 +319,7 @@ class FailedBatch(BaseModel):
 
 class Report(BaseModel):
     """The full review deliverable (FR-016)."""
-    schema_version: str = "1.14.0"   # semver; bump on any breaking change to
+    schema_version: str = "1.15.0"   # semver; bump on any breaking change to
                                       # Report/CodeFinding/RequirementFinding shape,
                                       # per CHANGELOG.md (constitution Principle VIII)
     run: ReviewRun

@@ -82,7 +82,7 @@ def _report(**overrides) -> Report:
 
 def test_schema_version_comment_top():
     md = render_markdown(_report())
-    assert md.startswith("<!-- veritas-report-schema: 1.14.0 -->")
+    assert md.startswith("<!-- veritas-report-schema: 1.15.0 -->")
 
 
 def test_sections_present():
@@ -487,6 +487,26 @@ def test_recommendation_missing_renders_its_row_and_legend_row():
         "| `recommendation_missing` | The finding gave no recommendation, so it could not be "
         "reported as actionable. |"
     ]
+
+
+def test_explanation_missing_renders_its_row_and_legend_row():
+    # T134: a requirement finding that explained nothing is listed among the
+    # verification failures (it names no file or lines), with a legend row.
+    failure = _failure(
+        finding_id="rf-7",
+        file="",
+        line_range=LineRange(start_line=0, start_col=0, end_line=0, end_col=0),
+        reason_code=VerificationReasonCode.EXPLANATION_MISSING,
+        reason="the requirement finding gives no explanation",
+    )
+    section = _verification_section(render_markdown(_report_with(failure)))
+    assert "| rf-7 |  | 0:0 | `explanation_missing` | the requirement finding gives no explanation |" in section
+    assert _reason_code_legend_rows(section) == [
+        "| `explanation_missing` | A requirement finding gave no explanation for its status, so it was "
+        "marked unclear. |"
+    ]
+    # No snippets, so no collapsed detail block.
+    assert "<details>" not in section
 
 
 def test_line_out_of_range_legend_row_names_every_bound():

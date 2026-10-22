@@ -100,7 +100,7 @@ def test_report_roundtrip_json():
             verdict=V.CLEAN,
         ),
     )
-    assert report.schema_version == "1.14.0"
+    assert report.schema_version == "1.15.0"
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.run.id == report.run.id
 
@@ -364,7 +364,7 @@ def test_sast_rules_round_trips_at_schema_1_7_0():
             verdict=Verdict.CLEAN,
         ),
     )
-    assert report.schema_version == "1.14.0"
+    assert report.schema_version == "1.15.0"
 
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.run.sast_rules == "r/corp-pack"
@@ -425,10 +425,10 @@ def test_sast_status_fields_round_trip_at_schema_1_9_0(status, count, reason):
             sast_reason=reason,
         )
     )
-    assert report.schema_version == "1.14.0"
+    assert report.schema_version == "1.15.0"
 
     dumped = json.loads(report.model_dump_json())
-    assert dumped["schema_version"] == "1.14.0"
+    assert dumped["schema_version"] == "1.15.0"
     assert dumped["run"]["sast_status"] == status
 
     restored = Report.model_validate_json(report.model_dump_json())
@@ -506,10 +506,10 @@ def test_project_context_fields_round_trip_at_schema_1_10_0(status, sources, rea
             project_context_origin=origin,
         )
     )
-    assert report.schema_version == "1.14.0"
+    assert report.schema_version == "1.15.0"
 
     dumped = json.loads(report.model_dump_json())
-    assert dumped["schema_version"] == "1.14.0"
+    assert dumped["schema_version"] == "1.15.0"
     assert dumped["run"]["project_context_status"] == status
     assert dumped["run"]["project_context_sources"] == sources
 
@@ -598,7 +598,7 @@ def test_excluded_file_with_a_reason_round_trips_at_schema_1_11_0():
             )
         }
     )
-    assert report.schema_version == "1.14.0"
+    assert report.schema_version == "1.15.0"
 
     dumped = json.loads(report.model_dump_json())
     assert dumped["coverage"]["excluded_files"] == [
@@ -719,7 +719,7 @@ def test_unsupported_files_and_requirement_sources_round_trip_at_schema_1_12_0()
             )
         }
     )
-    assert report.schema_version == "1.14.0"
+    assert report.schema_version == "1.15.0"
 
     dumped = json.loads(report.model_dump_json())
     assert dumped["coverage"]["unsupported_files"] == ["a.cob", "b.lua"]
@@ -810,7 +810,7 @@ def test_snippet_missing_failure_round_trips_at_schema_1_13_0():
             )
         }
     )
-    assert report.schema_version == "1.14.0"
+    assert report.schema_version == "1.15.0"
 
     dumped = json.loads(report.model_dump_json())
     assert dumped["summary"]["verification_failures"][0]["reason_code"] == "snippet_missing"
@@ -900,14 +900,120 @@ def test_recommendation_missing_failure_round_trips_at_schema_1_14_0():
             )
         }
     )
-    assert report.schema_version == "1.14.0"
+    assert report.schema_version == "1.15.0"
 
     dumped = json.loads(report.model_dump_json())
-    assert dumped["schema_version"] == "1.14.0"
+    assert dumped["schema_version"] == "1.15.0"
     assert dumped["summary"]["verification_failures"][0]["reason_code"] == "recommendation_missing"
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.summary.verification_failures == [failure]
     assert (
         restored.summary.verification_failures[0].reason_code
         is VerificationReasonCode.RECOMMENDATION_MISSING
+    )
+
+
+# --- schema 1.15.0 adds VerificationReasonCode.EXPLANATION_MISSING (T134, FR-005) ---
+
+
+def test_a_1_14_report_still_loads():
+    """Schema 1.15.0 only adds an enum value, so a 1.14.0 report validates unchanged."""
+    from veritas.models.entities import Report, VerificationReasonCode
+
+    pre_1_15 = {
+        "schema_version": "1.14.0",
+        "run": {
+            "scope": "project",
+            "target": ".",
+            "config_hash": "h",
+            "model_name": "m",
+            "prompt_version": "1.9.0",
+            "report_status": "complete",
+        },
+        "code_findings": [],
+        "requirement_findings": [
+            {
+                "id": "rf-1",
+                "requirement_ref": "FR-001",
+                "requirement_text": "The system MUST ship.",
+                "status": "satisfied",
+                "evidence": ["src/app.py:2"],
+                "explanation": "The code shown could not be judged against this requirement.",
+            }
+        ],
+        "summary": {
+            "total_code_findings": 0,
+            "total_requirement_findings": 1,
+            "verification_failure_count": 1,
+            "verification_failures": [
+                {
+                    "finding_id": "f-1",
+                    "file": "src/app.py",
+                    "line_range": {"start_line": 2, "start_col": 1, "end_line": 2, "end_col": 1},
+                    "reason": "the finding gives no recommendation",
+                    "reason_code": "recommendation_missing",
+                    "claimed_snippet": 'print("hello")',
+                    "actual_snippet": 'print("hello")',
+                }
+            ],
+            "verdict": "Clean",
+        },
+        "coverage": {
+            "batch_chars": 48000,
+            "max_batches": 8,
+            "batches_used": 1,
+            "reviewed_files": ["src/app.py"],
+        },
+        "failed_batches": [],
+    }
+
+    restored = Report.model_validate(pre_1_15)
+
+    assert restored.schema_version == "1.14.0"
+    assert restored.summary.verification_failures[0].reason_code is VerificationReasonCode.RECOMMENDATION_MISSING
+    assert restored.requirement_findings[0].explanation == (
+        "The code shown could not be judged against this requirement."
+    )
+
+
+def test_explanation_missing_failure_round_trips_at_schema_1_15_0():
+    from veritas.models.entities import Report, Summary, VerificationFailure, VerificationReasonCode
+
+    assert VerificationReasonCode.EXPLANATION_MISSING.value == "explanation_missing"
+    failure = VerificationFailure(
+        finding_id="rf-1",
+        file="",
+        line_range=LineRange(start_line=0, start_col=0, end_line=0, end_col=0),
+        reason="the requirement finding gives no explanation",
+        reason_code=VerificationReasonCode.EXPLANATION_MISSING,
+    )
+    report = _report_with_run(
+        ReviewRun(
+            scope=ReviewScope.PROJECT,
+            target=".",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.9.0",
+        )
+    ).model_copy(
+        update={
+            "summary": Summary(
+                total_code_findings=0,
+                total_requirement_findings=0,
+                verification_failure_count=1,
+                verification_failures=[failure],
+                verdict=Verdict.CLEAN,
+            )
+        }
+    )
+    assert report.schema_version == "1.15.0"
+
+    dumped = json.loads(report.model_dump_json())
+    assert dumped["schema_version"] == "1.15.0"
+    assert dumped["summary"]["verification_failures"][0]["reason_code"] == "explanation_missing"
+    restored = Report.model_validate_json(report.model_dump_json())
+    assert restored.summary.verification_failures == [failure]
+    assert (
+        restored.summary.verification_failures[0].reason_code
+        is VerificationReasonCode.EXPLANATION_MISSING
     )

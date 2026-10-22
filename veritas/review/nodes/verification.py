@@ -30,6 +30,13 @@ mean different things when a citation is wrong:
   evidence at all, its status becomes unclear — the requirement is still reported,
   but the claim that it is met is no longer one the code supports.
 
+A requirement finding carries no recommendation, but it must explain its status
+(T134, FR-005, constitution Principle IV). This is checked after the evidence, on
+the finding as kept: one whose explanation is absent, empty or only whitespace is
+kept, marked unclear with a fixed explanation, and recorded as
+``explanation_missing``. An evidence demotion has already given its finding a
+fixed explanation, so it is never recorded twice for that.
+
 Each recorded failure carries a structured cause (`reason_code`) plus the
 redacted, truncated snippets and off-window line numbers that explain it (T066),
 so a reader can tell *why* a claim was dropped without re-running the tool.
@@ -419,6 +426,36 @@ def correct_citation(finding: CodeFinding, files: dict[str, str]) -> CodeFinding
 # in the report; only the claim that the code satisfies it is withdrawn.
 EVIDENCE_UNCONFIRMED_EXPLANATION = "Its cited evidence could not be confirmed against the reviewed files."
 
+# The explanation given to a requirement finding marked unclear because the
+# reviewer explained nothing (T134, FR-005).
+EXPLANATION_MISSING_EXPLANATION = "The reviewer gave no explanation for this requirement's status."
+
+
+def explanation_failure(finding: RequirementFinding) -> VerificationFailure | None:
+    """Return an ``explanation_missing`` failure when ``finding`` gives no
+    explanation, or None when it gives one (T134, FR-005).
+
+    A requirement finding carries no recommendation; its explanation is what
+    tells the reader why it has its status, and for a gap or partial requirement
+    it is the guidance on what is missing (constitution Principle IV). An absent,
+    empty or whitespace-only explanation is none: ``build_requirement_finding``
+    stores a missing one as ``""``, and a finding built directly may carry
+    whitespace. A status the structured path concludes itself (gap, unclear,
+    not_addressed) always carries a fixed explanation, so it never fails here.
+
+    Like an evidence failure it names no file or lines: the requirement points at
+    the spec, not at one place in the code.
+    """
+    if finding.explanation.strip():
+        return None
+    return VerificationFailure(
+        finding_id=finding.id,
+        file="",
+        line_range=LineRange(start_line=0, start_col=0, end_line=0, end_col=0),
+        reason="the requirement finding gives no explanation",
+        reason_code=VerificationReasonCode.EXPLANATION_MISSING,
+    )
+
 
 def _evidence_problem(ref: str, files: dict[str, str]) -> str | None:
     """Why one evidence reference cannot be confirmed, or None when it can (FR-013).
@@ -620,10 +657,34 @@ def make_verify_node(ctx: ReviewContext) -> Callable[[ReviewState], dict]:
         req_kept: list[RequirementFinding] = []
         stripped = 0
         demoted = 0
+
+        def _keep_if_explained(finding: RequirementFinding) -> None:
+            # Checked after the evidence, on the finding as kept: an evidence
+            # demotion has already given it a fixed explanation. One with no
+            # explanation stays in the report, like any requirement, but marked
+            # unclear with a fixed explanation and recorded (T134, FR-005).
+            nonlocal demoted
+            missing = explanation_failure(finding)
+            if missing is None:
+                req_kept.append(finding)
+                return
+            failures.append(missing)
+            _warn(f"verification failed: {finding.id} {finding.requirement_ref} — {missing.reason}")
+            if finding.status is not RequirementStatus.UNCLEAR:
+                demoted += 1
+            req_kept.append(
+                finding.model_copy(
+                    update={
+                        "status": RequirementStatus.UNCLEAR,
+                        "explanation": EXPLANATION_MISSING_EXPLANATION,
+                    }
+                )
+            )
+
         for rf in state["requirement_findings"]:
             confirmed, bad_refs = partition_requirement_evidence(rf, files)
             if not bad_refs:
-                req_kept.append(rf)
+                _keep_if_explained(rf)
                 continue
             # The requirement came out of the spec, so it stays in the report; only
             # the references the reviewed files cannot back are removed (FR-013).
@@ -651,7 +712,7 @@ def make_verify_node(ctx: ReviewContext) -> Callable[[ReviewState], dict]:
                     }
                 )
                 demoted += 1
-            req_kept.append(kept_finding)
+            _keep_if_explained(kept_finding)
 
         if log is not None:
             log.info(

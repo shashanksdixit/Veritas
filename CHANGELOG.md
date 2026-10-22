@@ -154,6 +154,11 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- Constitution amended to v8.0.0 (Principle IV): a recommendation is required
+  for code findings only; a requirement finding carries no recommendation but
+  must carry a non-empty explanation of its status. CLAUDE.md now names
+  v8.0.0, and spec.md FR-003 and FR-005 say code findings carry recommendation
+  text and requirement findings carry an explanation (T134).
 - Documentation: plan.md's Constitution Check re-run against constitution
   v7.0.0 and the code at 2ea72ad (T099). Each of the 13 gate rows now
   describes the code as it is, with file and line references and the tests
@@ -314,6 +319,33 @@ constitution Principle VIII / FR-016.
   contexts, checked by the reachability test.
 
 ### Fixed
+- A requirement finding with no explanation is no longer reported as if its
+  status were explained (FR-005, T134, constitution v8.0.0 Principle IV). A
+  requirement finding carries no recommendation, but it must explain its
+  status. Before, a free-text finding whose `explanation` was absent, empty or
+  only whitespace was kept with an empty explanation, and a structured
+  satisfied or partial requirement whose deciding answers explained nothing
+  was given "The code shown could not be judged against this requirement.",
+  which contradicts its status. The structured merge now leaves that
+  explanation empty, and after verification any requirement finding whose
+  explanation is absent, empty or only whitespace stays in the report,
+  marked unclear with the explanation "The reviewer gave no explanation for
+  this requirement's status.", and is recorded as a verification failure with
+  `reason_code` `explanation_missing` and the reason "the requirement finding
+  gives no explanation". It is checked after the evidence: a requirement
+  already demoted for unconfirmed evidence keeps that fixed explanation and is
+  not recorded twice. Statuses the structured path concludes itself (gap,
+  unclear, not_addressed), a free-text gap restated as not_addressed in PR
+  scope, and the no-documentation finding carry fixed explanations and are
+  unaffected. The report's reason-code legend gains `explanation_missing` ("A
+  requirement finding gave no explanation for its status, so it was marked
+  unclear."). Report schema **1.15.0**: `VerificationReasonCode` gains
+  `explanation_missing`. Migration: reports written at 1.14.0 still validate
+  unchanged; a consumer that matches on `reason_code` must accept the new
+  value. Runs where the model leaves `explanation` out may report more
+  unclear requirements (verdict RequiresReview rather than Clean, or rather
+  than RequiresModification for a free-text gap) and more verification
+  failures; no prompt changed.
 - A code finding without a recommendation is no longer reported as if it had
   one (FR-005, T133, constitution v7.0.0 Principle IV). A finding whose
   `recommendation` was absent, empty or only whitespace was kept and shown

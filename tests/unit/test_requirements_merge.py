@@ -359,3 +359,47 @@ def test_a_batch_answering_the_same_requirement_twice_cannot_manufacture_a_gap()
     """
     finding = _merge([_answer("not_in_this_batch"), _answer("not_in_this_batch")], total_batches=1)
     assert finding.status is RequirementStatus.UNCLEAR
+
+# --- T134 (FR-005): the merge does not invent an explanation for satisfied/partial ---
+
+
+@pytest.mark.parametrize(
+    "answer, status",
+    [
+        ("implemented", RequirementStatus.SATISFIED),
+        ("partially_implemented", RequirementStatus.PARTIAL),
+    ],
+)
+@pytest.mark.parametrize("blank", ["", "   ", "\n"], ids=["empty", "spaces", "newline"])
+def test_a_deciding_answer_with_no_explanation_leaves_it_empty(answer, status, blank):
+    # "The code shown could not be judged" would contradict a status that says
+    # the code was judged, so the explanation is left empty for verification to
+    # catch (explanation_missing) instead of being filled with that reason.
+    finding = _merge([_answer(answer, "src/app.py:2", explanation=blank), _answer("not_in_this_batch")])
+    assert finding.status is status
+    assert finding.explanation == ""
+    assert finding.evidence == ["src/app.py:2"]
+
+
+def test_the_first_deciding_answer_that_explains_supplies_the_explanation():
+    finding = _merge(
+        [
+            _answer("implemented", "src/a.py:1", explanation="  "),
+            _answer("implemented", "src/b.py:4", explanation="shipped in b"),
+        ]
+    )
+    assert finding.status is RequirementStatus.SATISFIED
+    assert finding.explanation == "shipped in b"
+
+
+def test_a_partial_answer_never_supplies_a_satisfied_explanation():
+    # Only the answers that decided the status count: a satisfied requirement
+    # whose implemented answer explains nothing does not borrow the partial one.
+    finding = _merge(
+        [
+            _answer("implemented", "src/a.py:1"),
+            _answer("partially_implemented", "src/b.py:4", explanation="half of it"),
+        ]
+    )
+    assert finding.status is RequirementStatus.SATISFIED
+    assert finding.explanation == ""

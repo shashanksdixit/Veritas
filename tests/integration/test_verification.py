@@ -24,12 +24,15 @@ from veritas.models.entities import (
     compute_fingerprint,
 )
 from veritas.review.nodes import verification as verification_module
-from veritas.review.nodes.common import build_code_finding
+from veritas.review.nodes.common import build_code_finding, build_requirement_finding
+from veritas.review.nodes.requirements import merge_answers
 from veritas.review.nodes.verification import (
+    EXPLANATION_MISSING_EXPLANATION,
     FOUND_AT_MAX,
     SNIPPET_MAX_CHARS,
     _find_snippet_spans,
     correct_citation,
+    explanation_failure,
     make_verify_node,
     merge_duplicate_findings,
     partition_requirement_evidence,
@@ -37,6 +40,7 @@ from veritas.review.nodes.verification import (
     verify_code_finding,
     verify_requirement_finding,
 )
+from veritas.review.requirements_source import Requirement
 
 FILES = {
     "src/app.py": "import os\nprint(\"hello\")\nsecret = 42\n",
@@ -1138,6 +1142,305 @@ def test_verify_node_keeps_a_sast_finding_whatever_its_recommendation():
     )
     assert [f.id for f in out["verified_code_findings"]] == ["f-sast"]
     assert out["verification_failures"] == []
+
+
+# ---------------------------------------------------------------------------
+# T134 (FR-005): a requirement finding carries no recommendation, but it must
+# explain its status. One that does not stays in the report, marked unclear
+# with a fixed explanation, and is recorded as explanation_missing.
+# ---------------------------------------------------------------------------
+
+_NO_EXPLANATION = "The reviewer gave no explanation for this requirement's status."
+
+_BLANKS = pytest.mark.parametrize(
+    "blank", ["", "   ", "\n", "\t \n"], ids=["empty", "spaces", "newline", "mixed"]
+)
+_EVERY_STATUS = pytest.mark.parametrize("status", list(RequirementStatus), ids=lambda s: s.value)
+
+
+def _explained(status, explanation, *, evidence=(), id="rf-why"):
+    return RequirementFinding(
+        id=id,
+        requirement_ref="FR-001",
+        requirement_text="the system must log to stdout",
+        status=status,
+        evidence=list(evidence),
+        explanation=explanation,
+    )
+
+
+def _verify_requirements(*findings, log=None):
+    return make_verify_node(_NodeRuntime(log or _RecordingLog()))(
+        {"files": FILES, "code_findings": [], "requirement_findings": list(findings)}
+    )
+
+
+def test_the_fixed_explanation_constant_is_the_agreed_text():
+    assert EXPLANATION_MISSING_EXPLANATION == _NO_EXPLANATION
+
+
+@_EVERY_STATUS
+@_BLANKS
+def test_a_blank_explanation_is_marked_unclear_and_recorded(status, blank):
+    # Built directly, so the whitespace is not stripped first: the check itself
+    # must read whitespace as no explanation. Evidence is valid, so nothing but
+    # the explanation can fail.
+    evidence = ["src/app.py:2"] if status in (RequirementStatus.SATISFIED, RequirementStatus.PARTIAL) else []
+    rf = _explained(status, blank, evidence=evidence)
+    log = _RecordingLog()
+    out = _verify_requirements(rf, log=log)
+
+    (kept,) = out["verified_requirement_findings"]
+    assert kept.id == "rf-why"
+    assert kept.requirement_ref == "FR-001"
+    assert kept.status is RequirementStatus.UNCLEAR
+    assert kept.explanation == _NO_EXPLANATION
+    assert kept.evidence == evidence
+    (failure,) = out["verification_failures"]
+    assert failure.finding_id == "rf-why"
+    assert failure.file == ""
+    assert failure.line_range == LineRange(start_line=0, start_col=0, end_line=0, end_col=0)
+    assert failure.reason_code is VerificationReasonCode.EXPLANATION_MISSING
+    assert failure.reason == "the requirement finding gives no explanation"
+    assert failure.claimed_snippet is None
+    assert failure.actual_snippet is None
+    assert failure.found_at_lines is None
+    assert log.warn_lines == [
+        "verification failed: rf-why FR-001 — the requirement finding gives no explanation"
+    ]
+    demoted = 0 if status is RequirementStatus.UNCLEAR else 1
+    assert log.info_lines == [
+        "verification: 0/0 code findings kept (0 citation(s) corrected), 1/1 requirement findings kept "
+        f"(0 with evidence removed, {demoted} demoted to unclear)"
+    ]
+
+
+@_EVERY_STATUS
+def test_a_free_text_finding_with_no_explanation_is_marked_unclear_and_recorded(status):
+    # The LLM (free-text) path: build_requirement_finding stores an absent or
+    # blank explanation as "", for every status the reviewer can return.
+    for explanation in (None, "", "  \n "):
+        payload = {"requirement_ref": "FR-001", "requirement_text": "t", "status": status.value}
+        if explanation is not None:
+            payload["explanation"] = explanation
+        rf = build_requirement_finding(payload)
+        assert rf.explanation == ""
+        out = _verify_requirements(rf)
+        (kept,) = out["verified_requirement_findings"]
+        assert (kept.status, kept.explanation) == (RequirementStatus.UNCLEAR, _NO_EXPLANATION)
+        assert [f.reason_code for f in out["verification_failures"]] == [
+            VerificationReasonCode.EXPLANATION_MISSING
+        ]
+
+
+@pytest.mark.parametrize(
+    "answer, status",
+    [
+        ("implemented", RequirementStatus.SATISFIED),
+        ("partially_implemented", RequirementStatus.PARTIAL),
+    ],
+)
+@pytest.mark.parametrize("blank", [None, "", "   "], ids=["absent", "empty", "spaces"])
+def test_a_structured_satisfied_or_partial_answer_with_no_explanation_is_marked_unclear(
+    answer, status, blank
+):
+    # The structured path: the merge no longer fills in "could not be judged"
+    # for a status that says the code was judged; verification catches it.
+    payload = {"id": "FR-001", "answer": answer, "evidence": ["src/app.py:2"]}
+    if blank is not None:
+        payload["explanation"] = blank
+    requirement = Requirement(id="FR-001", text="t", file="specs/a/spec.md", line=1)
+    (merged,) = merge_answers([requirement], [payload], total_batches=1)
+    assert (merged.status, merged.explanation) == (status, "")
+
+    out = _verify_requirements(merged)
+    (kept,) = out["verified_requirement_findings"]
+    assert (kept.status, kept.explanation) == (RequirementStatus.UNCLEAR, _NO_EXPLANATION)
+    assert kept.evidence == ["src/app.py:2"]
+    assert [f.reason_code for f in out["verification_failures"]] == [
+        VerificationReasonCode.EXPLANATION_MISSING
+    ]
+
+
+@pytest.mark.parametrize(
+    "answer, kwargs, status, explanation",
+    [
+        (
+            "not_in_this_batch",
+            {},
+            RequirementStatus.GAP,
+            "No code implementing this requirement was found in any reviewed batch.",
+        ),
+        (
+            "cannot_judge",
+            {},
+            RequirementStatus.UNCLEAR,
+            "The code shown could not be judged against this requirement.",
+        ),
+        (
+            "not_in_this_batch",
+            {"not_reviewed_files": ("src/big.py",)},
+            RequirementStatus.UNCLEAR,
+            "Coverage was incomplete: not every in-scope file was reviewed, so a gap could "
+            "not be concluded.",
+        ),
+        (
+            "not_in_this_batch",
+            {"batch_failed": True},
+            RequirementStatus.UNCLEAR,
+            "Coverage was incomplete: a requirements batch failed, so a gap could not be "
+            "concluded.",
+        ),
+        (
+            "not_in_this_batch",
+            {"pr_scope": True},
+            RequirementStatus.NOT_ADDRESSED,
+            "No code for this requirement is part of this PR.",
+        ),
+    ],
+    ids=["gap", "unclear-cannot-judge", "unclear-unreviewed", "unclear-failed-batch", "not-addressed"],
+)
+def test_a_status_the_structured_path_concludes_keeps_its_fixed_explanation(
+    answer, kwargs, status, explanation
+):
+    # The reviewer explained nothing, but these statuses carry a fixed, correct
+    # explanation from the merge, so nothing is missing and nothing is recorded.
+    requirement = Requirement(id="FR-001", text="t", file="specs/a/spec.md", line=1)
+    payload = {"id": "FR-001", "answer": answer, "explanation": "  "}
+    (merged,) = merge_answers([requirement], [payload], total_batches=1, **kwargs)
+    out = _verify_requirements(merged)
+    assert out["verified_requirement_findings"] == [merged]
+    assert (merged.status, merged.explanation) == (status, explanation)
+    assert out["verification_failures"] == []
+
+
+def test_a_free_text_gap_in_pr_scope_keeps_its_fixed_not_addressed_explanation():
+    from veritas.review.nodes.requirements import _map_gap_in_pr_scope
+
+    rf = build_requirement_finding(
+        {"requirement_ref": "FR-001", "requirement_text": "t", "status": "gap", "explanation": ""}
+    )
+    (mapped,) = _map_gap_in_pr_scope([rf], pr_scope=True)
+    out = _verify_requirements(mapped)
+    (kept,) = out["verified_requirement_findings"]
+    assert kept.status is RequirementStatus.NOT_ADDRESSED
+    assert kept.explanation == "No code for this requirement is part of this PR."
+    assert out["verification_failures"] == []
+
+
+def test_the_no_documentation_finding_keeps_its_fixed_explanation():
+    from veritas.review.nodes.requirements import _no_documentation_finding
+
+    rf = _no_documentation_finding()
+    out = _verify_requirements(rf)
+    assert out["verified_requirement_findings"] == [rf]
+    assert out["verification_failures"] == []
+
+
+@_EVERY_STATUS
+def test_a_non_empty_explanation_is_kept_unchanged(status):
+    evidence = ["src/app.py:2"] if status in (RequirementStatus.SATISFIED, RequirementStatus.PARTIAL) else []
+    rf = _explained(status, "the logger writes to stdout in main()", evidence=evidence)
+    before = rf.model_copy(deep=True)
+    out = _verify_requirements(rf)
+    assert out["verified_requirement_findings"] == [before]
+    assert out["verification_failures"] == []
+    assert explanation_failure(rf) is None
+
+
+@_BLANKS
+def test_explanation_failure_treats_blank_text_as_missing(blank):
+    failure = explanation_failure(_explained(RequirementStatus.SATISFIED, blank, id="rf-blank"))
+    assert failure is not None
+    assert failure.finding_id == "rf-blank"
+    assert failure.reason_code is VerificationReasonCode.EXPLANATION_MISSING
+    assert failure.reason == "the requirement finding gives no explanation"
+
+
+def test_an_evidence_demotion_is_not_also_recorded_as_a_missing_explanation():
+    # Every reference is bad, so the evidence check demotes the requirement and
+    # gives it the fixed evidence explanation; that explanation is not missing.
+    rf = _explained(RequirementStatus.SATISFIED, "", evidence=["src/missing.py:1"], id="rf-ev")
+    log = _RecordingLog()
+    out = _verify_requirements(rf, log=log)
+    (kept,) = out["verified_requirement_findings"]
+    assert kept.status is RequirementStatus.UNCLEAR
+    assert kept.explanation == "Its cited evidence could not be confirmed against the reviewed files."
+    assert [f.reason_code for f in out["verification_failures"]] == [
+        VerificationReasonCode.EVIDENCE_NOT_CONFIRMED
+    ]
+    assert log.info_lines[-1].endswith("(1 with evidence removed, 1 demoted to unclear)")
+
+
+def test_a_bad_reference_and_no_explanation_are_both_recorded_and_demoted_once():
+    # One good reference keeps the requirement satisfied after the evidence
+    # check, so the missing explanation is then found on the kept finding.
+    rf = _explained(
+        RequirementStatus.SATISFIED, " ", evidence=["src/app.py:2", "src/missing.py:1"], id="rf-two"
+    )
+    log = _RecordingLog()
+    out = _verify_requirements(rf, log=log)
+    (kept,) = out["verified_requirement_findings"]
+    assert kept.status is RequirementStatus.UNCLEAR
+    assert kept.explanation == _NO_EXPLANATION
+    assert kept.evidence == ["src/app.py:2"]
+    assert [(f.finding_id, f.reason_code) for f in out["verification_failures"]] == [
+        ("rf-two", VerificationReasonCode.EVIDENCE_NOT_CONFIRMED),
+        ("rf-two", VerificationReasonCode.EXPLANATION_MISSING),
+    ]
+    assert log.info_lines[-1].endswith("(1 with evidence removed, 1 demoted to unclear)")
+
+
+def test_a_requirement_with_no_explanation_is_reported_unclear_through_run_review(tmp_path, settings):
+    """End to end: the requirement stays listed, unclear, and the report shows
+    the explanation_missing failure with its legend row."""
+    from tests.conftest import FakeLLM
+
+    from veritas.config.constants import LAST_REPORT_JSON
+    from veritas.models.entities import Report, ReviewScope
+    from veritas.review.graph import run_review
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "x.py").write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+    feature = tmp_path / "specs" / "001-demo"
+    feature.mkdir(parents=True)
+    (feature / "spec.md").write_text(
+        "# Feature\n\n- **FR-001**: The system MUST set a.\n- **FR-002**: The system MUST set b.\n",
+        encoding="utf-8",
+    )
+    llm = FakeLLM(
+        {
+            "extracted from the project's spec": json.dumps(
+                [
+                    {"id": "FR-001", "answer": "implemented", "evidence": ["src/x.py:1"], "explanation": "   "},
+                    {"id": "FR-002", "answer": "implemented", "evidence": ["src/x.py:2"], "explanation": "b is set"},
+                ]
+            )
+        }
+    )
+    outcome = run_review(settings, ReviewScope.PROJECT, str(tmp_path), llm=llm)
+    assert outcome.exit_code == 0
+
+    report = Report.model_validate_json(Path(LAST_REPORT_JSON).read_text(encoding="utf-8"))
+    by_ref = {rf.requirement_ref: rf for rf in report.requirement_findings}
+    assert by_ref["FR-001"].status is RequirementStatus.UNCLEAR
+    assert by_ref["FR-001"].explanation == _NO_EXPLANATION
+    assert by_ref["FR-001"].evidence == ["src/x.py:1"]
+    assert by_ref["FR-002"].status is RequirementStatus.SATISFIED
+    assert by_ref["FR-002"].explanation == "b is set"
+    (failure,) = report.summary.verification_failures
+    assert failure.finding_id == by_ref["FR-001"].id
+    assert failure.reason_code is VerificationReasonCode.EXPLANATION_MISSING
+
+    md = Path(str(outcome.report_path)).read_text(encoding="utf-8")
+    assert (
+        f"| {by_ref['FR-001'].id} |  | 0:0 | `explanation_missing` | "
+        "the requirement finding gives no explanation |"
+    ) in md
+    assert (
+        "| `explanation_missing` | A requirement finding gave no explanation for its status, "
+        "so it was marked unclear. |"
+    ) in md
 
 
 # ---------------------------------------------------------------------------
