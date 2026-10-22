@@ -64,9 +64,13 @@ provider's API — not a local git diff). Every run MUST perform all mandatory
 review types — code quality, security/OWASP, requirement fulfillment, test-coverage
 judgment (without executing the test suite), and performance reasoning — with no
 per-run toggles that skip review types. Suggested changes are not a separate review
-type: every finding produced by any of the five types MUST carry its own
-recommendation text (FR-005), so a recommendation is never optional or skippable
-even though there is no dedicated 'suggested changes' node or category.
+type, and there is no dedicated 'suggested changes' node or category. Every code
+finding (from the code-quality, security, test-coverage and performance review
+types) MUST carry its own recommendation text (FR-005), so a recommendation is never
+optional or skippable for a code finding. A requirement finding reports the status
+of a requirement rather than proposing a change: it carries no separate
+recommendation, but it MUST carry a non-empty explanation of that status, and for a
+gap or partial requirement that explanation is its actionable guidance.
 
 ### V. Project-Aware Review
 Reviews MUST be grounded in real project context, not inferred or generic.
@@ -197,4 +201,4 @@ MAJOR for backward-incompatible principle changes or removals, MINOR for added o
 materially expanded principles, PATCH for clarifications and wording fixes. Every
 PR and completed review MUST verify compliance with this constitution.
 
-**Version**: 7.0.0 | **Ratified**: 2026-09-15 | **Last Amended**: 2026-10-19
+**Version**: 8.0.0 | **Ratified**: 2026-09-15 | **Last Amended**: 2026-10-22
