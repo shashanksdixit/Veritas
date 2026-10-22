@@ -63,9 +63,10 @@ class VerificationReasonCode(str, Enum):
     """Why a VerificationFailure was raised (FR-013). The reason text names the
     specific cause; this is the stable machine-readable key for it."""
     FILE_NOT_IN_SCOPE = "file_not_in_scope"              # cited file not in the reviewed file set
-    LINE_OUT_OF_RANGE = "line_out_of_range"              # cited start line exceeds the file length
+    LINE_OUT_OF_RANGE = "line_out_of_range"              # a cited line is below 1 or past the end of the file, or the end line is before the start line
     SNIPPET_FOUND_ELSEWHERE = "snippet_found_elsewhere"  # whitespace-normalized cited snippet occurs in the file, but not within the cited line window
     SNIPPET_NOT_FOUND = "snippet_not_found"              # snippet occurs nowhere in the file
+    SNIPPET_MISSING = "snippet_missing"                  # schema 1.13.0 (T132): a non-SAST code finding quotes no code
     EVIDENCE_NOT_CONFIRMED = "evidence_not_confirmed"    # a RequirementFinding evidence citation could not be confirmed
 ```
 
@@ -161,7 +162,10 @@ class CodeFinding(BaseModel):
     recommendation: str
     confidence: float                # 0.0–1.0, reviewer's confidence
     # Citation (for verification, FR-013)
-    cited_snippet: str | None = None  # the code snippet the finding references
+    cited_snippet: str | None = None  # the code snippet the finding references; required for
+                                      # non-SAST findings; verification fails without it
+                                      # (snippet_missing). Absent, empty or whitespace-only
+                                      # is stored as None (T132, FR-013)
     # FR-013 citation correction. Backward-compatible addition introduced in
     # Report.schema_version 1.2.0: defaults to None, so a 1.0.0/1.1.0-shaped
     # finding deserializes unchanged and still renders.
@@ -308,7 +312,7 @@ class FailedBatch(BaseModel):
 
 class Report(BaseModel):
     """The full review deliverable (FR-016)."""
-    schema_version: str = "1.12.0"   # semver; bump on any breaking change to
+    schema_version: str = "1.13.0"   # semver; bump on any breaking change to
                                       # Report/CodeFinding/RequirementFinding shape,
                                       # per CHANGELOG.md (constitution Principle VIII)
     run: ReviewRun

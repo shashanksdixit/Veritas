@@ -123,12 +123,17 @@ REQUIREMENT_EVIDENCE_NOTE = (
 
 _REASON_CODE_MEANINGS: dict[VerificationReasonCode, str] = {
     VerificationReasonCode.FILE_NOT_IN_SCOPE: "The cited file was not among the files reviewed.",
-    VerificationReasonCode.LINE_OUT_OF_RANGE: "The cited line is past the end of the file.",
+    VerificationReasonCode.LINE_OUT_OF_RANGE: (
+        "A cited line is below 1 or past the end of the file, or the range ends before it starts."
+    ),
     VerificationReasonCode.SNIPPET_FOUND_ELSEWHERE: (
         "The quoted code exists in the file, but not at the cited lines (often a wrong line number)."
     ),
     VerificationReasonCode.SNIPPET_NOT_FOUND: (
         "The quoted code does not appear anywhere in the file (the reviewer likely invented it)."
+    ),
+    VerificationReasonCode.SNIPPET_MISSING: (
+        "The finding quoted no code, so there was nothing to check at the cited lines."
     ),
     VerificationReasonCode.EVIDENCE_NOT_CONFIRMED: "A requirement's cited evidence could not be confirmed.",
 }
@@ -141,7 +146,8 @@ _VERIFICATION_FAILURE_NOTE = (
     "exactly once within two lines of the cited range, the citation is corrected and the finding is kept "
     '(shown as "Citation adjusted" on that finding). Otherwise the finding is dropped and listed here so '
     "nothing disappears silently. A dropped finding does not mean your code has a problem; it means the "
-    "reviewer's citation could not be confirmed: the quoted code was not found at the cited lines."
+    "reviewer's citation could not be confirmed: the quoted code was not found at the cited lines, "
+    "or no code was quoted."
 )
 
 

@@ -120,7 +120,16 @@ def build_code_finding(
     category: Category,
     source: FindingSource | None = None,
 ) -> CodeFinding:
-    """Construct a CodeFinding from an LLM/SAST payload, applying redaction."""
+    """Construct a CodeFinding from an LLM/SAST payload, applying redaction.
+
+    A ``cited_snippet`` that is absent, empty or only whitespace quotes no code,
+    so it is stored as ``None`` (FR-013). Callers strip the prompts' line-number
+    prefixes first, so a snippet that was nothing but prefixes lands here as
+    whitespace and is stored as ``None`` too. Verification fails a non-SAST
+    finding that quotes no code: there is nothing to check at its cited lines.
+    """
+    cited = payload.get("cited_snippet")
+    cited_snippet = str(cited) if cited and str(cited).strip() else None
     line_range = LineRange(
         start_line=_as_int(payload.get("start_line", payload.get("line", 1)), 1),
         start_col=_as_int(payload.get("start_col", 1), 1),
@@ -139,7 +148,7 @@ def build_code_finding(
         "description": str(payload.get("description", "")).strip(),
         "recommendation": str(payload.get("recommendation", "")).strip(),
         "confidence": _as_float(payload.get("confidence", 0.5), 0.5),
-        "cited_snippet": str(payload["cited_snippet"]) if payload.get("cited_snippet") else None,
+        "cited_snippet": cited_snippet,
     }
     if payload.get("id"):
         kwargs["id"] = str(payload["id"])

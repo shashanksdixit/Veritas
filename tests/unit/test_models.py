@@ -100,7 +100,7 @@ def test_report_roundtrip_json():
             verdict=V.CLEAN,
         ),
     )
-    assert report.schema_version == "1.12.0"
+    assert report.schema_version == "1.13.0"
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.run.id == report.run.id
 
@@ -364,7 +364,7 @@ def test_sast_rules_round_trips_at_schema_1_7_0():
             verdict=Verdict.CLEAN,
         ),
     )
-    assert report.schema_version == "1.12.0"
+    assert report.schema_version == "1.13.0"
 
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.run.sast_rules == "r/corp-pack"
@@ -425,10 +425,10 @@ def test_sast_status_fields_round_trip_at_schema_1_9_0(status, count, reason):
             sast_reason=reason,
         )
     )
-    assert report.schema_version == "1.12.0"
+    assert report.schema_version == "1.13.0"
 
     dumped = json.loads(report.model_dump_json())
-    assert dumped["schema_version"] == "1.12.0"
+    assert dumped["schema_version"] == "1.13.0"
     assert dumped["run"]["sast_status"] == status
 
     restored = Report.model_validate_json(report.model_dump_json())
@@ -506,10 +506,10 @@ def test_project_context_fields_round_trip_at_schema_1_10_0(status, sources, rea
             project_context_origin=origin,
         )
     )
-    assert report.schema_version == "1.12.0"
+    assert report.schema_version == "1.13.0"
 
     dumped = json.loads(report.model_dump_json())
-    assert dumped["schema_version"] == "1.12.0"
+    assert dumped["schema_version"] == "1.13.0"
     assert dumped["run"]["project_context_status"] == status
     assert dumped["run"]["project_context_sources"] == sources
 
@@ -598,7 +598,7 @@ def test_excluded_file_with_a_reason_round_trips_at_schema_1_11_0():
             )
         }
     )
-    assert report.schema_version == "1.12.0"
+    assert report.schema_version == "1.13.0"
 
     dumped = json.loads(report.model_dump_json())
     assert dumped["coverage"]["excluded_files"] == [
@@ -719,10 +719,101 @@ def test_unsupported_files_and_requirement_sources_round_trip_at_schema_1_12_0()
             )
         }
     )
-    assert report.schema_version == "1.12.0"
+    assert report.schema_version == "1.13.0"
 
     dumped = json.loads(report.model_dump_json())
     assert dumped["coverage"]["unsupported_files"] == ["a.cob", "b.lua"]
     assert dumped["coverage"]["requirement_sources"] == ["specs/001-x/spec.md", "README.md"]
     restored = Report.model_validate_json(report.model_dump_json())
     assert restored.coverage == report.coverage
+
+
+# --- schema 1.13.0 adds VerificationReasonCode.SNIPPET_MISSING (T132, FR-013) ---
+
+
+def test_a_1_12_report_still_loads():
+    """Schema 1.13.0 only adds an enum value, so a 1.12.0 report validates unchanged."""
+    from veritas.models.entities import Report
+
+    pre_1_13 = {
+        "schema_version": "1.12.0",
+        "run": {
+            "scope": "project",
+            "target": ".",
+            "config_hash": "h",
+            "model_name": "m",
+            "prompt_version": "1.9.0",
+            "report_status": "complete",
+        },
+        "code_findings": [],
+        "requirement_findings": [],
+        "summary": {
+            "total_code_findings": 0,
+            "total_requirement_findings": 0,
+            "verification_failure_count": 1,
+            "verification_failures": [
+                {
+                    "finding_id": "f-1",
+                    "file": "src/app.py",
+                    "line_range": {"start_line": 99, "start_col": 1, "end_line": 99, "end_col": 1},
+                    "reason": "cited start line 99 exceeds file length (3 lines)",
+                    "reason_code": "line_out_of_range",
+                }
+            ],
+            "verdict": "Clean",
+        },
+        "coverage": {
+            "batch_chars": 48000,
+            "max_batches": 8,
+            "batches_used": 1,
+            "reviewed_files": ["src/app.py"],
+            "unsupported_files": ["a.cob"],
+            "requirement_sources": ["README.md"],
+        },
+        "failed_batches": [],
+    }
+
+    restored = Report.model_validate(pre_1_13)
+
+    assert restored.schema_version == "1.12.0"
+    assert restored.summary.verification_failures[0].reason_code.value == "line_out_of_range"
+    assert restored.coverage.unsupported_files == ["a.cob"]
+
+
+def test_snippet_missing_failure_round_trips_at_schema_1_13_0():
+    from veritas.models.entities import Report, Summary, VerificationFailure, VerificationReasonCode
+
+    failure = VerificationFailure(
+        finding_id="f-1",
+        file="src/app.py",
+        line_range=LineRange(start_line=2, start_col=1, end_line=2, end_col=1),
+        reason="the finding quotes no code, so its citation cannot be checked",
+        reason_code=VerificationReasonCode.SNIPPET_MISSING,
+        actual_snippet='print("hello")',
+    )
+    report = _report_with_run(
+        ReviewRun(
+            scope=ReviewScope.PROJECT,
+            target=".",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.9.0",
+        )
+    ).model_copy(
+        update={
+            "summary": Summary(
+                total_code_findings=0,
+                total_requirement_findings=0,
+                verification_failure_count=1,
+                verification_failures=[failure],
+                verdict=Verdict.CLEAN,
+            )
+        }
+    )
+    assert report.schema_version == "1.13.0"
+
+    dumped = json.loads(report.model_dump_json())
+    assert dumped["summary"]["verification_failures"][0]["reason_code"] == "snippet_missing"
+    restored = Report.model_validate_json(report.model_dump_json())
+    assert restored.summary.verification_failures == [failure]
+    assert restored.summary.verification_failures[0].reason_code is VerificationReasonCode.SNIPPET_MISSING

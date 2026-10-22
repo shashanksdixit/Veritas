@@ -602,13 +602,6 @@ def test_every_node_failure_has_a_reason_code():
     assert all(f.reason_code is not None for f in out["verification_failures"])
 
 
-def test_empty_cited_snippet_still_verifies():
-    # No snippet means nothing to re-check, so the finding passes on its
-    # citation alone — unchanged by T066.
-    assert verify_code_finding(_finding(snippet=None, start=1, end=2), FILES) is None
-    assert verify_code_finding(_finding(snippet="", start=1, end=2), FILES) is None
-
-
 def test_snippet_found_elsewhere_when_snippet_overruns_cited_window():
     # The snippet really does start inside the cited window; it just runs past
     # the cited end line, which is a different (and clearer) diagnosis.
@@ -875,7 +868,7 @@ def test_verify_node_keeps_sast_without_correcting(monkeypatch):
     assert out["verified_code_findings"][0] == before
 
 
-def test_verify_node_correction_only_applies_to_found_elsewhere(monkeypatch):
+def test_verify_node_does_not_correct_snippet_not_found(monkeypatch):
     # A snippet that occurs nowhere is a fabricated claim, not a near miss: the
     # correction path must not be consulted at all.
     def _fail_if_called(*args, **kwargs):
@@ -900,6 +893,130 @@ def test_verification_summary_reports_zero_corrections_when_none_needed():
         "verification: 1/1 code findings kept (0 citation(s) corrected), 0/0 requirement findings kept "
         "(0 with evidence removed, 0 demoted to unclear)"
     ]
+
+
+# ---------------------------------------------------------------------------
+# T132 (FR-013): every non-SAST code finding must quote the code it cites, and
+# its cited lines must lie within the file. Checks run in order — scope, line
+# bounds, quote present, snippet match — and the first failure is the cause.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("snippet", [None, "", "   ", "\n\t"])
+def test_unquoted_llm_finding_fails_as_snippet_missing(snippet):
+    # Without a quote there is nothing to compare against the file, so the
+    # finding must not pass on its line numbers alone.
+    failure = verify_code_finding(_finding(snippet=snippet, start=1, end=2), FILES)
+    assert failure is not None
+    assert failure.reason_code is VerificationReasonCode.SNIPPET_MISSING
+    assert failure.reason == "the finding quotes no code, so its citation cannot be checked"
+    # What the reviewer pointed at is still shown, so a reader can judge it.
+    assert failure.actual_snippet == 'import os\nprint("hello")'
+    assert failure.found_at_lines is None
+
+
+@pytest.mark.parametrize("snippet", [None, 'print("hello")'], ids=["unquoted", "quoted"])
+@pytest.mark.parametrize(
+    ("start", "end", "reason"),
+    [
+        (0, 0, "cited start line 0 is below 1"),
+        (-3, -1, "cited start line -3 is below 1"),
+        (2, 1, "cited end line 1 is before start line 2"),
+        (2, 99, "cited end line 99 exceeds file length (3 lines)"),
+        (99, 99, "cited start line 99 exceeds file length (3 lines)"),
+    ],
+)
+def test_cited_lines_must_lie_within_the_file(snippet, start, end, reason):
+    # Bounds are checked before the quote, so quoted and unquoted findings get
+    # the same cause. (-3, -1) once passed when quoted: lines[-4:-1] sliced from
+    # the end of the file.
+    failure = verify_code_finding(_finding(snippet=snippet, start=start, end=end), FILES)
+    assert failure is not None
+    assert failure.reason_code is VerificationReasonCode.LINE_OUT_OF_RANGE
+    assert failure.reason == reason
+
+
+def test_verify_node_drops_unquoted_llm_finding_but_keeps_unquoted_sast():
+    unquoted_llm = _finding(snippet=None, start=2, end=2, id="f-llm")
+    unquoted_sast = _finding(snippet=None, start=2, end=2, id="f-sast", source=FindingSource.SAST)
+    out = make_verify_node(_NodeRuntime(_RecordingLog()))(
+        {"files": FILES, "code_findings": [unquoted_llm, unquoted_sast], "requirement_findings": []}
+    )
+    assert [f.id for f in out["verified_code_findings"]] == ["f-sast"]
+    assert len(out["verification_failures"]) == 1
+    failure = out["verification_failures"][0]
+    assert failure.finding_id == "f-llm"
+    assert failure.reason_code is VerificationReasonCode.SNIPPET_MISSING
+    assert failure.reason == "the finding quotes no code, so its citation cannot be checked"
+
+
+def test_verify_node_never_corrects_an_unquoted_finding(monkeypatch):
+    # An out-of-range citation with no quote has nothing to locate.
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("correct_citation must not run for an unquoted finding")
+
+    monkeypatch.setattr(verification_module, "correct_citation", _fail_if_called)
+    unquoted = _finding(snippet=None, start=2, end=99, id="f-unquoted")
+    out = make_verify_node(_NodeRuntime(_RecordingLog()))(
+        {"files": FILES, "code_findings": [unquoted], "requirement_findings": []}
+    )
+    assert out["verified_code_findings"] == []
+    assert out["verification_failures"][0].reason_code is VerificationReasonCode.LINE_OUT_OF_RANGE
+
+
+@pytest.mark.parametrize(
+    ("snippet", "start", "end", "corrected"),
+    [
+        ("secret = 42", 3, 5, (3, 3)),
+        ("import os", 0, 0, (1, 1)),
+    ],
+    ids=["past-end", "line-zero"],
+)
+def test_quoted_citation_outside_the_file_is_corrected_and_kept(snippet, start, end, corrected):
+    log = _RecordingLog()
+    finding = _finding(snippet=snippet, start=start, end=end, id="f-out")
+    out = make_verify_node(_NodeRuntime(log))(
+        {"files": FILES, "code_findings": [finding], "requirement_findings": []}
+    )
+    assert out["verification_failures"] == []
+    assert len(out["verified_code_findings"]) == 1
+    kept = out["verified_code_findings"][0]
+    assert (kept.line_range.start_line, kept.line_range.end_line) == corrected
+    assert kept.citation_adjusted_from == finding.line_range
+    assert log.info_lines[0] == (
+        f"citation corrected: f-out src/app.py {start}-{end} -> {corrected[0]}-{corrected[1]}"
+    )
+
+
+def test_quoted_citation_far_outside_the_file_is_still_dropped():
+    # "import os" is on line 1, too far from line 99 to be the same citation.
+    finding = _finding(snippet="import os", start=99, end=99, id="f-far")
+    out = make_verify_node(_NodeRuntime(_RecordingLog()))(
+        {"files": FILES, "code_findings": [finding], "requirement_findings": []}
+    )
+    assert out["verified_code_findings"] == []
+    failure = out["verification_failures"][0]
+    assert failure.reason_code is VerificationReasonCode.LINE_OUT_OF_RANGE
+    assert failure.reason == "cited start line 99 exceeds file length (3 lines)"
+
+
+@pytest.mark.parametrize("snippet", ["", "   ", "\n"], ids=["empty", "spaces", "newline"])
+def test_build_code_finding_stores_a_blank_quote_as_none(snippet):
+    payload = {"file": "src/app.py", "start_line": 2, "end_line": 2, "title": "t", "cited_snippet": snippet}
+    finding = build_code_finding(payload, category=Category.CODE_QUALITY, source=FindingSource.LLM_IDENTIFIED)
+    assert finding.cited_snippet is None
+
+
+def test_build_code_finding_keeps_a_real_quote_and_stores_an_absent_one_as_none():
+    payload = {"file": "src/app.py", "start_line": 2, "end_line": 2, "title": "t"}
+    absent = build_code_finding(payload, category=Category.CODE_QUALITY, source=FindingSource.LLM_IDENTIFIED)
+    assert absent.cited_snippet is None
+    quoted = build_code_finding(
+        {**payload, "cited_snippet": '  print("hello")'},
+        category=Category.CODE_QUALITY,
+        source=FindingSource.LLM_IDENTIFIED,
+    )
+    assert quoted.cited_snippet == '  print("hello")'
 
 
 # ---------------------------------------------------------------------------

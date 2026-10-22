@@ -82,7 +82,7 @@ def _report(**overrides) -> Report:
 
 def test_schema_version_comment_top():
     md = render_markdown(_report())
-    assert md.startswith("<!-- veritas-report-schema: 1.12.0 -->")
+    assert md.startswith("<!-- veritas-report-schema: 1.13.0 -->")
 
 
 def test_sections_present():
@@ -178,7 +178,7 @@ def test_verification_note_present_when_failures_exist():
     assert heading + note_start in md
     assert (
         "it means the reviewer's citation could not be confirmed: "
-        "the quoted code was not found at the cited lines." in md
+        "the quoted code was not found at the cited lines, or no code was quoted." in md
     )
     assert "claim could not be confirmed" not in md
     assert md.index(note_start) < md.index("| Finding ID | File | Lines | Code | Reason |")
@@ -452,6 +452,33 @@ def test_snippet_not_found_renders_both_snippets_without_found_at_lines():
     assert "**Found at line(s)**" not in section
     assert "**Claimed** (what the reviewer quoted):\n\n```\neval(payload)\n```" in section
     assert "**Actual** (what is at the cited lines):\n\n```\nreturn None\n```" in section
+
+
+def test_snippet_missing_renders_its_legend_row():
+    # T132: an LLM finding that quoted no code fails as snippet_missing, and the
+    # legend explains that code whenever a failure in the report carries it.
+    failure = _failure(
+        reason_code=VerificationReasonCode.SNIPPET_MISSING,
+        reason="the finding quotes no code, so its citation cannot be checked",
+        actual_snippet="result = compute()",
+    )
+    section = _verification_section(render_markdown(_report_with(failure)))
+    assert "| `snippet_missing` |" in section
+    assert _reason_code_legend_rows(section) == [
+        "| `snippet_missing` | The finding quoted no code, so there was nothing to check at the cited lines. |"
+    ]
+
+
+def test_line_out_of_range_legend_row_names_every_bound():
+    failure = _failure(
+        reason_code=VerificationReasonCode.LINE_OUT_OF_RANGE,
+        reason="cited start line 0 is below 1",
+    )
+    section = _verification_section(render_markdown(_report_with(failure)))
+    assert _reason_code_legend_rows(section) == [
+        "| `line_out_of_range` | A cited line is below 1 or past the end of the file, "
+        "or the range ends before it starts. |"
+    ]
 
 
 def test_evidence_not_confirmed_gets_legend_row_but_no_details():

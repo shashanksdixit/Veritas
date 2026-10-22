@@ -5,6 +5,12 @@ security findings and RequirementFinding evidence citations — to confirm the
 citation is real and matches the claim. SAST findings are ground truth and exempt
 per-finding by actual source.
 
+Every non-SAST code finding must quote the code it cites, and its cited lines must
+lie within the file (T132, FR-013): a finding with no quote, or with a line range
+below 1, past the end of the file or ending before it starts, fails. Without the
+quote there is nothing to compare against the file, so a finding could otherwise
+pass on its line numbers alone.
+
 The two finding shapes are treated differently on failure (FR-013), because they
 mean different things when a citation is wrong:
 
@@ -172,10 +178,18 @@ def verify_code_finding(finding: CodeFinding, files: dict[str, str]) -> Verifica
     """Return a VerificationFailure naming the specific cause, or None when the
     citation verifies.
 
-    Which findings pass or fail is unchanged (T066 only records more about the
-    failures): unknown file → fail; cited start line past EOF → fail; otherwise
-    the whitespace-normalized cited snippet must appear in the cited window. A
-    finding with no ``cited_snippet`` has nothing to check and passes.
+    The checks run in this order and the first that fails is the recorded cause
+    (FR-013, T132):
+
+    1. scope: the cited file is in the reviewed set (``file_not_in_scope``);
+    2. line bounds: ``1 <= start_line <= end_line <= len(lines)``
+       (``line_out_of_range``, the reason naming which bound failed);
+    3. quote present: the finding has a ``cited_snippet`` (``snippet_missing``).
+       :func:`~veritas.review.nodes.common.build_code_finding` stores an absent,
+       empty or whitespace-only quote as ``None``, so an unquoted finding cannot
+       pass on its line numbers alone — there would be nothing to check there;
+    4. snippet match: the whitespace-normalized snippet appears in the cited
+       window (``snippet_found_elsewhere`` / ``snippet_not_found``).
 
     The snippet and the window are compared after both are redacted
     (:func:`_redact_lines`, FR-013): the stored snippet is already masked, so
@@ -211,48 +225,73 @@ def verify_code_finding(finding: CodeFinding, files: dict[str, str]) -> Verifica
             f"file {finding.file} is not in the reviewed file set",
         )
     lines = content.splitlines()
+    # Line bounds before the quote: a range outside the file is wrong whether or
+    # not code was quoted, and checking it first keeps the window slice below
+    # from reading negative indexes from the end of the file.
+    if start < 1:
+        return failure(
+            VerificationReasonCode.LINE_OUT_OF_RANGE,
+            f"cited start line {start} is below 1",
+        )
+    if end < start:
+        return failure(
+            VerificationReasonCode.LINE_OUT_OF_RANGE,
+            f"cited end line {end} is before start line {start}",
+        )
     if start > len(lines):
         return failure(
             VerificationReasonCode.LINE_OUT_OF_RANGE,
             f"cited start line {start} exceeds file length ({len(lines)} lines)",
         )
-    if finding.cited_snippet:
-        expected = _normalize(finding.cited_snippet)
-        # Both sides redacted: the stored snippet is masked, so the file must be
-        # masked the same way for the two to be comparable (FR-013). `actual` below
-        # stays raw here because _prepare_snippet redacts it on the way out.
-        redacted_lines = _redact_lines(lines)
-        # Confirm the normalized snippet appears within (or covering) the cited
-        # lines, tolerating whitespace-only drift from LLM narration.
-        window = "\n".join(lines[start - 1 : end])
-        redacted_window = "\n".join(redacted_lines[start - 1 : end])
-        if expected and expected not in _normalize(redacted_window):
-            actual = _prepare_snippet(window)
-            start_lines, total = _find_snippet_start_lines(expected, redacted_lines)
-            if total == 0:
-                return failure(
-                    VerificationReasonCode.SNIPPET_NOT_FOUND,
-                    f"snippet does not occur anywhere in {finding.file}",
-                    actual_snippet=actual,
-                )
-            # The snippet exists, just not where it was claimed: say where.
-            if start <= start_lines[0] <= end:
-                reason = (
-                    f"snippet starts at line {start_lines[0]} but extends past "
-                    f"cited end line {end}"
-                )
-            else:
-                located = ", ".join(str(number) for number in start_lines)
-                reason = (
-                    f"snippet found at line(s) {located} ({total} occurrence(s)), "
-                    f"not at cited lines {start}-{end}"
-                )
+    if end > len(lines):
+        return failure(
+            VerificationReasonCode.LINE_OUT_OF_RANGE,
+            f"cited end line {end} exceeds file length ({len(lines)} lines)",
+        )
+    # build_code_finding already stores a blank quote as None; a finding built
+    # directly with "" or whitespace quotes no code either.
+    if finding.cited_snippet is None or not finding.cited_snippet.strip():
+        return failure(
+            VerificationReasonCode.SNIPPET_MISSING,
+            "the finding quotes no code, so its citation cannot be checked",
+            actual_snippet=_prepare_snippet("\n".join(lines[start - 1 : end])),
+        )
+    expected = _normalize(finding.cited_snippet)
+    # Both sides redacted: the stored snippet is masked, so the file must be
+    # masked the same way for the two to be comparable (FR-013). `actual` below
+    # stays raw here because _prepare_snippet redacts it on the way out.
+    redacted_lines = _redact_lines(lines)
+    # Confirm the normalized snippet appears within (or covering) the cited
+    # lines, tolerating whitespace-only drift from LLM narration.
+    window = "\n".join(lines[start - 1 : end])
+    redacted_window = "\n".join(redacted_lines[start - 1 : end])
+    if expected not in _normalize(redacted_window):
+        actual = _prepare_snippet(window)
+        start_lines, total = _find_snippet_start_lines(expected, redacted_lines)
+        if total == 0:
             return failure(
-                VerificationReasonCode.SNIPPET_FOUND_ELSEWHERE,
-                reason,
+                VerificationReasonCode.SNIPPET_NOT_FOUND,
+                f"snippet does not occur anywhere in {finding.file}",
                 actual_snippet=actual,
-                found_at_lines=start_lines,
             )
+        # The snippet exists, just not where it was claimed: say where.
+        if start <= start_lines[0] <= end:
+            reason = (
+                f"snippet starts at line {start_lines[0]} but extends past "
+                f"cited end line {end}"
+            )
+        else:
+            located = ", ".join(str(number) for number in start_lines)
+            reason = (
+                f"snippet found at line(s) {located} ({total} occurrence(s)), "
+                f"not at cited lines {start}-{end}"
+            )
+        return failure(
+            VerificationReasonCode.SNIPPET_FOUND_ELSEWHERE,
+            reason,
+            actual_snippet=actual,
+            found_at_lines=start_lines,
+        )
     return None
 
 
@@ -494,11 +533,18 @@ def make_verify_node(ctx: ReviewContext) -> Callable[[ReviewState], dict]:
                 kept.append(finding)
                 continue
             # A near-miss citation is a real finding pointed at imprecisely, so
-            # try to correct it rather than drop it (FR-013). Only the
-            # found-elsewhere case is correctable: the snippet exists somewhere in
-            # the file, which is what makes a corrected citation verifiable.
+            # try to correct it rather than drop it (FR-013). Two causes are
+            # correctable: the snippet was found elsewhere, and a quoted finding
+            # whose lines fall outside the file (a real quote cited past the end,
+            # say). correct_citation only moves a finding whose quote occurs
+            # exactly once nearby, which is what makes the corrected citation
+            # verifiable. An unquoted finding has nothing to locate, so it is
+            # never corrected (T132).
             corrected = None
-            if failure.reason_code is VerificationReasonCode.SNIPPET_FOUND_ELSEWHERE:
+            if failure.reason_code is VerificationReasonCode.SNIPPET_FOUND_ELSEWHERE or (
+                failure.reason_code is VerificationReasonCode.LINE_OUT_OF_RANGE
+                and finding.cited_snippet is not None
+            ):
                 corrected = correct_citation(finding, files)
             if corrected is not None:
                 kept.append(corrected)

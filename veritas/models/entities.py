@@ -57,6 +57,8 @@ class VerificationReasonCode(str, Enum):
     LINE_OUT_OF_RANGE = "line_out_of_range"
     SNIPPET_FOUND_ELSEWHERE = "snippet_found_elsewhere"
     SNIPPET_NOT_FOUND = "snippet_not_found"
+    # Schema 1.13.0 (T132): a non-SAST code finding that quotes no code.
+    SNIPPET_MISSING = "snippet_missing"
     EVIDENCE_NOT_CONFIRMED = "evidence_not_confirmed"
 
 

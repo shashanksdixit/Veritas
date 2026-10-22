@@ -314,6 +314,30 @@ constitution Principle VIII / FR-016.
   contexts, checked by the reachability test.
 
 ### Fixed
+- Every LLM code finding must now quote the code it cites, and every code
+  finding's cited lines must lie within the file (FR-013, T132, constitution
+  v7.0.0 Principle I). A finding with no `cited_snippet`, or one that was
+  empty or only whitespace, skipped the snippet check and was kept on its
+  line numbers alone; it now fails verification as `snippet_missing` ("the
+  finding quotes no code, so its citation cannot be checked") and is listed
+  under Verification failures with the text at its cited lines. A blank
+  quote is stored as none when the finding is built. Cited lines are checked
+  before the quote: a start line below 1, an end line before the start line,
+  or a start or end line past the end of the file fails as
+  `line_out_of_range`, each with its own reason. A quoted finding cited at
+  negative lines used to pass, because the check read lines from the end of
+  the file. A quoted finding whose lines fall outside the file is corrected
+  like a near-miss citation when its quote occurs exactly once within two
+  lines (shown as "Citation adjusted"), so a real quote cited just past the
+  end of the file is kept. SAST findings remain exempt. The report's
+  reason-code legend gains `snippet_missing`, `line_out_of_range` is
+  described as "below 1 or past the end of the file, or the range ends
+  before it starts", and the failure note ends "or no code was quoted."
+  Report schema **1.13.0**: `VerificationReasonCode` gains `snippet_missing`.
+  Migration: reports written at 1.12.0 still validate unchanged; a consumer
+  that matches on `reason_code` must accept the new value. Runs may report
+  fewer findings and more verification failures where the model left
+  `cited_snippet` out; no prompt changed (they already require a quote).
 - Every file the scope lists or walks now appears in exactly one Coverage
   bucket (FR-022, FR-029, T130). Files in a language Veritas does not review
   were collected and never shown, and the requirement sources read
