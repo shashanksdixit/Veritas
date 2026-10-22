@@ -11,6 +11,13 @@ below 1, past the end of the file or ending before it starts, fails. Without the
 quote there is nothing to compare against the file, so a finding could otherwise
 pass on its line numbers alone.
 
+Every non-SAST code finding must also give a recommendation (T133, FR-005,
+constitution Principle IV). This is checked after the citation, on the finding
+as confirmed or corrected: one whose recommendation is absent, empty or only
+whitespace is excluded and recorded as ``recommendation_missing``, so it is never
+reported as if it were actionable. SAST findings carry a fixed recommendation
+(``veritas.security.sast_results``) and stay exempt here.
+
 The two finding shapes are treated differently on failure (FR-013), because they
 mean different things when a citation is wrong:
 
@@ -295,6 +302,38 @@ def verify_code_finding(finding: CodeFinding, files: dict[str, str]) -> Verifica
     return None
 
 
+def recommendation_failure(finding: CodeFinding, files: dict[str, str]) -> VerificationFailure | None:
+    """Return a ``recommendation_missing`` failure when ``finding`` gives no
+    recommendation, or None when it gives one (T133, FR-005).
+
+    Every code finding must carry its own recommendation text (constitution
+    Principle IV): a finding that says what is wrong but not what to do about it
+    is not actionable, so it is not reported as a finding. An absent, empty or
+    whitespace-only recommendation is no recommendation:
+    :func:`~veritas.review.nodes.common.build_code_finding` stores a missing one
+    as ``""``, and a finding built directly may carry whitespace.
+
+    The verify node calls this only for a finding whose citation has been
+    confirmed (or corrected), so ``files`` holds its file and its lines lie within
+    it; the failure still records the quoted and actual code, like every other
+    code-finding failure (FR-013).
+    """
+    if finding.recommendation.strip():
+        return None
+    start = finding.line_range.start_line
+    end = finding.line_range.end_line
+    lines = files.get(finding.file, "").splitlines()
+    return VerificationFailure(
+        finding_id=finding.id,
+        file=finding.file,
+        line_range=finding.line_range,
+        reason="the finding gives no recommendation",
+        reason_code=VerificationReasonCode.RECOMMENDATION_MISSING,
+        claimed_snippet=_prepare_snippet(finding.cited_snippet),
+        actual_snippet=_prepare_snippet("\n".join(lines[start - 1 : end])),
+    )
+
+
 def _find_snippet_spans(expected_normalized: str, lines: list[str]) -> list[tuple[int, int]]:
     """Every occurrence of a normalized snippet as an inclusive 1-based span.
 
@@ -524,13 +563,26 @@ def make_verify_node(ctx: ReviewContext) -> Callable[[ReviewState], dict]:
         kept: list[CodeFinding] = []
         failures: list[VerificationFailure] = []
         corrections = 0
+
+        def _keep_if_recommended(finding: CodeFinding) -> None:
+            # Checked after the citation, so a finding whose citation fails keeps
+            # that cause; one whose citation is confirmed or corrected but which
+            # gives no recommendation is not actionable and is recorded instead
+            # of reported (T133, FR-005).
+            missing = recommendation_failure(finding, files)
+            if missing is None:
+                kept.append(finding)
+                return
+            failures.append(missing)
+            _warn(f"verification failed: {finding.id} {finding.file} — {missing.reason}")
+
         for finding in state["code_findings"]:
             if finding.source == FindingSource.SAST:
                 kept.append(finding)  # ground truth (FR-013 exemption by actual source)
                 continue
             failure = verify_code_finding(finding, files)
             if failure is None:
-                kept.append(finding)
+                _keep_if_recommended(finding)
                 continue
             # A near-miss citation is a real finding pointed at imprecisely, so
             # try to correct it rather than drop it (FR-013). Two causes are
@@ -547,7 +599,7 @@ def make_verify_node(ctx: ReviewContext) -> Callable[[ReviewState], dict]:
             ):
                 corrected = correct_citation(finding, files)
             if corrected is not None:
-                kept.append(corrected)
+                _keep_if_recommended(corrected)
                 corrections += 1
                 if log is not None:
                     log.info(

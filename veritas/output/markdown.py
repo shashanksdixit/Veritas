@@ -135,6 +135,9 @@ _REASON_CODE_MEANINGS: dict[VerificationReasonCode, str] = {
     VerificationReasonCode.SNIPPET_MISSING: (
         "The finding quoted no code, so there was nothing to check at the cited lines."
     ),
+    VerificationReasonCode.RECOMMENDATION_MISSING: (
+        "The finding gave no recommendation, so it could not be reported as actionable."
+    ),
     VerificationReasonCode.EVIDENCE_NOT_CONFIRMED: "A requirement's cited evidence could not be confirmed.",
 }
 
@@ -146,8 +149,8 @@ _VERIFICATION_FAILURE_NOTE = (
     "exactly once within two lines of the cited range, the citation is corrected and the finding is kept "
     '(shown as "Citation adjusted" on that finding). Otherwise the finding is dropped and listed here so '
     "nothing disappears silently. A dropped finding does not mean your code has a problem; it means the "
-    "reviewer's citation could not be confirmed: the quoted code was not found at the cited lines, "
-    "or no code was quoted."
+    "reviewer's citation could not be confirmed (the quoted code was not found at the cited lines, "
+    "or no code was quoted), or that the finding gave no recommendation."
 )
 
 

@@ -33,6 +33,7 @@ from veritas.review.nodes.verification import (
     make_verify_node,
     merge_duplicate_findings,
     partition_requirement_evidence,
+    recommendation_failure,
     verify_code_finding,
     verify_requirement_finding,
 )
@@ -1017,6 +1018,126 @@ def test_build_code_finding_keeps_a_real_quote_and_stores_an_absent_one_as_none(
         source=FindingSource.LLM_IDENTIFIED,
     )
     assert quoted.cited_snippet == '  print("hello")'
+
+
+# ---------------------------------------------------------------------------
+# T133 (FR-005): every non-SAST code finding must give a recommendation. One that
+# gives none is not reported as a finding; it is recorded as a
+# recommendation_missing verification failure. Checked after the citation.
+# ---------------------------------------------------------------------------
+
+_QUOTED_PAYLOAD = {
+    "id": "f-norec",
+    "file": "src/app.py",
+    "start_line": 2,
+    "end_line": 2,
+    "title": "t",
+    "description": "d",
+    "cited_snippet": 'print("hello")',
+}
+
+
+@pytest.mark.parametrize(
+    "recommendation",
+    [None, "", "   ", "\n"],
+    ids=["absent", "empty", "spaces", "newline"],
+)
+def test_verify_node_records_a_finding_without_a_recommendation(recommendation):
+    payload = dict(_QUOTED_PAYLOAD)
+    if recommendation is not None:
+        payload["recommendation"] = recommendation
+    finding = build_code_finding(payload, category=Category.CODE_QUALITY, source=FindingSource.LLM_IDENTIFIED)
+    log = _RecordingLog()
+    out = make_verify_node(_NodeRuntime(log))(
+        {"files": FILES, "code_findings": [finding], "requirement_findings": []}
+    )
+    assert out["verified_code_findings"] == []
+    assert len(out["verification_failures"]) == 1
+    failure = out["verification_failures"][0]
+    assert failure.finding_id == "f-norec"
+    assert failure.file == "src/app.py"
+    assert failure.line_range == finding.line_range
+    assert failure.reason_code is VerificationReasonCode.RECOMMENDATION_MISSING
+    assert failure.reason == "the finding gives no recommendation"
+    assert failure.claimed_snippet == 'print("hello")'
+    assert failure.actual_snippet == 'print("hello")'
+    assert failure.found_at_lines is None
+    assert log.warn_lines == ["verification failed: f-norec src/app.py — the finding gives no recommendation"]
+    assert log.info_lines == [
+        "verification: 0/1 code findings kept (0 citation(s) corrected), 0/0 requirement findings kept "
+        "(0 with evidence removed, 0 demoted to unclear)"
+    ]
+
+
+@pytest.mark.parametrize("recommendation", ["", "   ", "\n", "\t \n"], ids=["empty", "spaces", "newline", "mixed"])
+def test_recommendation_failure_treats_blank_text_as_missing(recommendation):
+    # A finding built directly is not stripped by build_code_finding, so the
+    # check itself must treat whitespace as no recommendation.
+    finding = _finding(snippet='print("hello")', id="f-blank")
+    finding.recommendation = recommendation
+    failure = recommendation_failure(finding, FILES)
+    assert failure is not None
+    assert failure.reason_code is VerificationReasonCode.RECOMMENDATION_MISSING
+    assert failure.reason == "the finding gives no recommendation"
+
+
+def test_verify_node_keeps_a_finding_with_a_recommendation_unchanged():
+    finding = build_code_finding(
+        {**_QUOTED_PAYLOAD, "recommendation": "  Log through the logger instead of print.  "},
+        category=Category.CODE_QUALITY,
+        source=FindingSource.LLM_IDENTIFIED,
+    )
+    before = finding.model_copy(deep=True)
+    out = make_verify_node(_NodeRuntime(_RecordingLog()))(
+        {"files": FILES, "code_findings": [finding], "requirement_findings": []}
+    )
+    assert out["verification_failures"] == []
+    assert out["verified_code_findings"] == [before]
+    assert out["verified_code_findings"][0].recommendation == "Log through the logger instead of print."
+    assert recommendation_failure(finding, FILES) is None
+
+
+def test_a_citation_failure_is_recorded_before_a_missing_recommendation():
+    # Citation checks come first: a finding with neither a quote nor a
+    # recommendation keeps the citation cause, the more specific one.
+    finding = _finding(snippet=None, id="f-both")
+    finding.recommendation = ""
+    out = make_verify_node(_NodeRuntime(_RecordingLog()))(
+        {"files": FILES, "code_findings": [finding], "requirement_findings": []}
+    )
+    assert out["verified_code_findings"] == []
+    assert [f.reason_code for f in out["verification_failures"]] == [VerificationReasonCode.SNIPPET_MISSING]
+
+
+def test_a_corrected_citation_without_a_recommendation_is_recorded_at_the_corrected_lines():
+    # "secret = 42" is on line 3, cited at 3-5 (past the end): the citation is
+    # corrected to 3-3, and only then is the missing recommendation found.
+    finding = _finding(snippet="secret = 42", start=3, end=5, id="f-corrected")
+    finding.recommendation = "   "
+    log = _RecordingLog()
+    out = make_verify_node(_NodeRuntime(log))(
+        {"files": FILES, "code_findings": [finding], "requirement_findings": []}
+    )
+    assert out["verified_code_findings"] == []
+    assert len(out["verification_failures"]) == 1
+    failure = out["verification_failures"][0]
+    assert failure.reason_code is VerificationReasonCode.RECOMMENDATION_MISSING
+    assert failure.reason == "the finding gives no recommendation"
+    assert (failure.line_range.start_line, failure.line_range.end_line) == (3, 3)
+    assert failure.actual_snippet == "secret = 42"
+    assert log.info_lines[0] == "citation corrected: f-corrected src/app.py 3-5 -> 3-3"
+
+
+def test_verify_node_keeps_a_sast_finding_whatever_its_recommendation():
+    # SAST findings carry a fixed recommendation (sast_results.py) and stay
+    # exempt from the verify node's checks; T133 does not drop them.
+    sast = _finding(snippet='print("hello")', id="f-sast", source=FindingSource.SAST)
+    sast.recommendation = ""
+    out = make_verify_node(_NodeRuntime(_RecordingLog()))(
+        {"files": FILES, "code_findings": [sast], "requirement_findings": []}
+    )
+    assert [f.id for f in out["verified_code_findings"]] == ["f-sast"]
+    assert out["verification_failures"] == []
 
 
 # ---------------------------------------------------------------------------

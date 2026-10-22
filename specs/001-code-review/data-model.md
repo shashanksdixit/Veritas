@@ -67,6 +67,7 @@ class VerificationReasonCode(str, Enum):
     SNIPPET_FOUND_ELSEWHERE = "snippet_found_elsewhere"  # whitespace-normalized cited snippet occurs in the file, but not within the cited line window
     SNIPPET_NOT_FOUND = "snippet_not_found"              # snippet occurs nowhere in the file
     SNIPPET_MISSING = "snippet_missing"                  # schema 1.13.0 (T132): a non-SAST code finding quotes no code
+    RECOMMENDATION_MISSING = "recommendation_missing"    # schema 1.14.0 (T133): a non-SAST code finding gives no recommendation (absent, empty or only whitespace)
     EVIDENCE_NOT_CONFIRMED = "evidence_not_confirmed"    # a RequirementFinding evidence citation could not be confirmed
 ```
 
@@ -159,7 +160,9 @@ class CodeFinding(BaseModel):
     # Content
     title: str
     description: str
-    recommendation: str
+    recommendation: str              # required for non-SAST findings (FR-005): absent, empty or
+                                     # whitespace-only fails verification (recommendation_missing,
+                                     # T133); SAST findings carry a fixed recommendation
     confidence: float                # 0.0–1.0, reviewer's confidence
     # Citation (for verification, FR-013)
     cited_snippet: str | None = None  # the code snippet the finding references; required for
@@ -312,7 +315,7 @@ class FailedBatch(BaseModel):
 
 class Report(BaseModel):
     """The full review deliverable (FR-016)."""
-    schema_version: str = "1.13.0"   # semver; bump on any breaking change to
+    schema_version: str = "1.14.0"   # semver; bump on any breaking change to
                                       # Report/CodeFinding/RequirementFinding shape,
                                       # per CHANGELOG.md (constitution Principle VIII)
     run: ReviewRun

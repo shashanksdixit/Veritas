@@ -82,7 +82,7 @@ def _report(**overrides) -> Report:
 
 def test_schema_version_comment_top():
     md = render_markdown(_report())
-    assert md.startswith("<!-- veritas-report-schema: 1.13.0 -->")
+    assert md.startswith("<!-- veritas-report-schema: 1.14.0 -->")
 
 
 def test_sections_present():
@@ -177,8 +177,8 @@ def test_verification_note_present_when_failures_exist():
     note_start = "> Each proposed finding must cite a file, line range, and the exact code snippet it refers to."
     assert heading + note_start in md
     assert (
-        "it means the reviewer's citation could not be confirmed: "
-        "the quoted code was not found at the cited lines, or no code was quoted." in md
+        "it means the reviewer's citation could not be confirmed (the quoted code was not found "
+        "at the cited lines, or no code was quoted), or that the finding gave no recommendation." in md
     )
     assert "claim could not be confirmed" not in md
     assert md.index(note_start) < md.index("| Finding ID | File | Lines | Code | Reason |")
@@ -466,6 +466,26 @@ def test_snippet_missing_renders_its_legend_row():
     assert "| `snippet_missing` |" in section
     assert _reason_code_legend_rows(section) == [
         "| `snippet_missing` | The finding quoted no code, so there was nothing to check at the cited lines. |"
+    ]
+
+
+def test_recommendation_missing_renders_its_row_and_legend_row():
+    # T133: a code finding with a confirmed citation but no recommendation is
+    # listed among the verification failures, with a legend row saying why.
+    failure = _failure(
+        reason_code=VerificationReasonCode.RECOMMENDATION_MISSING,
+        reason="the finding gives no recommendation",
+        claimed_snippet="result = compute()",
+        actual_snippet="result = compute()",
+    )
+    section = _verification_section(render_markdown(_report_with(failure)))
+    assert (
+        "| f-9 | src/app.py | 10:12 | `recommendation_missing` | the finding gives no recommendation |"
+        in section
+    )
+    assert _reason_code_legend_rows(section) == [
+        "| `recommendation_missing` | The finding gave no recommendation, so it could not be "
+        "reported as actionable. |"
     ]
 
 

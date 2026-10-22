@@ -59,6 +59,8 @@ class VerificationReasonCode(str, Enum):
     SNIPPET_NOT_FOUND = "snippet_not_found"
     # Schema 1.13.0 (T132): a non-SAST code finding that quotes no code.
     SNIPPET_MISSING = "snippet_missing"
+    # Schema 1.14.0 (T133): a non-SAST code finding that gives no recommendation.
+    RECOMMENDATION_MISSING = "recommendation_missing"
     EVIDENCE_NOT_CONFIRMED = "evidence_not_confirmed"
 
 

@@ -314,6 +314,26 @@ constitution Principle VIII / FR-016.
   contexts, checked by the reachability test.
 
 ### Fixed
+- A code finding without a recommendation is no longer reported as if it had
+  one (FR-005, T133, constitution v7.0.0 Principle IV). A finding whose
+  `recommendation` was absent, empty or only whitespace was kept and shown
+  with an empty recommendation; the verify node now checks it after the
+  citation (on the finding as confirmed or corrected), leaves it out of the
+  findings and records it as a verification failure with `reason_code`
+  `recommendation_missing` and the reason "the finding gives no
+  recommendation", with the quoted code and the text at its cited lines. A
+  finding whose citation fails keeps that cause. SAST findings are
+  unaffected: they carry a fixed recommendation. The report's reason-code
+  legend gains `recommendation_missing` ("The finding gave no recommendation,
+  so it could not be reported as actionable."), and the failure note's last
+  sentence now reads "...it means the reviewer's citation could not be
+  confirmed (the quoted code was not found at the cited lines, or no code was
+  quoted), or that the finding gave no recommendation." Requirement findings
+  are unchanged. Report schema **1.14.0**: `VerificationReasonCode` gains
+  `recommendation_missing`. Migration: reports written at 1.13.0 still
+  validate unchanged; a consumer that matches on `reason_code` must accept
+  the new value. Runs may report fewer findings and more verification
+  failures where the model left `recommendation` out; no prompt changed.
 - Every LLM code finding must now quote the code it cites, and every code
   finding's cited lines must lie within the file (FR-013, T132, constitution
   v7.0.0 Principle I). A finding with no `cited_snippet`, or one that was
