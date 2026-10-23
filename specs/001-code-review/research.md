@@ -8,6 +8,8 @@
 ### Decision
 Invoke OpenGrep via `subprocess.run()` calling the standalone binary CLI (`opengrep scan --config <rules> --json -o <file> <target>`). Parse the `--json` output directly (semgrep-compatible `cli_output` schema). Pin to v1.30.0 (latest stable as of 2026-09-07).
 
+> **Command updated.** The command above is the original decision. The current command, with its `-j <n>` and `--verbose` flags and its time limit of 120 seconds, is in spec.md FR-012; `<rules>` is the `[security] opengrep_rules` value.
+
 ### Rationale
 - OpenGrep provides **no Python API / importable library**. Maintainers explicitly state: *"opengrep will not be submitted to pypi because… it does not provide a python API and the tool is mostly not written in python. If you depend on such a tool, you list it as a script dependency and probe for it at runtime."* (opengrep/opengrep#20)
 - `--json` output is the most convenient structured surface: `results[]` entries contain `check_id`, `path`, `start.line`/`end.line`, `extra.lines` (matched code snippet), `extra.severity`, `extra.metadata.cwe`, `extra.metadata.owasp`. This maps directly to `CodeFinding` fields with `source="sast"`.
@@ -42,7 +44,9 @@ Invoke OpenGrep via `subprocess.run()` calling the standalone binary CLI (`openg
 ```
 
 ### Rule licensing note
-The engine is unambiguously LGPL-2.1 with no paid tier. However, rules pulled from Semgrep's registry carry Semgrep's restrictive Rules License v1.0 (internal use only, no redistribution). The opengrep-rules fork is archived. For the initial release, use Semgrep's default rule packs (`--config auto` or specific packs like `p/owasp-top-ten`) — this is permissible for internal use and review against external code. If redistribution of rules becomes a concern, author custom rules (LGPL-2.1 compatible) under the Veritas project.
+> **Updated by T136 (constitution v8.0.0 Principle II).** The original note claimed what the rules licence permits and proposed OpenGrep's registry auto-selection, which `[security] opengrep_rules` does not accept.
+
+The engine is unambiguously LGPL-2.1 with no paid tier. Its licence does not cover rules: registry rulesets such as `p/owasp-top-ten`, the default `[security] opengrep_rules` value, carry their own licence, the Semgrep Rules License. Using a registry ruleset is the user's licensing choice; a local rules file or directory is the alternative. `opengrep_rules` accepts a registry ruleset name starting with `p/` or `r/`, or an existing local rules file or directory, and the source used is recorded in every report (FR-012, FR-025). This note makes no claim about what the Semgrep Rules License permits. The opengrep-rules fork is archived.
 
 ---
 

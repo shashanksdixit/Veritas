@@ -154,6 +154,17 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- Documentation: research.md § 1 no longer claims what the Semgrep Rules
+  License permits or recommends `--config auto`, which `[security]
+  opengrep_rules` does not accept; it now says registry rulesets such as
+  `p/owasp-top-ten` carry the Semgrep Rules License, that using one is the
+  user's licensing choice, and that a local rules file or directory is the
+  alternative (constitution 8.0.0 Principle II, T136). Its OpenGrep command
+  points to FR-012 for the current command. plan.md's Constitution Check rows
+  say "licensing choice". The rules-licence test now checks every paragraph,
+  list item and table row of every tracked Markdown file that names a ruleset
+  (CHANGELOG.md and completed task lines are historical records and exempt),
+  plus the `run_opengrep` docstring. No behaviour or schema change.
 - Every LLM call is now logged with its structured fields in every run, not
   only with `--verbose` (constitution Principle VIII, FR-019, T135): the
   `[info] LLM call <model> (<ms> ms)` line, and the `[error] ... failed:` line,
