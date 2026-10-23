@@ -1,0 +1,1019 @@
+"""Unit tests — Pydantic model validation (T005)."""
+
+import json
+
+import pytest
+from pydantic import ValidationError
+
+from veritas.models.entities import (
+    LineRange,
+    ReportStatus,
+    ReviewRun,
+    ReviewScope,
+    Severity,
+    Verdict,
+)
+
+
+def test_review_run_defaults():
+    run = ReviewRun(
+        scope=ReviewScope.FILE,
+        target="src/app.py",
+        config_hash="abc",
+        model_name="openai/gpt-4o-mini",
+        prompt_version="1.0.0",
+    )
+    assert run.report_status == ReportStatus.INCOMPLETE
+    assert run.input_revision is None
+    assert isinstance(run.id, str) and run.id
+
+
+def test_scope_enum_values():
+    assert {s.value for s in ReviewScope} == {"project", "module", "file", "pr"}
+
+
+def test_verdict_enum_values():
+    assert Verdict.REQUIRES_MODIFICATION.value == "RequiresModification"
+    assert Verdict.REQUIRES_REVIEW.value == "RequiresReview"
+    assert Verdict.CLEAN.value == "Clean"
+
+
+def test_severity_values():
+    assert {s.value for s in Severity} == {"error", "warning", "info"}
+
+
+def test_confidence_bounds_enforced():
+    from veritas.models.entities import Category, CodeFinding
+
+    base = {
+        "file": "src/app.py",
+        "line_range": LineRange(start_line=1, start_col=1, end_line=1, end_col=1),
+        "severity": Severity.ERROR,
+        "category": Category.SECURITY,
+        "title": "t",
+        "description": "d",
+        "recommendation": "r",
+    }
+    with pytest.raises(ValidationError):
+        CodeFinding(**base, confidence=1.5)
+    with pytest.raises(ValidationError):
+        CodeFinding(**base, confidence=-0.1)
+    assert CodeFinding(**base, confidence=0.5).confidence == 0.5
+
+
+def test_code_finding_roundtrip():
+    from veritas.models.entities import Category, CodeFinding, FindingSource, Severity as Sev
+
+    finding = CodeFinding(
+        file="src/app.py",
+        line_range=LineRange(start_line=1, start_col=1, end_line=1, end_col=5),
+        severity=Sev.ERROR,
+        category=Category.SECURITY,
+        source=FindingSource.SAST,
+        title="t",
+        description="d",
+        recommendation="r",
+        confidence=0.5,
+    )
+    assert finding.source == FindingSource.SAST
+    data = finding.model_dump()
+    assert data["severity"] == "error"
+
+
+def test_report_roundtrip_json():
+    from veritas.models.entities import Report, Summary, Severity as Sev, Verdict as V
+
+    run = ReviewRun(
+        scope=ReviewScope.PROJECT,
+        target=".",
+        config_hash="h",
+        model_name="m",
+        prompt_version="1.0.0",
+    )
+    report = Report(
+        run=run,
+        summary=Summary(
+            total_code_findings=0,
+            severity_counts={Sev.ERROR: 0},
+            total_requirement_findings=0,
+            verification_failure_count=0,
+            verdict=V.CLEAN,
+        ),
+    )
+    assert report.schema_version == "1.15.0"
+    restored = Report.model_validate_json(report.model_dump_json())
+    assert restored.run.id == report.run.id
+
+
+def test_report_without_coverage_defaults_to_none():
+    """FR-029: a pre-1.3.0-shaped report still validates; coverage is None."""
+    from veritas.models.entities import Report, Summary, Verdict as V
+
+    report = Report(
+        run=ReviewRun(
+            scope=ReviewScope.PROJECT,
+            target=".",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.2.0",
+        ),
+        summary=Summary(
+            total_code_findings=0,
+            total_requirement_findings=0,
+            verification_failure_count=0,
+            verdict=V.CLEAN,
+        ),
+    )
+    assert report.coverage is None
+    assert Report.model_validate_json(report.model_dump_json()).coverage is None
+
+
+def test_report_coverage_roundtrip_json():
+    """FR-029: a populated Coverage round-trips unchanged, ExcludedFile included."""
+    from veritas.models.entities import (
+        Coverage,
+        ExcludedFile,
+        Report,
+        Summary,
+        Verdict as V,
+    )
+
+    report = Report(
+        run=ReviewRun(
+            scope=ReviewScope.PROJECT,
+            target=".",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.2.0",
+        ),
+        summary=Summary(
+            total_code_findings=0,
+            total_requirement_findings=0,
+            verification_failure_count=0,
+            verdict=V.CLEAN,
+        ),
+        coverage=Coverage(
+            batch_chars=48000,
+            max_batches=8,
+            batches_used=2,
+            reviewed_files=["src/a.py", "src/b.py"],
+            split_files=["src/b.py"],
+            excluded_files=[ExcludedFile(path=".specify/tasks/spec.md", pattern=".specify/")],
+            not_reviewed_files=["src/c.py"],
+        ),
+    )
+    payload = report.model_dump_json()
+    restored = Report.model_validate_json(payload)
+    assert restored.coverage == report.coverage
+    assert restored.model_dump_json() == payload
+    assert restored.coverage.excluded_files[0].pattern == ".specify/"
+
+
+def test_severity_adjusted_from_roundtrip_json():
+    """FR-004: a capped finding keeps the reviewer's own severity through JSON."""
+    from veritas.models.entities import Category, CodeFinding, Severity as Sev
+
+    finding = CodeFinding(
+        file="src/app.py",
+        line_range=LineRange(start_line=4, start_col=1, end_line=6, end_col=1),
+        severity=Sev.WARNING,
+        severity_adjusted_from=Sev.ERROR,
+        category=Category.TEST_COVERAGE,
+        title="No test found for the retry path",
+        description="d",
+        recommendation="r",
+    )
+
+    restored = CodeFinding.model_validate_json(finding.model_dump_json())
+
+    assert restored.severity is Sev.WARNING
+    assert restored.severity_adjusted_from is Sev.ERROR
+
+
+def test_a_finding_without_severity_adjusted_from_still_validates():
+    """Schema 1.4.0 is additive: a 1.3.0-shaped finding deserializes unchanged."""
+    from veritas.models.entities import Category, CodeFinding, Severity as Sev
+
+    # The shape a 1.3.0 report on disk actually has: the key is absent, not null.
+    payload = json.dumps(
+        {
+            "id": "abc123",
+            "file": "src/app.py",
+            "line_range": {"start_line": 1, "start_col": 1, "end_line": 1, "end_col": 1},
+            "severity": "error",
+            "category": "code_quality",
+            "title": "t",
+            "description": "d",
+            "recommendation": "r",
+        }
+    )
+    assert "severity_adjusted_from" not in payload
+
+    restored = CodeFinding.model_validate_json(payload)
+
+    assert restored.severity_adjusted_from is None
+    assert restored.severity is Sev.ERROR
+    assert restored.category is Category.CODE_QUALITY
+
+
+def test_severity_adjusted_from_defaults_to_none():
+    from veritas.models.entities import Category, CodeFinding, Severity as Sev
+
+    finding = CodeFinding(
+        file="src/app.py",
+        line_range=LineRange(start_line=1, start_col=1, end_line=1, end_col=1),
+        severity=Sev.WARNING,
+        category=Category.TEST_COVERAGE,
+        title="t",
+        description="d",
+        recommendation="r",
+    )
+
+    assert finding.severity_adjusted_from is None
+
+
+# --- schema 1.5.0 adds not_addressed ---
+
+
+def _requirement(status: str) -> dict:
+    return {
+        "requirement_ref": "FR-002",
+        "requirement_text": "The system MUST log to stdout.",
+        "status": status,
+        "evidence": [],
+        "explanation": "No code for this requirement is part of this PR.",
+    }
+
+
+def test_not_addressed_round_trips_through_json():
+    from veritas.models.entities import RequirementFinding, RequirementStatus
+
+    restored = RequirementFinding.model_validate_json(
+        RequirementFinding(
+            requirement_ref="FR-002",
+            requirement_text="The system MUST log to stdout.",
+            status=RequirementStatus.NOT_ADDRESSED,
+            evidence=[],
+            explanation="No code for this requirement is part of this PR.",
+        ).model_dump_json()
+    )
+
+    assert restored.status is RequirementStatus.NOT_ADDRESSED
+    assert RequirementStatus.NOT_ADDRESSED.value == "not_addressed"
+
+
+def test_every_pre_1_5_requirement_status_still_validates():
+    """The changelog promises earlier reports remain valid, so the five values a
+    1.4.0 report could carry must all still parse."""
+    from veritas.models.entities import RequirementFinding
+
+    for status in ("satisfied", "partial", "gap", "unclear"):
+        assert RequirementFinding.model_validate(_requirement(status)).status.value == status
+
+
+def test_the_status_counts_table_of_an_older_report_still_validates():
+    """A 1.4.0 report has no not_addressed key in its counts; the new key is additive."""
+    from veritas.models.entities import RequirementStatus, Summary
+
+    restored = Summary.model_validate(
+        {
+            "total_code_findings": 0,
+            "severity_counts": {},
+            "category_counts": {},
+            "total_requirement_findings": 1,
+            "requirement_status_counts": {"gap": 1},
+            "verification_failure_count": 0,
+            "verdict": "RequiresModification",
+        }
+    )
+
+    assert restored.requirement_status_counts[RequirementStatus.GAP] == 1
+    assert RequirementStatus.NOT_ADDRESSED not in restored.requirement_status_counts
+
+
+# --- schema 1.6.0 adds summary.duplicates_merged (FR-013) ---
+
+
+def test_duplicates_merged_round_trips_through_json():
+    from veritas.models.entities import Severity as Sev, Summary, Verdict as V
+
+    summary = Summary(
+        total_code_findings=2,
+        severity_counts={Sev.WARNING: 2},
+        total_requirement_findings=0,
+        verification_failure_count=0,
+        duplicates_merged=3,
+        verdict=V.REQUIRES_REVIEW,
+    )
+
+    restored = Summary.model_validate_json(summary.model_dump_json())
+
+    assert restored.duplicates_merged == 3
+    assert restored.verdict is V.REQUIRES_REVIEW
+
+
+def test_a_pre_1_6_summary_without_duplicates_merged_still_validates():
+    """Schema 1.6.0 is additive: the key is absent in older reports, not null."""
+    from veritas.models.entities import Summary
+
+    restored = Summary.model_validate(
+        {
+            "total_code_findings": 0,
+            "severity_counts": {},
+            "category_counts": {},
+            "total_requirement_findings": 0,
+            "requirement_status_counts": {},
+            "verification_failure_count": 0,
+            "verdict": "Clean",
+        }
+    )
+
+    assert restored.duplicates_merged == 0
+
+
+# --- schema 1.7.0 adds ReviewRun.sast_rules (FR-012) ---
+
+
+def test_sast_rules_defaults_to_none_when_sast_did_not_run():
+    run = ReviewRun(
+        scope=ReviewScope.PROJECT,
+        target=".",
+        config_hash="h",
+        model_name="m",
+        prompt_version="1.0.0",
+    )
+    assert run.sast_rules is None
+
+
+def test_sast_rules_round_trips_at_schema_1_7_0():
+    from veritas.models.entities import Report, Summary
+
+    report = Report(
+        run=ReviewRun(
+            scope=ReviewScope.PROJECT,
+            target=".",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.0.0",
+            sast_rules="r/corp-pack",
+        ),
+        summary=Summary(
+            total_code_findings=0,
+            total_requirement_findings=0,
+            verification_failure_count=0,
+            verdict=Verdict.CLEAN,
+        ),
+    )
+    assert report.schema_version == "1.15.0"
+
+    restored = Report.model_validate_json(report.model_dump_json())
+    assert restored.run.sast_rules == "r/corp-pack"
+
+
+def test_a_pre_1_7_run_without_sast_rules_still_validates():
+    """Schema 1.7.0 is additive: the key is absent in older runs, not null."""
+    restored = ReviewRun.model_validate(
+        {
+            "scope": "project",
+            "target": ".",
+            "config_hash": "h",
+            "model_name": "m",
+            "prompt_version": "1.0.0",
+        }
+    )
+    assert restored.sast_rules is None
+
+
+# --- schema 1.9.0 adds ReviewRun.sast_status, sast_result_count, sast_reason (T109, FR-012) ---
+
+
+def _report_with_run(run: ReviewRun):
+    from veritas.models.entities import Report, Summary
+
+    return Report(
+        run=run,
+        summary=Summary(
+            total_code_findings=0,
+            total_requirement_findings=0,
+            verification_failure_count=0,
+            verdict=Verdict.CLEAN,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "count", "reason"),
+    [
+        ("ran", 0, None),
+        ("ran", 1, "2 result(s) unmapped"),
+        ("not_run", None, "OpenGrep not found on PATH"),
+    ],
+)
+def test_sast_status_fields_round_trip_at_schema_1_9_0(status, count, reason):
+    from veritas.models.entities import Report, SastStatus
+
+    report = _report_with_run(
+        ReviewRun(
+            scope=ReviewScope.PROJECT,
+            target=".",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.0.0",
+            sast_rules="p/owasp-top-ten",
+            sast_status=SastStatus(status),
+            sast_result_count=count,
+            sast_reason=reason,
+        )
+    )
+    assert report.schema_version == "1.15.0"
+
+    dumped = json.loads(report.model_dump_json())
+    assert dumped["schema_version"] == "1.15.0"
+    assert dumped["run"]["sast_status"] == status
+
+    restored = Report.model_validate_json(report.model_dump_json())
+    assert restored.run.sast_status is SastStatus(status)
+    assert restored.run.sast_result_count == count
+    assert restored.run.sast_reason == reason
+    assert restored.run.sast_rules == "p/owasp-top-ten"
+
+
+def test_a_pre_1_9_report_still_validates_with_sast_status_fields_null():
+    """Schema 1.9.0 is additive: a 1.8.0 report has none of the three keys."""
+    from veritas.models.entities import Report
+
+    pre_1_9 = {
+        "schema_version": "1.8.0",
+        "run": {
+            "scope": "project",
+            "target": ".",
+            "config_hash": "h",
+            "model_name": "m",
+            "prompt_version": "1.0.0",
+            "report_status": "complete",
+            "sast_rules": "p/owasp-top-ten",
+        },
+        "code_findings": [],
+        "requirement_findings": [],
+        "summary": {
+            "total_code_findings": 0,
+            "total_requirement_findings": 0,
+            "verification_failure_count": 0,
+            "verdict": "Clean",
+        },
+        "failed_batches": [],
+    }
+
+    restored = Report.model_validate(pre_1_9)
+
+    assert restored.schema_version == "1.8.0"
+    assert restored.run.sast_rules == "p/owasp-top-ten"
+    assert restored.run.sast_status is None
+    assert restored.run.sast_result_count is None
+    assert restored.run.sast_reason is None
+
+
+def test_sast_status_values_are_ran_and_not_run():
+    from veritas.models.entities import SastStatus
+
+    assert [status.value for status in SastStatus] == ["ran", "not_run"]
+
+
+# --- schema 1.10.0 adds ReviewRun.project_context_* (T117, FR-009) ---
+
+
+@pytest.mark.parametrize(
+    ("status", "sources", "reason", "origin"),
+    [
+        ("detected", ["pyproject.toml", "AGENTS.md"], None, "."),
+        ("partial", ["pyproject.toml"], "AGENTS.md over 200000 bytes, skipped", "src"),
+        ("unavailable", [], "not read for PR reviews yet", None),
+    ],
+)
+def test_project_context_fields_round_trip_at_schema_1_10_0(status, sources, reason, origin):
+    from veritas.models.entities import ProjectContextStatus, Report
+
+    report = _report_with_run(
+        ReviewRun(
+            scope=ReviewScope.PROJECT,
+            target=".",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.0.0",
+            project_context_status=ProjectContextStatus(status),
+            project_context_sources=sources,
+            project_context_reason=reason,
+            project_context_origin=origin,
+        )
+    )
+    assert report.schema_version == "1.15.0"
+
+    dumped = json.loads(report.model_dump_json())
+    assert dumped["schema_version"] == "1.15.0"
+    assert dumped["run"]["project_context_status"] == status
+    assert dumped["run"]["project_context_sources"] == sources
+
+    restored = Report.model_validate_json(report.model_dump_json())
+    assert restored.run.project_context_status is ProjectContextStatus(status)
+    assert restored.run.project_context_sources == sources
+    assert restored.run.project_context_reason == reason
+    assert restored.run.project_context_origin == origin
+
+
+def test_a_1_9_report_still_validates_with_project_context_fields_unset():
+    """Schema 1.10.0 is additive: a 1.9.0 report has none of the new keys."""
+    from veritas.models.entities import Report
+
+    pre_1_10 = {
+        "schema_version": "1.9.0",
+        "run": {
+            "scope": "project",
+            "target": ".",
+            "config_hash": "h",
+            "model_name": "m",
+            "prompt_version": "1.0.0",
+            "report_status": "complete",
+            "sast_rules": "p/owasp-top-ten",
+            "sast_status": "ran",
+            "sast_result_count": 0,
+        },
+        "code_findings": [],
+        "requirement_findings": [],
+        "summary": {
+            "total_code_findings": 0,
+            "total_requirement_findings": 0,
+            "verification_failure_count": 0,
+            "verdict": "Clean",
+        },
+        "failed_batches": [],
+    }
+
+    restored = Report.model_validate(pre_1_10)
+
+    assert restored.schema_version == "1.9.0"
+    assert restored.run.project_context_status is None
+    assert restored.run.project_context_sources == []
+    assert restored.run.project_context_reason is None
+    assert restored.run.project_context_origin is None
+
+
+def test_project_context_status_values():
+    from veritas.models.entities import ProjectContextStatus
+
+    assert [status.value for status in ProjectContextStatus] == [
+        "detected",
+        "partial",
+        "unavailable",
+    ]
+
+
+# --- schema 1.11.0 adds ExcludedFile.reason (T124, FR-029) ---
+
+
+def test_excluded_file_with_a_reason_round_trips_at_schema_1_11_0():
+    from veritas.models.entities import Coverage, ExcludedFile, Report
+
+    report = _report_with_run(
+        ReviewRun(
+            scope=ReviewScope.PR,
+            target="acme/widget#3",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.0.0",
+        )
+    ).model_copy(
+        update={
+            "coverage": Coverage(
+                batch_chars=48000,
+                max_batches=8,
+                batches_used=1,
+                reviewed_files=["src/app.py"],
+                excluded_files=[
+                    ExcludedFile(path=".specify/plan.py", pattern=".specify/"),
+                    ExcludedFile(
+                        path="data/big.py",
+                        reason="content not provided by the hosting API (file over 1 MB)",
+                    ),
+                ],
+            )
+        }
+    )
+    assert report.schema_version == "1.15.0"
+
+    dumped = json.loads(report.model_dump_json())
+    assert dumped["coverage"]["excluded_files"] == [
+        {"path": ".specify/plan.py", "pattern": ".specify/", "reason": None},
+        {
+            "path": "data/big.py",
+            "pattern": None,
+            "reason": "content not provided by the hosting API (file over 1 MB)",
+        },
+    ]
+    restored = Report.model_validate_json(report.model_dump_json())
+    assert restored.coverage == report.coverage
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"pattern": ".specify/", "reason": "content not provided by the hosting API (file over 1 MB)"},
+        {},
+        {"pattern": None, "reason": None},
+    ],
+    ids=["both", "neither", "both-none"],
+)
+def test_excluded_file_needs_exactly_one_of_pattern_or_reason(fields):
+    from veritas.models.entities import ExcludedFile
+
+    with pytest.raises(ValidationError, match="exactly one of pattern or reason"):
+        ExcludedFile(path="src/app.py", **fields)
+
+
+def test_a_1_10_report_with_pattern_only_excluded_files_still_validates():
+    """Schema 1.11.0 is additive: a 1.10.0 excluded file has a pattern and no reason key."""
+    from veritas.models.entities import Report
+
+    pre_1_11 = {
+        "schema_version": "1.10.0",
+        "run": {
+            "scope": "project",
+            "target": ".",
+            "config_hash": "h",
+            "model_name": "m",
+            "prompt_version": "1.0.0",
+            "report_status": "complete",
+        },
+        "code_findings": [],
+        "requirement_findings": [],
+        "summary": {
+            "total_code_findings": 0,
+            "total_requirement_findings": 0,
+            "verification_failure_count": 0,
+            "verdict": "Clean",
+        },
+        "coverage": {
+            "batch_chars": 48000,
+            "max_batches": 8,
+            "batches_used": 1,
+            "reviewed_files": ["src/app.py"],
+            "split_files": [],
+            "excluded_files": [{"path": ".specify/plan.py", "pattern": ".specify/"}],
+            "not_reviewed_files": [],
+        },
+        "failed_batches": [],
+    }
+
+    restored = Report.model_validate(pre_1_11)
+
+    assert restored.schema_version == "1.10.0"
+    [entry] = restored.coverage.excluded_files
+    assert entry.path == ".specify/plan.py"
+    assert entry.pattern == ".specify/"
+    assert entry.reason is None
+
+
+# --- schema 1.12.0 adds Coverage.unsupported_files and requirement_sources (T130) ---
+
+
+def test_a_1_11_coverage_without_the_new_lists_loads_with_them_empty():
+    """Schema 1.12.0 is additive: a 1.11.0 coverage has neither key."""
+    from veritas.models.entities import Coverage
+
+    coverage = Coverage.model_validate(
+        {
+            "batch_chars": 48000,
+            "max_batches": 8,
+            "batches_used": 1,
+            "reviewed_files": ["src/app.py"],
+            "split_files": [],
+            "excluded_files": [
+                {"path": "data/big.py", "pattern": None, "reason": "content not provided"}
+            ],
+            "not_reviewed_files": [],
+        }
+    )
+    assert coverage.unsupported_files == []
+    assert coverage.requirement_sources == []
+
+
+def test_unsupported_files_and_requirement_sources_round_trip_at_schema_1_12_0():
+    from veritas.models.entities import Coverage, Report
+
+    report = _report_with_run(
+        ReviewRun(
+            scope=ReviewScope.PROJECT,
+            target=".",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.0.0",
+        )
+    ).model_copy(
+        update={
+            "coverage": Coverage(
+                batch_chars=48000,
+                max_batches=8,
+                batches_used=1,
+                reviewed_files=["c.py"],
+                unsupported_files=["a.cob", "b.lua"],
+                requirement_sources=["specs/001-x/spec.md", "README.md"],
+            )
+        }
+    )
+    assert report.schema_version == "1.15.0"
+
+    dumped = json.loads(report.model_dump_json())
+    assert dumped["coverage"]["unsupported_files"] == ["a.cob", "b.lua"]
+    assert dumped["coverage"]["requirement_sources"] == ["specs/001-x/spec.md", "README.md"]
+    restored = Report.model_validate_json(report.model_dump_json())
+    assert restored.coverage == report.coverage
+
+
+# --- schema 1.13.0 adds VerificationReasonCode.SNIPPET_MISSING (T132, FR-013) ---
+
+
+def test_a_1_12_report_still_loads():
+    """Schema 1.13.0 only adds an enum value, so a 1.12.0 report validates unchanged."""
+    from veritas.models.entities import Report
+
+    pre_1_13 = {
+        "schema_version": "1.12.0",
+        "run": {
+            "scope": "project",
+            "target": ".",
+            "config_hash": "h",
+            "model_name": "m",
+            "prompt_version": "1.9.0",
+            "report_status": "complete",
+        },
+        "code_findings": [],
+        "requirement_findings": [],
+        "summary": {
+            "total_code_findings": 0,
+            "total_requirement_findings": 0,
+            "verification_failure_count": 1,
+            "verification_failures": [
+                {
+                    "finding_id": "f-1",
+                    "file": "src/app.py",
+                    "line_range": {"start_line": 99, "start_col": 1, "end_line": 99, "end_col": 1},
+                    "reason": "cited start line 99 exceeds file length (3 lines)",
+                    "reason_code": "line_out_of_range",
+                }
+            ],
+            "verdict": "Clean",
+        },
+        "coverage": {
+            "batch_chars": 48000,
+            "max_batches": 8,
+            "batches_used": 1,
+            "reviewed_files": ["src/app.py"],
+            "unsupported_files": ["a.cob"],
+            "requirement_sources": ["README.md"],
+        },
+        "failed_batches": [],
+    }
+
+    restored = Report.model_validate(pre_1_13)
+
+    assert restored.schema_version == "1.12.0"
+    assert restored.summary.verification_failures[0].reason_code.value == "line_out_of_range"
+    assert restored.coverage.unsupported_files == ["a.cob"]
+
+
+def test_snippet_missing_failure_round_trips_at_schema_1_13_0():
+    from veritas.models.entities import Report, Summary, VerificationFailure, VerificationReasonCode
+
+    failure = VerificationFailure(
+        finding_id="f-1",
+        file="src/app.py",
+        line_range=LineRange(start_line=2, start_col=1, end_line=2, end_col=1),
+        reason="the finding quotes no code, so its citation cannot be checked",
+        reason_code=VerificationReasonCode.SNIPPET_MISSING,
+        actual_snippet='print("hello")',
+    )
+    report = _report_with_run(
+        ReviewRun(
+            scope=ReviewScope.PROJECT,
+            target=".",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.9.0",
+        )
+    ).model_copy(
+        update={
+            "summary": Summary(
+                total_code_findings=0,
+                total_requirement_findings=0,
+                verification_failure_count=1,
+                verification_failures=[failure],
+                verdict=Verdict.CLEAN,
+            )
+        }
+    )
+    assert report.schema_version == "1.15.0"
+
+    dumped = json.loads(report.model_dump_json())
+    assert dumped["summary"]["verification_failures"][0]["reason_code"] == "snippet_missing"
+    restored = Report.model_validate_json(report.model_dump_json())
+    assert restored.summary.verification_failures == [failure]
+    assert restored.summary.verification_failures[0].reason_code is VerificationReasonCode.SNIPPET_MISSING
+
+
+# --- schema 1.14.0 adds VerificationReasonCode.RECOMMENDATION_MISSING (T133, FR-005) ---
+
+
+def test_a_1_13_report_still_loads():
+    """Schema 1.14.0 only adds an enum value, so a 1.13.0 report validates unchanged."""
+    from veritas.models.entities import Report, VerificationReasonCode
+
+    pre_1_14 = {
+        "schema_version": "1.13.0",
+        "run": {
+            "scope": "project",
+            "target": ".",
+            "config_hash": "h",
+            "model_name": "m",
+            "prompt_version": "1.9.0",
+            "report_status": "complete",
+        },
+        "code_findings": [],
+        "requirement_findings": [],
+        "summary": {
+            "total_code_findings": 0,
+            "total_requirement_findings": 0,
+            "verification_failure_count": 1,
+            "verification_failures": [
+                {
+                    "finding_id": "f-1",
+                    "file": "src/app.py",
+                    "line_range": {"start_line": 2, "start_col": 1, "end_line": 2, "end_col": 1},
+                    "reason": "the finding quotes no code, so its citation cannot be checked",
+                    "reason_code": "snippet_missing",
+                    "actual_snippet": 'print("hello")',
+                }
+            ],
+            "verdict": "Clean",
+        },
+        "coverage": {
+            "batch_chars": 48000,
+            "max_batches": 8,
+            "batches_used": 1,
+            "reviewed_files": ["src/app.py"],
+        },
+        "failed_batches": [],
+    }
+
+    restored = Report.model_validate(pre_1_14)
+
+    assert restored.schema_version == "1.13.0"
+    assert restored.summary.verification_failures[0].reason_code is VerificationReasonCode.SNIPPET_MISSING
+
+
+def test_recommendation_missing_failure_round_trips_at_schema_1_14_0():
+    from veritas.models.entities import Report, Summary, VerificationFailure, VerificationReasonCode
+
+    failure = VerificationFailure(
+        finding_id="f-1",
+        file="src/app.py",
+        line_range=LineRange(start_line=2, start_col=1, end_line=2, end_col=1),
+        reason="the finding gives no recommendation",
+        reason_code=VerificationReasonCode.RECOMMENDATION_MISSING,
+        claimed_snippet='print("hello")',
+        actual_snippet='print("hello")',
+    )
+    report = _report_with_run(
+        ReviewRun(
+            scope=ReviewScope.PROJECT,
+            target=".",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.9.0",
+        )
+    ).model_copy(
+        update={
+            "summary": Summary(
+                total_code_findings=0,
+                total_requirement_findings=0,
+                verification_failure_count=1,
+                verification_failures=[failure],
+                verdict=Verdict.CLEAN,
+            )
+        }
+    )
+    assert report.schema_version == "1.15.0"
+
+    dumped = json.loads(report.model_dump_json())
+    assert dumped["schema_version"] == "1.15.0"
+    assert dumped["summary"]["verification_failures"][0]["reason_code"] == "recommendation_missing"
+    restored = Report.model_validate_json(report.model_dump_json())
+    assert restored.summary.verification_failures == [failure]
+    assert (
+        restored.summary.verification_failures[0].reason_code
+        is VerificationReasonCode.RECOMMENDATION_MISSING
+    )
+
+
+# --- schema 1.15.0 adds VerificationReasonCode.EXPLANATION_MISSING (T134, FR-005) ---
+
+
+def test_a_1_14_report_still_loads():
+    """Schema 1.15.0 only adds an enum value, so a 1.14.0 report validates unchanged."""
+    from veritas.models.entities import Report, VerificationReasonCode
+
+    pre_1_15 = {
+        "schema_version": "1.14.0",
+        "run": {
+            "scope": "project",
+            "target": ".",
+            "config_hash": "h",
+            "model_name": "m",
+            "prompt_version": "1.9.0",
+            "report_status": "complete",
+        },
+        "code_findings": [],
+        "requirement_findings": [
+            {
+                "id": "rf-1",
+                "requirement_ref": "FR-001",
+                "requirement_text": "The system MUST ship.",
+                "status": "satisfied",
+                "evidence": ["src/app.py:2"],
+                "explanation": "The code shown could not be judged against this requirement.",
+            }
+        ],
+        "summary": {
+            "total_code_findings": 0,
+            "total_requirement_findings": 1,
+            "verification_failure_count": 1,
+            "verification_failures": [
+                {
+                    "finding_id": "f-1",
+                    "file": "src/app.py",
+                    "line_range": {"start_line": 2, "start_col": 1, "end_line": 2, "end_col": 1},
+                    "reason": "the finding gives no recommendation",
+                    "reason_code": "recommendation_missing",
+                    "claimed_snippet": 'print("hello")',
+                    "actual_snippet": 'print("hello")',
+                }
+            ],
+            "verdict": "Clean",
+        },
+        "coverage": {
+            "batch_chars": 48000,
+            "max_batches": 8,
+            "batches_used": 1,
+            "reviewed_files": ["src/app.py"],
+        },
+        "failed_batches": [],
+    }
+
+    restored = Report.model_validate(pre_1_15)
+
+    assert restored.schema_version == "1.14.0"
+    assert restored.summary.verification_failures[0].reason_code is VerificationReasonCode.RECOMMENDATION_MISSING
+    assert restored.requirement_findings[0].explanation == (
+        "The code shown could not be judged against this requirement."
+    )
+
+
+def test_explanation_missing_failure_round_trips_at_schema_1_15_0():
+    from veritas.models.entities import Report, Summary, VerificationFailure, VerificationReasonCode
+
+    assert VerificationReasonCode.EXPLANATION_MISSING.value == "explanation_missing"
+    failure = VerificationFailure(
+        finding_id="rf-1",
+        file="",
+        line_range=LineRange(start_line=0, start_col=0, end_line=0, end_col=0),
+        reason="the requirement finding gives no explanation",
+        reason_code=VerificationReasonCode.EXPLANATION_MISSING,
+    )
+    report = _report_with_run(
+        ReviewRun(
+            scope=ReviewScope.PROJECT,
+            target=".",
+            config_hash="h",
+            model_name="m",
+            prompt_version="1.9.0",
+        )
+    ).model_copy(
+        update={
+            "summary": Summary(
+                total_code_findings=0,
+                total_requirement_findings=0,
+                verification_failure_count=1,
+                verification_failures=[failure],
+                verdict=Verdict.CLEAN,
+            )
+        }
+    )
+    assert report.schema_version == "1.15.0"
+
+    dumped = json.loads(report.model_dump_json())
+    assert dumped["schema_version"] == "1.15.0"
+    assert dumped["summary"]["verification_failures"][0]["reason_code"] == "explanation_missing"
+    restored = Report.model_validate_json(report.model_dump_json())
+    assert restored.summary.verification_failures == [failure]
+    assert (
+        restored.summary.verification_failures[0].reason_code
+        is VerificationReasonCode.EXPLANATION_MISSING
+    )
