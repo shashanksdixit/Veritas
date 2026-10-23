@@ -50,6 +50,18 @@ def test_llm_call_error_is_masked():
     assert out.startswith("[error] LLM call openrouter/some-model (12 ms) failed: 401 bad key [REDACTED]")
 
 
+def test_llm_call_fields_are_masked_without_verbose():
+    """The JSON fields an LLM-call line now always carries are redacted too (T135)."""
+    stream = io.StringIO()
+    Log(stream=stream).llm_call(f"vendor/{_GITHUB_TOKEN}", 3.0, total_tokens=4)
+    out = stream.getvalue()
+    assert _GITHUB_TOKEN not in out
+    assert out == (
+        '[info] LLM call vendor/[REDACTED] (3 ms) {"completion_tokens": null, "latency_ms": 3.0, '
+        '"model": "vendor/[REDACTED]", "prompt_tokens": null, "total_tokens": 4}\n'
+    )
+
+
 def test_log_without_secrets_is_unchanged():
     stream = io.StringIO()
     Log(stream=stream).info("reviewed 12 files; api_key = settings.api_key")

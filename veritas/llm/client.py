@@ -319,6 +319,35 @@ def in_flight_retry_delay(exc: BaseException) -> float | None:
     return max(0.0, min(float(delay), MAX_IN_FLIGHT_RETRY_DELAY))
 
 
+def token_counts(response) -> tuple[int | None, int | None, int | None]:
+    """(prompt, completion, total) token counts of a chat response (FR-019, T135).
+
+    LangChain's standard ``usage_metadata`` is read first; without it, the
+    provider's own ``response_metadata`` usage (OpenAI ``token_usage`` with
+    prompt/completion names, or Anthropic ``usage`` with input/output names).
+    A count the provider did not report is None; a missing total is never
+    computed from the other two.
+    """
+    standard = getattr(response, "usage_metadata", None)
+    if isinstance(standard, dict) and standard:
+        return (
+            standard.get("input_tokens"),
+            standard.get("output_tokens"),
+            standard.get("total_tokens"),
+        )
+    metadata = getattr(response, "response_metadata", None) or {}
+    usage = metadata.get("token_usage") or metadata.get("usage") or {}
+    if not isinstance(usage, dict):
+        return None, None, None
+    prompt = usage.get("prompt_tokens")
+    if prompt is None:
+        prompt = usage.get("input_tokens")
+    completion = usage.get("completion_tokens")
+    if completion is None:
+        completion = usage.get("output_tokens")
+    return prompt, completion, usage.get("total_tokens")
+
+
 class LLMClient:
     """Thin wrapper around a LangChain chat model with structured logging."""
 
@@ -386,12 +415,12 @@ class LLMClient:
                 self.log.warn(
                     f"llm: response truncated at max_output_tokens ({self._max_output_tokens}); raise [llm] max_output_tokens if findings are missing"
                 )
-            usage = metadata.get("token_usage") or metadata.get("usage") or {}
+            prompt_tokens, completion_tokens, total_tokens = token_counts(response)
             self.log.llm_call(
                 self.model_name,
                 latency_ms,
-                prompt_tokens=usage.get("prompt_tokens"),
-                completion_tokens=usage.get("completion_tokens"),
-                total_tokens=usage.get("total_tokens"),
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
             )
             return text if isinstance(text, str) else str(text)

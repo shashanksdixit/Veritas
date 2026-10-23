@@ -154,6 +154,18 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- Every LLM call is now logged with its structured fields in every run, not
+  only with `--verbose` (constitution Principle VIII, FR-019, T135): the
+  `[info] LLM call <model> (<ms> ms)` line, and the `[error] ... failed:` line,
+  end with a sorted JSON object holding `model`, `latency_ms`, `prompt_tokens`,
+  `completion_tokens` and `total_tokens`; a count the provider does not report
+  is `null` (previously left out). Token counts are now read from LangChain's
+  `usage_metadata` first, so Anthropic-style counts (`input_tokens`/
+  `output_tokens`), previously dropped even with `--verbose`, are logged; the
+  Anthropic shape is verified with constructed responses only, as
+  langchain-anthropic is an optional extra not installed in the test
+  environment. Other log lines are unchanged. Logs are not part of the report,
+  so `schema_version` stays 1.15.0.
 - Constitution amended to v8.0.0 (Principle IV): a recommendation is required
   for code findings only; a requirement finding carries no recommendation but
   must carry a non-empty explanation of its status. CLAUDE.md now names

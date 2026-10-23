@@ -215,8 +215,11 @@ errors:
 ```text
 [info] Scanning target in scope: ./myproject
 [warn] OpenGrep not found on PATH; security findings will be LLM-identified only
+[info] LLM call gpt-4o-mini (1234 ms) {"completion_tokens": 30, "latency_ms": 1234.4, "model": "gpt-4o-mini", "prompt_tokens": 120, "total_tokens": 150}
 [error] Failed to post report as PR comment: 403 Forbidden; report saved to ./veritas-report-20260916-143022.md
 ```
+
+Every LLM call is logged as one such line in every run; a token count the provider does not report is null. --verbose adds the same kind of JSON object to the other lines that carry fields.
 
 ## Configuration
 
