@@ -11,7 +11,7 @@ Validation scenarios proving the feature works end-to-end. Prerequisites listed 
 
 1. Python 3.12+ installed (`.python-version` = 3.12)
 2. Veritas installed: `pip install -e .` from repo root (installs Typer, LangGraph, openai, httpx)
-3. OpenGrep binary on PATH or at a configured path (v1.30.0; download from github.com/opengrep/opengrep/releases)
+3. OpenGrep binary on PATH (v1.30.1; download from github.com/opengrep/opengrep/releases)
 4. API key for the configured LLM backend set: `export VERITAS_API_KEY=...` (the default backend is OpenAI direct, `openai:gpt-4o-mini` at `https://api.openai.com/v1`, so an OpenAI key; an OpenRouter key only when `base_url` points at OpenRouter, as in Scenario 5)
 5. A test repository with Python/JS/Java code
 
@@ -27,9 +27,9 @@ veritas review --scope project --target ./myproject
 - stderr: `[info] Scanning target in scope: ./myproject` + `[info] Detected: ...` lines for the detected languages/frameworks, and the ZDR-off warning for the default backend (`[warn] ZDR is OFF: zero data retention cannot be enforced per request on this backend; data retention is governed by your account agreement with openai. ...`)
 - stdout: Compact summary with counts by severity/category, requirement-status counts, overall verdict, one `SAST: ran (<n> result(s))` line (followed by ` — <reason>` when it ran degraded, for example `<n> file(s) not scanned (OpenGrep's default ignore list: tests/)`), one `Context: <status> (<sources>)` line (`Context: unavailable — <reason>` when no project context was found), and `Report: veritas-report-<timestamp>.md`
 - File: `veritas-report-<timestamp>.md` created in the current directory with full Markdown report
-- Report contains sections for all 5 review types (code quality, security, requirements, test coverage, performance); each finding includes its own recommendation text rather than a separate 'suggested changes' section
+- Report contains sections for all 5 review types (code quality, security, requirements, test coverage, performance); each code finding (code quality, security, test coverage, performance) includes its own recommendation text rather than a separate 'suggested changes' section, and each requirement finding carries no recommendation but a non-empty explanation of its status
 - Security findings carry a source label in their heading: `*(SAST)*` or `*(LLM-identified, citation verified)*`
-- If OpenGrep is not installed: stderr `[warn] OpenGrep not found on PATH`, stdout `SAST: not run — OpenGrep not found on PATH`, the report header `- **SAST**: not run — OpenGrep not found on PATH (rules configured: ...)`; security findings are LLM-identified only
+- If OpenGrep is not installed: stderr `[warn] OpenGrep not found on PATH` and `[warn] Security coverage degraded: OpenGrep not found on PATH; LLM-identified findings remain subject to re-verification.`, stdout `SAST: not run — OpenGrep not found on PATH`, the report header `- **SAST**: not run — OpenGrep not found on PATH (rules configured: ...)`; security findings are LLM-identified only
 
 **Validates**: FR-001, FR-003, FR-009, FR-012, FR-015, FR-016, FR-022, FR-023, FR-025, SC-001, SC-008
 
@@ -147,19 +147,29 @@ veritas unsuppress --fingerprint "<sha256>"
 
 ---
 
-## Scenario 8: LLM provider failure mid-run (FR-027)
+## Scenario 8: LLM provider failure (FR-027)
 
-Simulate by setting an invalid API key after the first 2 review types complete:
+Settings are loaded once, when the run starts, so the API key cannot change
+partway through a run. Simulate a provider failure with a key that is invalid
+from the start:
 ```bash
 export VERITAS_API_KEY=invalid
 veritas review --scope project --target ./myproject
 ```
 
 **Expected**:
+- Every LLM call is rejected by the provider; the run does not stop, and each review type records its failure
+- stderr: each failed call writes an `[error] LLM call <model> (<n> ms) failed: <reason> {...}` line and each failed batch a `[warn] <review type>: batch <i>/<n> failed (files: <files>): <reason>` line, for example for a one-file project (`<reason>` is the provider's error message as Veritas summarizes it, `<provider> <status>: <message> [<reason code>]`, so its wording depends on the provider):
+  ```text
+  [error] LLM call gpt-4o-mini (125 ms) failed: openai 401: Incorrect API key provided: invalid. [invalid_api_key] {"completion_tokens": null, "latency_ms": 125.0, "model": "gpt-4o-mini", "prompt_tokens": null, "total_tokens": null}
+  [warn] security: batch 1/1 failed (files: src/app.py): openai 401: Incorrect API key provided: invalid. [invalid_api_key]
+  ```
+- stdout: a `Report status: incomplete — ...` line before the `Report:` line, counting the failed batch calls per review type and naming the reason, for example:
+  ```text
+  Report status: incomplete — 4 LLM batch call(s) failed (code_quality: 1, performance: 1, security: 1, test_coverage: 1): openai 401: Incorrect API key provided: invalid. [invalid_api_key] (see Failed batches in the report); requirements_node: openai 401: Incorrect API key provided: invalid. [invalid_api_key]
+  ```
+- Report file written; its header shows ``- **Report status**: `incomplete` `` and its `### Failed batches (FR-027)` section lists every failed batch with its reason
 - Exit code 2 (partial review)
-- Report file written with completed review types
-- Report status: `incomplete`
-- Clear error message in report and stderr
 - Not mistaken for a complete review
 
 **Validates**: FR-027, edge case

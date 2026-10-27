@@ -12,7 +12,8 @@ GitHub-Flavored Markdown report that can be posted directly as a PR comment.
   remotely via the GitHub/GitLab API; no local git state read).
 - **Five mandatory review types** — code quality, security/OWASP, requirements,
   test-coverage judgment (tests are never executed), and performance reasoning.
-  Every finding carries its own concrete recommendation text.
+  Every code finding carries its own concrete recommendation text; a requirement
+  finding carries no recommendation but a non-empty explanation of its status.
 - **Grounded and verified** — SAST (OpenGrep) output is ground truth for security
   findings; every LLM-identified finding is re-verified against its cited
   file/line before it can appear. Unverifiable findings are excluded and recorded
@@ -140,7 +141,7 @@ veritas <command> [options]
 Commands:
   review      Run a code review (primary command)
   suppress    Suppress a finding by ID or filename+line
-  unsuppress  Remove a suppression entry by fingerprint
+  unsuppress  Remove a suppression entry
 ```
 
 ### `veritas review`
@@ -154,7 +155,7 @@ Options:
                                     e.g. "owner/repo#123" (GitHub) or "group/project!9" (GitLab)
   --config PATH                     Config file path (default: .veritas/config.toml)
   --output PATH                     Report file path (default: ./veritas-report-<timestamp>.md)
-  --verbose / --no-verbose          Enable verbose logging to stderr
+  --verbose                         Enable verbose logging to stderr
   --post                            Post the report as a PR comment / MR note (--scope pr only)
   --help                            Show help message
 ```
@@ -204,8 +205,8 @@ Options:
 | Code | Meaning |
 |------|---------|
 | 0 | Review completed (findings or not) |
-| 1 | Fatal error (missing args, bad config, target not found, provider unreachable, PR fetch failed, or `--post` used with a non-pr scope) |
-| 2 | Partial review (LLM failed mid-run; report written with completed types and marked incomplete) |
+| 1 | Fatal error (missing args, bad config, target not found, the LLM client failed to initialize (for example, no API key), PR fetch failed, `VERITAS_ZDR=true` on a non-OpenRouter backend, `--post` used with a non-pr scope, or a missing hosting token for `--scope pr`: `VERITAS_GITHUB_TOKEN` / `VERITAS_GITLAB_TOKEN`, checked after the LLM client is built and before any review work starts) |
+| 2 | Partial review (an LLM call failed, for example a rejected API key or an unreachable provider; the report is still written and marked incomplete per FR-027) |
 
 ### stdout / stderr
 
@@ -213,11 +214,24 @@ stdout carries results only (compact summary). stderr carries diagnostics and
 errors:
 
 ```text
-[info] Scanning target in scope: ./myproject
-[warn] OpenGrep not found on PATH; security findings will be LLM-identified only
+[warn] ZDR is OFF: zero data retention cannot be enforced per request on this backend; data retention is governed by your account agreement with openai. To enforce ZDR per request, use OpenRouter with VERITAS_ZDR=true.
+[info] Scanning target in scope: acme/widget#3
+[info] Fetching PR acme/widget#3 from github
+[warn] OpenGrep not found on PATH
 [info] LLM call gpt-4o-mini (1234 ms) {"completion_tokens": 30, "latency_ms": 1234.4, "model": "gpt-4o-mini", "prompt_tokens": 120, "total_tokens": 150}
-[error] Failed to post report as PR comment: 403 Forbidden; report saved to ./veritas-report-20260916-143022.md
+[warn] Security coverage degraded: OpenGrep not found on PATH; LLM-identified findings remain subject to re-verification.
+[error] LLM call gpt-4o-mini (812 ms) failed: openai 429: Rate limit reached for gpt-4o-mini [rate_limit_exceeded] {"completion_tokens": null, "latency_ms": 812.3, "model": "gpt-4o-mini", "prompt_tokens": null, "total_tokens": null}
+[warn] performance: batch 2/3 failed (files: src/b.py): openai 429: Rate limit reached for gpt-4o-mini [rate_limit_exceeded]
+[warn] Failed to post report as github comment: 403 Forbidden; report saved to ./veritas-report-20260916-143022.md
 ```
+
+An excerpt from a `veritas review --scope pr --target acme/widget#3 --post` run
+with OpenGrep missing, one failed LLM batch and a refused post; a real run writes
+more `[info]` lines. A failed LLM call writes an `[error] LLM call ... failed: ...`
+line, and a failed batch then writes a `[warn] <review type>: batch <i>/<n> failed
+(files: ...): <reason>` line; the run continues and the report is marked
+incomplete (exit code 2, FR-027). A failed `--post` is a warning and leaves the
+exit code unchanged (FR-028).
 
 Every LLM call is logged as one such line in every run; a token count the provider does not report is null. --verbose adds the same kind of JSON object to the other lines that carry fields.
 

@@ -154,6 +154,28 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- Documentation: the user-facing docs now match the code (T137; no behaviour,
+  schema or test change). README and quickstart.md say that only code findings
+  carry a recommendation and that a requirement finding carries a non-empty
+  explanation of its status instead (constitution 8.0.0 Principle IV, FR-005).
+  contracts/cli.md and README drop the `--no-verbose` option and removal of a
+  suppression by ID, neither of which exists. The stdout and stderr examples
+  show the lines Veritas really writes: the real compact summary format, the
+  ZDR warning first, `Scanning target in scope`, `Security coverage degraded:
+  ...` after `OpenGrep not found on PATH` (also in quickstart.md Scenario 1),
+  a failed LLM batch's `[error] LLM call ... failed: ...` and `[warn] <review
+  type>: batch <i>/<n> failed ...` lines in place of an invented rate-limit
+  line, and a failed `--post` as a `[warn]` line (FR-028). The exit code rows
+  in README and contracts/cli.md are now identical: exit 1 names the ZDR
+  refusal, a missing hosting token, a PR fetch failure and an LLM client that
+  failed to initialize (for example, no API key) instead of "provider
+  unreachable", and exit 2 says a failed LLM call, such as a rejected API key
+  or an unreachable provider, gives a partial review. quickstart.md asks for
+  OpenGrep v1.30.1 on PATH (there is no binary-path setting), and its
+  Scenario 8 uses an API key that is invalid from the start, since settings
+  are loaded once per run; its example reason is the provider's error message
+  as Veritas summarizes it, not any provider's exact wording. CLAUDE.md's test
+  count is about 1400.
 - Documentation: research.md § 1 no longer claims what the Semgrep Rules
   License permits or recommends `--config auto`, which `[security]
   opengrep_rules` does not accept; it now says registry rulesets such as

@@ -10,7 +10,7 @@ veritas <command> [options]
 Commands:
   review      Run a code review (primary command)
   suppress    Suppress a finding by ID or filename+line
-  unsuppress Remove a suppression entry by ID or fingerprint
+  unsuppress  Remove a suppression entry
 ```
 
 ## `veritas review`
@@ -23,7 +23,7 @@ Options:
   --target TEXT                      (required) Target: directory path, file path, or PR ref (e.g. "owner/repo#123")
   --config PATH                     Config file path (default: .veritas/config.toml)
   --output PATH                     Report file path (default: ./veritas-report-<timestamp>.md)
-  --verbose / --no-verbose          Enable verbose logging to stderr
+  --verbose                         Enable verbose logging to stderr
   --post                            Post the report as a PR comment / MR note (opt-in, --scope pr only; rejected with other scopes)
   --help                            Show help message
 ```
@@ -51,8 +51,8 @@ Options:
 | Code | Meaning |
 |------|---------|
 | 0 | Review completed (findings or not) |
-| 1 | Fatal error (missing args, bad config, target not found, provider unreachable, `VERITAS_ZDR=true` on a non-OpenRouter backend, --post used with a non-pr scope, or a missing hosting token for `--scope pr`: `VERITAS_GITHUB_TOKEN` / `VERITAS_GITLAB_TOKEN`, checked after the LLM client is built and before any review work starts) |
-| 2 | Partial review (LLM failed mid-run; report written with completed types, marked incomplete per FR-027) |
+| 1 | Fatal error (missing args, bad config, target not found, the LLM client failed to initialize (for example, no API key), PR fetch failed, `VERITAS_ZDR=true` on a non-OpenRouter backend, `--post` used with a non-pr scope, or a missing hosting token for `--scope pr`: `VERITAS_GITHUB_TOKEN` / `VERITAS_GITLAB_TOKEN`, checked after the LLM client is built and before any review work starts) |
+| 2 | Partial review (an LLM call failed, for example a rejected API key or an unreachable provider; the report is still written and marked incomplete per FR-027) |
 
 On exit code 1 for bad configuration (a pydantic validation error or a
 settings-loading `ValueError`), the CLI prints one
@@ -64,22 +64,48 @@ traceback — and exits before any review work starts.
 
 Compact summary only (FR-016):
 ```text
-Veritas Review: 42 findings (3 error, 15 warning, 24 info)
-Security: 2 (1 sast, 1 llm-verified) | Requirements: 3 gaps, 2 partial, 5 satisfied
+Veritas Review: 42 findings (1 error, 17 warning, 24 info)
+Code Quality: 30 | Security: 2 | Test Coverage: 6 | Performance: 4
+Coverage: 18 reviewed (1 split), 2 excluded, 0 unsupported, 0 not reviewed; 3/8 batches
+SAST: ran (1 result(s))
+Context: detected (pyproject.toml, AGENTS.md)
+Security sources: 1 llm-verified | 1 sast
+Requirements: 5 satisfied, 2 partial, 3 gap, 0 unclear, 0 not addressed
+Verdict: RequiresModification
+
+Headline findings (errors):
+  - src/app/db.py:42: SQL query built from request input
 Report: ./veritas-report-20260916-143022.md
 ```
+
+A line appears only when it applies: the category line names only categories
+with findings, `Security sources` only when there are security findings,
+`Headline findings` only for unsuppressed error findings (at most 10, then
+`+N more, see full report`), and `Verification failures: ...` and
+`Report status: incomplete — ...` only when they occur.
 
 ### stderr
 
 Diagnostics and errors only:
 ```text
-[info] Scanning project in scope: ./myproject
 [warn] ZDR is OFF: zero data retention cannot be enforced per request on this backend; data retention is governed by your account agreement with openai. To enforce ZDR per request, use OpenRouter with VERITAS_ZDR=true.
-[warn] OpenGrep not found on PATH; security findings will be LLM-identified only
+[info] Scanning target in scope: acme/widget#3
+[info] Fetching PR acme/widget#3 from github
+[warn] OpenGrep not found on PATH
 [info] LLM call gpt-4o-mini (1234 ms) {"completion_tokens": 30, "latency_ms": 1234.4, "model": "gpt-4o-mini", "prompt_tokens": 120, "total_tokens": 150}
-[error] LLM provider rate-limited after 3/5 review types; report marked incomplete
-[warn] Failed to post report as PR comment: 403 Forbidden; report saved to ./veritas-report-20260916-143022.md
+[warn] Security coverage degraded: OpenGrep not found on PATH; LLM-identified findings remain subject to re-verification.
+[error] LLM call gpt-4o-mini (812 ms) failed: openai 429: Rate limit reached for gpt-4o-mini [rate_limit_exceeded] {"completion_tokens": null, "latency_ms": 812.3, "model": "gpt-4o-mini", "prompt_tokens": null, "total_tokens": null}
+[warn] performance: batch 2/3 failed (files: src/b.py): openai 429: Rate limit reached for gpt-4o-mini [rate_limit_exceeded]
+[warn] Failed to post report as github comment: 403 Forbidden; report saved to ./veritas-report-20260916-143022.md
 ```
+
+An excerpt from a `veritas review --scope pr --target acme/widget#3 --post` run
+with OpenGrep missing, one failed LLM batch and a refused post; a real run writes
+more `[info]` lines. A failed LLM call writes an `[error] LLM call ... failed: ...`
+line, and a failed batch then writes a `[warn] <review type>: batch <i>/<n> failed
+(files: ...): <reason>` line; the run continues and the report is marked
+incomplete (exit code 2, FR-027). A failed `--post` is a warning and leaves the
+exit code unchanged (FR-028).
 
 Every LLM call is logged as one such line in every run; a token count the provider does not report is null. --verbose adds the same kind of JSON object to the other lines that carry fields.
 
