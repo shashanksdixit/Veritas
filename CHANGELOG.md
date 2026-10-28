@@ -154,6 +154,19 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- Documentation: the specs no longer contradict each other or the code (T138;
+  no behaviour, schema or test change). plan.md's summary says only code
+  findings carry a recommendation and a requirement finding carries an
+  explanation of its status (constitution 8.0.0 Principle IV, FR-005); its
+  Storage line names `.veritas/last-report.json` (FR-030); and its source tree
+  lists every tracked test file, adding `test_llm_call_logging.py` and
+  `test_unsupported_language_coverage.py`. data-model.md's ReviewState is the
+  class in `veritas/review/state.py`, all 26 channels with their reducers.
+  `docs/veritas-requirements.md`, the original requirements input, opens with
+  a note that the constitution and spec.md supersede it where they differ,
+  listing each difference with its governing source. tasks.md adds superseded
+  notes to the Phase 3 goal, T036, T042, T094 and T105, and tags T043 with
+  FR-023.
 - Documentation: the user-facing docs now match the code (T137; no behaviour,
   schema or test change). README and quickstart.md say that only code findings
   carry a recommendation and that a requirement finding carries a non-empty

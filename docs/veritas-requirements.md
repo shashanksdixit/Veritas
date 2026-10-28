@@ -1,5 +1,13 @@
 # Veritas — Requirements Specification
 
+> **Note:** This is the original requirements input, kept as written. Constitution v8.0.0 (`.specify/memory/constitution.md`) and `specs/001-code-review/spec.md` supersede it where they differ; the constitution says: "Where this constitution and the requirements reference conflict, this constitution wins until amended." Known differences:
+>
+> - §3 item 6, "Suggested changes" as a review type: constitution Principle IV governs, "Suggested changes are not a separate review type, and there is no dedicated 'suggested changes' node or category."
+> - §4, the requirement statuses: spec.md governs, which adds `not_addressed` ("a status of satisfied / partial / gap / unclear / not_addressed (PR scope only)"); constitution Principle III names only "satisfied / partial / gap / unclear".
+> - §5, the SAST tool as "the source of truth" with the LLM not "inventing findings": constitution Principle II governs, "Security findings MAY come from two sources: the integrated SAST tool (OpenGrep) and LLM-identified findings for security issues outside a SAST tool's pattern-matching reach".
+> - §7, verification confirming a finding "matches the claim": constitution Principle I governs, "verification confirms the citation, not the claim".
+> - §7, "sidestepping LLM-invented vulnerability claims entirely": constitution Principle II governs, "LLM-originated security findings are NOT exempt from verification: they MUST pass the same grounded citation re-check required of other findings under Principle I before appearing in a report."
+
 **Working name:** ReviewBuddy → **Locked name:** Veritas
 **Status:** Requirements workshop complete. To be refined further once build starts.
 

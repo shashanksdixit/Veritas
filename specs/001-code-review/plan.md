@@ -8,7 +8,7 @@
 
 ## Summary
 
-Build Veritas: a CLI-based, multi-agent code review tool that fetches PRs remotely via hosting-provider APIs (GitHub/GitLab), performs grounded reviews (code quality, security/OWASP with SAST + LLM-verified findings, requirement traceability, test-coverage judgment, performance reasoning; each finding with its recommendation), verifies every finding against real source before emission, and outputs a Markdown report + compact stdout summary. Orchestrated via LangGraph with architectural read-only safety boundaries; LLM backend configurable (fixed default openai:gpt-4o-mini at https://api.openai.com/v1; OpenRouter supported when configured, with the ZDR toggle); suppressions managed via a git-tracked allowlist keyed by code fingerprint.
+Build Veritas: a CLI-based, multi-agent code review tool that fetches PRs remotely via hosting-provider APIs (GitHub/GitLab), performs grounded reviews (code quality, security/OWASP with SAST + LLM-verified findings, requirement traceability, test-coverage judgment, performance reasoning; each code finding with its recommendation, each requirement finding with an explanation of its status), verifies every finding against real source before emission, and outputs a Markdown report + compact stdout summary. Orchestrated via LangGraph with architectural read-only safety boundaries; LLM backend configurable (fixed default openai:gpt-4o-mini at https://api.openai.com/v1; OpenRouter supported when configured, with the ZDR toggle); suppressions managed via a git-tracked allowlist keyed by code fingerprint.
 
 ## Technical Context
 
@@ -27,7 +27,7 @@ Build Veritas: a CLI-based, multi-agent code review tool that fetches PRs remote
 | pytest | latest | MIT | Integration testing (Principle VII) |
 | Pydantic | v2 | MIT | Data models, state schema |
 
-**Storage**: File-system only — `.veritas/suppressions.json` (git-tracked), report Markdown file, `.veritas/config.toml` (optional). No database.
+**Storage**: File-system only — `.veritas/suppressions.json` (git-tracked), report Markdown file, `.veritas/last-report.json` (machine-readable copy of the latest report, written by every review and read by the suppress command; gitignored by its own path, FR-030), `.veritas/config.toml` (optional). No database.
 
 **Testing**: pytest (integration tests for LLM contracts, CLI behavior, config handling per Principle VII)
 
@@ -190,6 +190,7 @@ tests/
 │   ├── test_purgeable_artifacts.py  # Review artifacts are purgeable (T102, FR-030)
 │   ├── test_llm_provider.py         # LLM provider request/response contracts
 │   ├── test_llm_output_limit.py     # Provider error URL removal, [llm] max_output_tokens (FR-019, FR-029)
+│   ├── test_llm_call_logging.py     # Every LLM call logged with its structured fields in every run (T135, FR-019)
 │   ├── test_zdr.py                  # ZDR toggle (FR-021, T079)
 │   ├── test_cli_review.py           # CLI review command behavior
 │   ├── test_cli_suppress.py         # CLI suppress/unsuppress behavior
@@ -204,6 +205,7 @@ tests/
 │   ├── test_requirements_batches.py # Per-batch requirement evaluation (FR-007)
 │   ├── test_determinism.py          # Run-level determinism (SC-004)
 │   ├── test_schema_version.py       # Output-schema versioning tripwire (FR-016)
+│   ├── test_unsupported_language_coverage.py # Quickstart Scenario 12: unsupported-language files listed in Coverage (T130, FR-022)
 │   └── test_project_aware_review.py # Project-context influence on reports (US4)
 └── unit/
     ├── test_fingerprint.py          # Suppression fingerprint determinism
