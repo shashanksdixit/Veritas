@@ -21,6 +21,7 @@ from veritas.models.entities import (
     SastStatus,
     Severity,
 )
+from veritas.output.summary import verification_outcomes
 
 _HEADLINE_CAP = 10
 
@@ -207,9 +208,10 @@ def render_compact(report: Report, report_path: str | None = None) -> str:
         if extra > 0:
             lines.append(f"  +{extra} more, see full report")
 
-    if summary.verification_failure_count:
+    if summary.verification_failures:
         lines.append(
-            f"Verification failures: {summary.verification_failure_count} finding(s) excluded (FR-013), see full report"
+            f"Verification failures: {verification_outcomes(summary.verification_failures)} "
+            "(FR-013), see full report"
         )
 
     if report.run.report_status.value == "incomplete":

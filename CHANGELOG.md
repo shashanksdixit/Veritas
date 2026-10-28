@@ -154,6 +154,19 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- The verification-failure summary now states the two outcomes separately
+  (FR-013, FR-015, FR-016, T139; no schema change). A code finding that fails
+  verification is excluded from the report, but a requirement finding that
+  fails stays in it with its unconfirmed evidence removed or its status set to
+  unclear; stdout used to call both "excluded" and the Markdown note called
+  both "dropped". Stdout now reads, naming only the kinds present,
+  `Verification failures: 1 code finding(s) excluded; 1 requirement finding(s)
+  kept, with unconfirmed evidence removed or marked unclear (FR-013), see full
+  report`, and counts findings rather than failure records (one requirement
+  finding can record both `evidence_not_confirmed` and `explanation_missing`,
+  and was counted twice). The Markdown note describes both outcomes and is
+  followed by an `**Outcome**:` line with the same counts. The kind is read
+  from each failure's existing `reason_code`, so report JSON is unchanged.
 - Documentation: the specs no longer contradict each other or the code (T138;
   no behaviour, schema or test change). plan.md's summary says only code
   findings carry a recommendation and a requirement finding carries an

@@ -17,6 +17,8 @@ from veritas.models.entities import (
     Summary,
     Verdict,
     FindingSource,
+    VerificationFailure,
+    VerificationReasonCode,
 )
 from veritas.output.compact import render_compact
 
@@ -277,3 +279,88 @@ def test_context_line_when_unavailable_states_the_reason():
 
 def test_no_context_line_when_the_context_node_was_never_reached():
     assert _context_lines() == []
+
+
+# --- The Verification failures line: two outcomes, counted by finding (T139, FR-013, FR-015) ---
+
+
+def _vf(finding_id: str, code: VerificationReasonCode) -> VerificationFailure:
+    return VerificationFailure(
+        finding_id=finding_id,
+        file="",
+        line_range=LineRange(start_line=0, start_col=0, end_line=0, end_col=0),
+        reason="r",
+        reason_code=code,
+    )
+
+
+def _with_failures(*failures: VerificationFailure) -> Report:
+    report = _report()
+    report.summary.verification_failures = list(failures)
+    report.summary.verification_failure_count = len(failures)
+    return report
+
+
+def _verification_lines(report: Report) -> list[str]:
+    return [
+        line for line in render_compact(report).splitlines() if line.startswith("Verification failures")
+    ]
+
+
+_KEPT = "requirement finding(s) kept, with unconfirmed evidence removed or marked unclear"
+
+
+def test_no_verification_line_without_failures():
+    assert _verification_lines(_report()) == []
+
+
+def test_a_kept_requirement_finding_is_not_called_excluded():
+    # A requirement finding that fails stays in the report (FR-013).
+    report = _with_failures(_vf("rf-1", VerificationReasonCode.EXPLANATION_MISSING))
+    assert _verification_lines(report) == [
+        f"Verification failures: 1 {_KEPT} (FR-013), see full report"
+    ]
+
+
+def test_an_excluded_code_finding_is_called_excluded():
+    report = _with_failures(_vf("cf-1", VerificationReasonCode.SNIPPET_MISSING))
+    assert _verification_lines(report) == [
+        "Verification failures: 1 code finding(s) excluded (FR-013), see full report"
+    ]
+
+
+def test_both_outcomes_are_stated_separately_on_one_line():
+    report = _with_failures(
+        _vf("cf-1", VerificationReasonCode.SNIPPET_MISSING),
+        _vf("rf-1", VerificationReasonCode.EXPLANATION_MISSING),
+    )
+    assert _verification_lines(report) == [
+        f"Verification failures: 1 code finding(s) excluded; 1 {_KEPT} (FR-013), see full report"
+    ]
+
+
+def test_findings_are_counted_not_failure_records():
+    # One requirement finding can record both evidence_not_confirmed and
+    # explanation_missing; it is still one finding.
+    report = _with_failures(
+        _vf("rf-2", VerificationReasonCode.EVIDENCE_NOT_CONFIRMED),
+        _vf("rf-2", VerificationReasonCode.EXPLANATION_MISSING),
+    )
+    assert _verification_lines(report) == [
+        f"Verification failures: 1 {_KEPT} (FR-013), see full report"
+    ]
+
+
+def test_every_reason_code_has_the_outcome_fr013_gives_it():
+    # FR-013 lists two requirement reason codes; every other code is a code
+    # finding's, and a code finding that fails is excluded.
+    requirement_codes = {
+        VerificationReasonCode.EVIDENCE_NOT_CONFIRMED,
+        VerificationReasonCode.EXPLANATION_MISSING,
+    }
+    for code in VerificationReasonCode:
+        (line,) = _verification_lines(_with_failures(_vf("x", code)))
+        if code in requirement_codes:
+            assert line == f"Verification failures: 1 {_KEPT} (FR-013), see full report"
+        else:
+            assert line == "Verification failures: 1 code finding(s) excluded (FR-013), see full report"

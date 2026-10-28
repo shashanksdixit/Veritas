@@ -180,11 +180,11 @@ veritas review --scope project --target ./myproject
 
 Create a finding that cites a non-existent file/line (e.g. by a hallucinating LLM). The verification node should:
 1. Re-read the cited file/line
-2. Fail to confirm → exclude from report
+2. Fail to confirm → exclude the code finding from the report
 3. Record as a verification-failure note in report summary
 
 **Expected**:
-- The report's `### Verification failures (FR-013)` section lists the failure in a table (Finding ID, File, Lines, Code, Reason); the stdout summary carries `Verification failures: <n> finding(s) excluded (FR-013), see full report`
+- The report's `### Verification failures (FR-013)` section states the outcome (`**Outcome**: <n> code finding(s) excluded.`) and lists the failure in a table (Finding ID, File, Lines, Code, Reason); the stdout summary carries `Verification failures: <n> code finding(s) excluded (FR-013), see full report`. A requirement finding that fails is instead kept and counted as `<m> requirement finding(s) kept, with unconfirmed evidence removed or marked unclear`.
 - The unverified finding does NOT appear in the findings list
 - Note is visible and attributable (includes finding ID, file, reason code and reason)
 

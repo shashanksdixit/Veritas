@@ -1443,6 +1443,81 @@ def test_a_requirement_with_no_explanation_is_reported_unclear_through_run_revie
     ) in md
 
 
+def test_stdout_and_report_state_each_verification_outcome_through_run_review(
+    tmp_path, settings, capsys
+):
+    """End to end (T139, FR-013, FR-015, FR-016): all three outcomes through the
+    real verify node. An unquoted code finding is excluded (snippet_missing); a
+    requirement with no explanation is kept as unclear (explanation_missing); a
+    requirement whose only evidence is out of scope is kept as unclear
+    (evidence_not_confirmed). Stdout and the Markdown report state the excluded
+    and kept findings separately instead of calling all of them excluded."""
+    from tests.conftest import FakeLLM, canned_code_findings
+
+    from veritas.config.constants import LAST_REPORT_JSON
+    from veritas.models.entities import Report, ReviewScope
+    from veritas.review.graph import run_review
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "x.py").write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+    feature = tmp_path / "specs" / "001-demo"
+    feature.mkdir(parents=True)
+    (feature / "spec.md").write_text(
+        "# Feature\n\n- **FR-001**: The system MUST set a.\n- **FR-002**: The system MUST set b.\n",
+        encoding="utf-8",
+    )
+    llm = FakeLLM(
+        {
+            "extracted from the project's spec": json.dumps(
+                [
+                    {"id": "FR-001", "answer": "implemented", "evidence": ["src/x.py:1"], "explanation": "   "},
+                    {
+                        "id": "FR-002",
+                        "answer": "implemented",
+                        "evidence": ["src/missing.py:1"],
+                        "explanation": "b is set",
+                    },
+                ]
+            ),
+            # Quotes no code, so it fails as snippet_missing and is excluded.
+            "code-quality": canned_code_findings(file="src/x.py", snippet=None, start_line=1, end_line=1),
+        }
+    )
+    outcome = run_review(settings, ReviewScope.PROJECT, str(tmp_path), llm=llm)
+    assert outcome.exit_code == 0
+
+    report = Report.model_validate_json(Path(LAST_REPORT_JSON).read_text(encoding="utf-8"))
+    by_ref = {rf.requirement_ref: rf for rf in report.requirement_findings}
+    assert by_ref["FR-001"].status is RequirementStatus.UNCLEAR
+    assert by_ref["FR-002"].status is RequirementStatus.UNCLEAR
+    assert by_ref["FR-002"].evidence == []
+    requirement_ids = {by_ref["FR-001"].id, by_ref["FR-002"].id}
+    assert sorted(
+        (f.reason_code.value, f.finding_id if f.finding_id in requirement_ids else "code")
+        for f in report.summary.verification_failures
+    ) == sorted(
+        [
+            ("snippet_missing", "code"),
+            ("explanation_missing", by_ref["FR-001"].id),
+            ("evidence_not_confirmed", by_ref["FR-002"].id),
+        ]
+    )
+    assert [f for f in report.code_findings if f.source is not FindingSource.SAST] == []
+
+    stdout = capsys.readouterr().out.splitlines()
+    assert [line for line in stdout if line.startswith("Verification failures")] == [
+        "Verification failures: 1 code finding(s) excluded; 2 requirement finding(s) kept, "
+        "with unconfirmed evidence removed or marked unclear (FR-013), see full report"
+    ]
+    md = Path(str(outcome.report_path)).read_text(encoding="utf-8")
+    assert (
+        "**Outcome**: 1 code finding(s) excluded; 2 requirement finding(s) kept, "
+        "with unconfirmed evidence removed or marked unclear."
+    ) in md
+    assert "### FR-001 — *unclear*" in md
+    assert "### FR-002 — *unclear*" in md
+
+
 # ---------------------------------------------------------------------------
 # FR-013 de-duplication: same suppression fingerprint merged after verification
 # ---------------------------------------------------------------------------

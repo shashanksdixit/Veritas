@@ -174,7 +174,10 @@ def test_verdict_legend_rendered_in_every_report():
 def test_verification_note_present_when_failures_exist():
     md = render_markdown(_report())
     heading = "### Verification failures (FR-013)\n\n"
-    note_start = "> Each proposed finding must cite a file, line range, and the exact code snippet it refers to."
+    note_start = (
+        "> Each proposed code finding must cite a file, line range, and the exact code snippet it "
+        "refers to."
+    )
     assert heading + note_start in md
     assert (
         "it means the reviewer's citation could not be confirmed (the quoted code was not found "
@@ -190,7 +193,8 @@ def test_verification_note_absent_when_no_failures():
     report.summary.verification_failure_count = 0
     md = render_markdown(report)
     assert "### Verification failures (FR-013)" not in md
-    assert "Each proposed finding must cite a file" not in md
+    assert "Each proposed code finding must cite a file" not in md
+    assert "**Outcome**" not in md
 
 
 def test_verification_note_explains_citation_correction():
@@ -201,11 +205,59 @@ def test_verification_note_explains_citation_correction():
         "When they don't, Veritas looks for the quoted code nearby: if it appears "
         'exactly once within two lines of the cited range, the citation is corrected '
         'and the finding is kept (shown as "Citation adjusted" on that finding). '
-        "Otherwise the finding is dropped and listed here so nothing disappears "
-        "silently."
+        "Otherwise the code finding is excluded from this report and listed here so nothing "
+        "disappears silently; so is a code finding that gave no recommendation."
     ) in section
-    # The old unconditional wording is gone: the drop is now the "Otherwise" case.
+    # The old unconditional wording is gone: the exclusion is now the "Otherwise" case.
     assert "When they don't, the finding is dropped" not in section
+
+
+def test_verification_note_says_a_requirement_finding_is_kept():
+    # A requirement finding that fails stays in the report (FR-013), so the note
+    # must not say that every listed finding was removed (FR-015, T139).
+    section = _verification_section(render_markdown(_report_with(_failure())))
+    assert (
+        "A requirement finding is never excluded: when its cited evidence cannot be confirmed "
+        "or it gives no explanation, it stays under Requirement Findings with the unconfirmed "
+        "evidence removed or its status set to unclear, and is listed here."
+    ) in section
+    assert "dropped" not in section
+
+
+def _outcome_line(*failures: VerificationFailure) -> str:
+    section = _verification_section(render_markdown(_report_with(*failures)))
+    (line,) = [line for line in section.splitlines() if line.startswith("**Outcome**")]
+    return line
+
+
+def test_outcome_line_for_a_kept_requirement_finding():
+    failure = _failure(finding_id="rf-1", file="", reason_code=VerificationReasonCode.EXPLANATION_MISSING)
+    assert _outcome_line(failure) == (
+        "**Outcome**: 1 requirement finding(s) kept, with unconfirmed evidence removed or marked unclear."
+    )
+
+
+def test_outcome_line_for_an_excluded_code_finding():
+    failure = _failure(finding_id="cf-1", reason_code=VerificationReasonCode.SNIPPET_MISSING)
+    assert _outcome_line(failure) == "**Outcome**: 1 code finding(s) excluded."
+
+
+def test_outcome_line_for_both_kinds_counts_findings_not_records():
+    assert _outcome_line(
+        _failure(finding_id="cf-1", reason_code=VerificationReasonCode.SNIPPET_MISSING),
+        _failure(finding_id="rf-2", file="", reason_code=VerificationReasonCode.EVIDENCE_NOT_CONFIRMED),
+        _failure(finding_id="rf-2", file="", reason_code=VerificationReasonCode.EXPLANATION_MISSING),
+    ) == (
+        "**Outcome**: 1 code finding(s) excluded; 1 requirement finding(s) kept, "
+        "with unconfirmed evidence removed or marked unclear."
+    )
+
+
+def test_outcome_line_follows_the_note_and_precedes_the_table():
+    md = render_markdown(_report_with(_failure(reason_code=VerificationReasonCode.SNIPPET_MISSING)))
+    assert md.index("> Each proposed code finding") < md.index("**Outcome**") < md.index(
+        "| Finding ID | File | Lines | Code | Reason |"
+    )
 
 
 def test_evidence_rendered():

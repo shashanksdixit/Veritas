@@ -10,6 +10,7 @@ from veritas.models.entities import (
     Severity,
     Summary,
     VerificationFailure,
+    VerificationReasonCode,
     Verdict,
 )
 
@@ -20,6 +21,39 @@ from veritas.models.entities import (
 # never reaches a verdict. Adding a status therefore forces a decision here.
 _MODIFICATION_STATUSES = frozenset({RequirementStatus.GAP})
 _REVIEW_STATUSES = frozenset({RequirementStatus.PARTIAL, RequirementStatus.UNCLEAR})
+
+# The reason codes FR-013 gives a requirement finding. A requirement finding that
+# fails stays in the report; every other code is a code finding's, and a code
+# finding that fails is excluded.
+_REQUIREMENT_REASON_CODES = frozenset(
+    {VerificationReasonCode.EVIDENCE_NOT_CONFIRMED, VerificationReasonCode.EXPLANATION_MISSING}
+)
+
+
+def verification_outcomes(failures: list[VerificationFailure]) -> str:
+    """What verification did to the findings behind ``failures`` (FR-013, FR-015).
+
+    The two kinds are counted separately because they end differently: a code
+    finding that fails is excluded from the report, a requirement finding that
+    fails is kept with its unconfirmed evidence removed or marked unclear. Each
+    count is of findings, not of failures: one requirement finding can record
+    both evidence_not_confirmed and explanation_missing. Only the kinds present
+    are named, so the result is empty when ``failures`` is.
+
+    The kind is read from ``reason_code`` alone, so this needs nothing the
+    report does not already carry. A failure with no reason_code (a report
+    shape older than schema 1.1.0) is counted as a code finding.
+    """
+    excluded = {vf.finding_id for vf in failures if vf.reason_code not in _REQUIREMENT_REASON_CODES}
+    kept = {vf.finding_id for vf in failures if vf.reason_code in _REQUIREMENT_REASON_CODES}
+    parts: list[str] = []
+    if excluded:
+        parts.append(f"{len(excluded)} code finding(s) excluded")
+    if kept:
+        parts.append(
+            f"{len(kept)} requirement finding(s) kept, with unconfirmed evidence removed or marked unclear"
+        )
+    return "; ".join(parts)
 
 
 def compute_summary(

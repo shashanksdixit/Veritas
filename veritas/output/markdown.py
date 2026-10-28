@@ -24,6 +24,7 @@ from veritas.models.entities import (
     VerificationFailure,
     VerificationReasonCode,
 )
+from veritas.output.summary import verification_outcomes
 
 
 def _severity_label(sev: Severity) -> str:
@@ -146,14 +147,18 @@ _REASON_CODE_MEANINGS: dict[VerificationReasonCode, str] = {
 
 
 _VERIFICATION_FAILURE_NOTE = (
-    "> Each proposed finding must cite a file, line range, and the exact code snippet it refers to. "
-    "Before a finding is allowed into this report, Veritas re-reads the file and checks that those lines "
-    "really contain that snippet. When they don't, Veritas looks for the quoted code nearby: if it appears "
-    "exactly once within two lines of the cited range, the citation is corrected and the finding is kept "
-    '(shown as "Citation adjusted" on that finding). Otherwise the finding is dropped and listed here so '
-    "nothing disappears silently. A dropped finding does not mean your code has a problem; it means the "
+    "> Each proposed code finding must cite a file, line range, and the exact code snippet it refers "
+    "to. Before a code finding is allowed into this report, Veritas re-reads the file and checks that "
+    "those lines really contain that snippet. When they don't, Veritas looks for the quoted code nearby: "
+    "if it appears exactly once within two lines of the cited range, the citation is corrected and the "
+    'finding is kept (shown as "Citation adjusted" on that finding). Otherwise the code finding is '
+    "excluded from this report and listed here so nothing disappears silently; so is a code finding that "
+    "gave no recommendation. An excluded code finding does not mean your code has a problem; it means the "
     "reviewer's citation could not be confirmed (the quoted code was not found at the cited lines, "
-    "or no code was quoted), or that the finding gave no recommendation."
+    "or no code was quoted), or that the finding gave no recommendation. A requirement finding is never "
+    "excluded: when its cited evidence cannot be confirmed or it gives no explanation, it stays under "
+    "Requirement Findings with the unconfirmed evidence removed or its status set to unclear, and is "
+    "listed here."
 )
 
 
@@ -425,6 +430,8 @@ def render_markdown(report: Report) -> str:
         out.append("### Verification failures (FR-013)")
         out.append("")
         out.append(_VERIFICATION_FAILURE_NOTE)
+        out.append("")
+        out.append(f"**Outcome**: {verification_outcomes(summary.verification_failures)}.")
         out.append("")
         _render_table(
             out,
