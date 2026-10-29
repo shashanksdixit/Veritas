@@ -1,2 +1,529 @@
 # Veritas
-Code review tool using LLM
+
+CLI-based, multi-agent code review tool. Veritas reviews a pull request, project,
+module, or single file for code quality, security/OWASP, requirement fulfillment,
+test-coverage judgment, and performance reasoning — grounding every finding in a
+real, verified source location and the project's own context before emitting a
+GitHub-Flavored Markdown report that can be posted directly as a PR comment.
+
+## Features
+
+- **Four scopes, per run** — `project`, `module`, `file`, or `pr` (fetched
+  remotely via the GitHub/GitLab API; no local git state read).
+- **Five mandatory review types** — code quality, security/OWASP, requirements,
+  test-coverage judgment (tests are never executed), and performance reasoning.
+  Every code finding carries its own concrete recommendation text; a requirement
+  finding carries no recommendation but a non-empty explanation of its status.
+- **Grounded and verified** — SAST (OpenGrep) output is ground truth for security
+  findings; every LLM-identified finding is re-verified against its cited
+  file/line before it can appear. Unverifiable findings are excluded and recorded
+  as verification-failure notes (never dropped silently).
+- **Project-aware** — language/framework versions parsed from real manifests,
+  project conventions honored (AGENTS.md-equivalent), and natural-language custom
+  rules supported.
+- **Suppression allowlist** — a git-tracked `.veritas/suppressions.json` keyed by
+  a fingerprint of the flagged code, so unrelated edits keep a finding suppressed
+  while a real change in the flagged snippet surfaces it again.
+- **Privacy control** — opt-in ZDR (zero-data-retention) routing for OpenRouter,
+  and a shared redaction utility that keeps secrets out of reports, logs, and
+  error messages.
+
+## Installation
+
+Requires Python 3.12+.
+
+```bash
+pip install -e .
+```
+
+Optional native-Anthropic (Claude) support is an extra that installs
+`langchain-anthropic`; it is never installed automatically at runtime:
+
+```bash
+pip install -e ".[anthropic]"
+```
+
+Development/test extras:
+
+```bash
+pip install -e ".[test]"
+```
+
+**SAST (optional but recommended):** Veritas integrates OpenGrep (LGPL-2.1, no
+paid tier) for grounded security findings. Install the standalone `opengrep`
+binary on `PATH` (see github.com/opengrep/opengrep/releases). Without it, security
+coverage degrades gracefully with a specific one-line reason printed to stderr.
+The rules source is configurable - `[security] opengrep_rules`
+(`VERITAS_OPENGREP_RULES`), a registry ruleset such as `p/owasp-top-ten` or an
+existing local rules file/directory - and the source used is recorded in the
+report. Registry rulesets such as `p/owasp-top-ten` are not covered by
+OpenGrep's LGPL-2.1 licence; they carry the Semgrep Rules License, and using
+one is your licensing choice. A local rules file or directory is the
+alternative. OpenGrep runs with `[security] opengrep_jobs` (`VERITAS_OPENGREP_JOBS`,
+default 4) parallel jobs and a 120-second limit; stderr logs how long each scan
+took.
+
+## Setup
+
+The repository uses `uv` for dependency management:
+
+```bash
+# From the repository root
+uv sync
+```
+
+Run the CLI with `uv` so it uses the locked environment:
+
+```bash
+uv run veritas review --scope project --target ./myproject
+```
+
+## Corporate networks
+
+Python's TLS (via `requests`/httpx) trusts the CA bundle shipped with the
+`certifi` package, not the OS store. On a corporate network with an
+inspection proxy:
+
+- Use uv's native-TLS variant so uv itself (which downloads dependencies) can
+  trust your environment: `uv sync --native-tls` and `uv run --native-tls ...`.
+- For the Python requests Veritas makes at runtime, append your company root CA
+  to certifi's bundle:
+
+  ```bash
+  # Certificates from your corporate CA (ask your IT team for P12/PEM)
+  uv pip install certifi
+  python -c "import certifi, pathlib; print(certifi.where())"
+  # ...then append your company root CA to the printed cacert.pem
+  ```
+
+  A proxy that rewrites HTTPS without being trusted will otherwise surface as
+  TLS certificate errors from the LLM or hosting API, never as a clean message.
+- OpenGrep is a separate binary with its own HTTP client: it downloads registry
+  rules (a `p/...` or `r/...` `opengrep_rules` value) itself, outside Python's
+  `certifi` bundle, so give it a CA bundle that includes your company root
+  (registry rulesets carry the Semgrep Rules License, not OpenGrep's LGPL-2.1,
+  so using one is your licensing choice; a local rules file or directory needs
+  no download and is the alternative):
+
+  ```bash
+  export REQUESTS_CA_BUNDLE=/path/to/company-root-bundle.pem
+  ```
+
+  Without it the rules download fails behind an inspection proxy and SAST
+  degrades; a local `[security] opengrep_rules` file or directory sidesteps the
+  download entirely.
+
+## Quick start
+
+```bash
+# One-off review of a whole project
+veritas review --scope project --target ./myproject
+
+# A single module directory or file
+veritas review --scope module --target ./myproject/src/auth
+veritas review --scope file --target ./myproject/src/auth.py
+
+# Review a remote PR (GitHub), then optionally post the report as a comment
+export VERITAS_GITHUB_TOKEN=ghp_...
+veritas review --scope pr --target "myorg/myrepo#42"
+veritas review --scope pr --target "myorg/myrepo#42" --post
+
+# Review a remote MR (GitLab)
+export VERITAS_GITLAB_TOKEN=glpat-...
+veritas review --scope pr --target "group/project!7"
+```
+
+## CLI reference
+
+```text
+veritas <command> [options]
+
+Commands:
+  review      Run a code review (primary command)
+  suppress    Suppress a finding by ID or filename+line
+  unsuppress  Remove a suppression entry
+```
+
+### `veritas review`
+
+```text
+veritas review [OPTIONS]
+
+Options:
+  --scope [project|module|file|pr]  (required) Review scope
+  --target TEXT                      (required) Directory path, file path, or PR ref
+                                    e.g. "owner/repo#123" (GitHub) or "group/project!9" (GitLab)
+  --config PATH                     Config file path (default: .veritas/config.toml)
+  --output PATH                     Report file path (default: ./veritas-report-<timestamp>.md)
+  --verbose                         Enable verbose logging to stderr
+  --post                            Post the report as a PR comment / MR note (--scope pr only)
+  --help                            Show help message
+```
+
+PR `--target` references:
+
+| Pattern | Parsed as |
+|---------|-----------|
+| `owner/repo#123` | GitHub PR #123 |
+| `https://github.com/owner/repo/pull/123` | GitHub PR #123 |
+| `group/project!123` | GitLab MR #123 |
+| `https://gitlab.com/owner/repo/-/merge_requests/123` | GitLab MR #123 |
+
+A bare number (e.g. `123`) is rejected with exit code 1: without a config-level
+default project or local git state, it is always ambiguous. The full reference is
+required.
+
+### `veritas suppress`
+
+```text
+veritas suppress [OPTIONS]
+
+Options:
+  --finding-id TEXT   Stable finding ID from the report
+  --file TEXT         Filename (alternative to --finding-id)
+  --line INTEGER      Line number (used with --file)
+  --reason TEXT       Reason for suppression
+```
+
+On success the computed fingerprint is printed to stdout:
+
+```text
+Suppressed. Fingerprint: a3f9c2...  (use with 'veritas unsuppress --fingerprint' to reverse)
+```
+
+### `veritas unsuppress`
+
+```text
+veritas unsuppress [OPTIONS]
+
+Options:
+  --fingerprint TEXT   SHA-256 fingerprint of the suppression entry
+```
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Review completed (findings or not) |
+| 1 | Fatal error (missing args, bad config, target not found, the LLM client failed to initialize (for example, no API key), PR fetch failed, `VERITAS_ZDR=true` on a non-OpenRouter backend, `--post` used with a non-pr scope, or a missing hosting token for `--scope pr`: `VERITAS_GITHUB_TOKEN` / `VERITAS_GITLAB_TOKEN`, checked after the LLM client is built and before any review work starts) |
+| 2 | Partial review (an LLM call failed, for example a rejected API key or an unreachable provider; the report is still written and marked incomplete per FR-027) |
+
+### stdout / stderr
+
+stdout carries results only (compact summary). stderr carries diagnostics and
+errors:
+
+```text
+[warn] ZDR is OFF: zero data retention cannot be enforced per request on this backend; data retention is governed by your account agreement with openai. To enforce ZDR per request, use OpenRouter with VERITAS_ZDR=true.
+[info] Scanning target in scope: acme/widget#3
+[info] Fetching PR acme/widget#3 from github
+[warn] OpenGrep not found on PATH
+[info] LLM call gpt-4o-mini (1234 ms) {"completion_tokens": 30, "latency_ms": 1234.4, "model": "gpt-4o-mini", "prompt_tokens": 120, "total_tokens": 150}
+[warn] Security coverage degraded: OpenGrep not found on PATH; LLM-identified findings remain subject to re-verification.
+[error] LLM call gpt-4o-mini (812 ms) failed: openai 429: Rate limit reached for gpt-4o-mini [rate_limit_exceeded] {"completion_tokens": null, "latency_ms": 812.3, "model": "gpt-4o-mini", "prompt_tokens": null, "total_tokens": null}
+[warn] performance: batch 2/3 failed (files: src/b.py): openai 429: Rate limit reached for gpt-4o-mini [rate_limit_exceeded]
+[warn] Failed to post report as github comment: 403 Forbidden; report saved to ./veritas-report-20260916-143022.md
+```
+
+An excerpt from a `veritas review --scope pr --target acme/widget#3 --post` run
+with OpenGrep missing, one failed LLM batch and a refused post; a real run writes
+more `[info]` lines. A failed LLM call writes an `[error] LLM call ... failed: ...`
+line, and a failed batch then writes a `[warn] <review type>: batch <i>/<n> failed
+(files: ...): <reason>` line; the run continues and the report is marked
+incomplete (exit code 2, FR-027). A failed `--post` is a warning and leaves the
+exit code unchanged (FR-028).
+
+Every LLM call is logged as one such line in every run; a token count the provider does not report is null. --verbose adds the same kind of JSON object to the other lines that carry fields.
+
+## Configuration
+
+Configuration layers, lowest to highest precedence:
+
+1. Built-in defaults
+2. `.veritas/config.toml` (committed; a run that finds `api_key`, `github_token`
+   or `gitlab_token` in it stops with `[error] invalid configuration: ...` and exit 1,
+   also when the same file is passed with `--config` under any spelling)
+3. `.veritas/config.local.toml` (gitignored, local overrides; keys and tokens go here
+   or in environment variables)
+4. Environment variables `VERITAS_*`
+
+```toml
+# .veritas/config.toml
+[llm]
+base_url = "https://api.openai.com/v1"      # default (OpenAI direct)
+model = "openai:gpt-4o-mini"                 # default; fixed, never chosen at runtime
+zdr = false                                  # default: off
+timeout_seconds = 120                        # default: per-request timeout in seconds,
+                                              #  >= 1 (FR-019). A request that exceeds it
+                                              #  fails instead of waiting indefinitely.
+max_retries = 2                              # default: retries per request after a
+                                              #  timeout/failed attempt, 0-10 (FR-019).
+                                              #  0 means one attempt, no retry.
+max_concurrency = 4                          # default: maximum concurrent LLM requests,
+                                              #  1-16 (FR-019).
+max_output_tokens = 8192                      # default: maximum output tokens per LLM request,
+                                              #  256-65536 (FR-019).
+
+[hosting]
+provider = "github"                          # "github" or "gitlab"
+
+[review]
+exclude = [".specify/"]                       # default; path exclusion patterns (FR-029)
+                                             #  a pattern ending in "/" matches every
+                                             #  path under that directory prefix; any
+                                             #  other pattern is fnmatch-ed against the
+                                             #  full relative path. A user-supplied
+                                             #  list replaces this default; an empty
+                                             #  list disables exclusion.
+batch_chars = 48000                          # default: max line-numbered chars per batch (FR-029)
+max_batches = 8                              # default: max batches per code review type (FR-029)
+
+[security]
+opengrep_rules = "p/owasp-top-ten"           # default: SAST rules source. A registry
+                                             #  ruleset name ("p/..." or "r/...") or an
+                                             #  existing local rules file or directory.
+                                             #  A registry ruleset may change over time;
+                                             #  a local rules source makes SAST
+                                             #  reproducible. Registry rulesets are not
+                                             #  covered by OpenGrep's LGPL-2.1 licence;
+                                             #  they carry the Semgrep Rules License,
+                                             #  and using one is your licensing choice.
+                                             #  A local rules file or directory is the
+                                             #  alternative. The report's "- **SAST**"
+                                             #  line records it with whether the scan
+                                             #  ran, its result count, or the reason it
+                                             #  did not run; stdout prints "SAST: ...".
+opengrep_jobs = 4                            # default: OpenGrep parallel jobs, passed as
+                                             #  "-j" (at least 1). OpenGrep's own default
+                                             #  is one job per core, which can make scan
+                                             #  times swing past the fixed 120 s limit.
+                                             #  stderr logs "[info] OpenGrep scan finished
+                                             #  in <s> s (-j <n>)"; a timeout is reported
+                                             #  as "OpenGrep scan timed out after 120 s".
+                                             #  OpenGrep's default ignore list (tests/,
+                                             #  build/, vendor/, node_modules/, ...) and
+                                             #  1 MB size limit skip some files; the SAST
+                                             #  line then says, for example, "2 file(s)
+                                             #  not scanned (OpenGrep's default ignore
+                                             #  list: tests/)". Veritas does not change
+                                             #  which files OpenGrep scans.
+```
+
+### Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `VERITAS_API_KEY` | LLM provider API key |
+| `VERITAS_BASE_URL` | LLM endpoint base URL (default: `https://api.openai.com/v1`) |
+| `VERITAS_MODEL` | Model (default: `openai:gpt-4o-mini`; e.g. `openai:vendor/model` or `anthropic:claude-model`) |
+| `VERITAS_ZDR` | Zero-data-retention routing (`"true"`/`"false"`) |
+| `VERITAS_TIMEOUT_SECONDS` | Per-request LLM timeout in seconds (default: 120, min 1) |
+| `VERITAS_MAX_RETRIES` | Retry limit per LLM request (default: 2, range 0-10; 0 = no retry) |
+| `VERITAS_MAX_CONCURRENCY` | Maximum concurrent LLM requests (default: 4, range 1-16) |
+| `VERITAS_MAX_OUTPUT_TOKENS` | Maximum output tokens per LLM request (default: 8192, min 256, max 65536) |
+| `VERITAS_OPENGREP_RULES` | SAST rules source (default: `p/owasp-top-ten`); a registry ruleset name `p/...`/`r/...` or an existing local rules file or directory. Registry rulesets carry the Semgrep Rules License, not OpenGrep's LGPL-2.1; using one is your licensing choice, and local rules are the alternative |
+| `VERITAS_OPENGREP_JOBS` | OpenGrep parallel job count, passed as `-j` (default: 4, min 1) |
+| `VERITAS_GITHUB_TOKEN` | GitHub API token (PR mode) |
+| `VERITAS_GITLAB_TOKEN` | GitLab API token (PR mode) |
+| `VERITAS_GITLAB_URL` | GitLab instance URL (default: https://gitlab.com) |
+
+**Secrets rule:** API keys and tokens are provided only via environment variables
+or the gitignored local config file. The committed config file must never contain
+credentials. No secret is logged or echoed into a report — the shared redaction
+utility masks common secret shapes (API keys, bearer tokens, connection strings,
+PEM blocks) in all user-facing finding text.
+
+### LLM model strings
+
+The model string is `<provider>:<model>`. The default is the fixed model
+`openai:gpt-4o-mini` at `https://api.openai.com/v1` (OpenAI direct, through the
+OpenAI-compatible provider); Veritas never picks a model at runtime. The report's
+`- **Model**:` line records the model actually used, without the provider prefix
+(`gpt-4o-mini` by default). On OpenRouter the part after the colon is OpenRouter's
+own catalog id (e.g. `openai:openai/gpt-4o-mini`). To use a native Anthropic
+(Claude) key, configure `VERITAS_MODEL=anthropic:claude-...` and install the
+`[anthropic]` extra. Without the extra, startup fails fast with the exact
+install command.
+
+### Default backend: OpenAI direct
+
+With no `base_url` or `model` configured, Veritas talks straight to OpenAI. Only
+the key is needed, read from an environment variable (never a committed file):
+
+```bash
+export VERITAS_API_KEY=$OPENAI_API_KEY
+
+uv run veritas review --scope project --target ./myproject
+```
+
+Note that ZDR (zero-data-retention routing) is an OpenRouter-only request field,
+so it MUST stay off on OpenAI or any other non-OpenRouter backend:
+`VERITAS_ZDR` must be unset or `false`, and a `zdr = true` configuration on this
+endpoint is refused before any code is fetched or sent.
+
+### Using OpenRouter instead
+
+OpenRouter is supported when configured. Set both the endpoint and an
+OpenRouter catalog model id, with an OpenRouter key:
+
+```bash
+export VERITAS_BASE_URL=https://openrouter.ai/api/v1
+export VERITAS_MODEL=openai:openai/gpt-4o-mini
+export VERITAS_API_KEY=$OPENROUTER_API_KEY
+
+uv run veritas review --scope project --target ./myproject
+```
+
+On OpenRouter, `VERITAS_ZDR=true` is enforced per request (see below), and an
+OpenRouter 402 `in_flight_budget_exhausted` answer is retried once after its
+Retry-After delay (at most 120 s).
+
+## ZDR and privacy
+
+Zero-data-retention routing is off by default. When enabled
+(`VERITAS_ZDR=true`), requests carry both `provider.zdr: true` and
+`provider.data_collection: "deny"` for OpenRouter routing.
+
+ZDR is enforced per request and exists only on OpenRouter. If `VERITAS_ZDR=true`
+is set on any other backend — a native Anthropic route, or an OpenAI-compatible
+`base_url` whose host is not `openrouter.ai` or a subdomain of it — the run stops
+before fetching any code or calling any model, with an error saying ZDR is only
+supported with OpenRouter. On those backends zero data retention depends on your
+account agreement with that provider and cannot be enforced by Veritas; set
+`VERITAS_ZDR=false` if your account already provides zero retention, or point
+`VERITAS_BASE_URL` at `https://openrouter.ai/api/v1`.
+
+Whenever ZDR is off (the default), Veritas prints a data-retention warning exactly
+once per run, worded for the backend. On OpenRouter it warns that some free-tier
+models explicitly reserve the right to train on inputs/outputs and recommends ZDR
+for reviews of proprietary or sensitive code. On any other backend (including the
+Anthropic route, whatever its `base_url`) it warns that zero data retention cannot
+be enforced per request there, that retention is governed by your account
+agreement with that provider, and that ZDR is enforced per request by using
+OpenRouter with `VERITAS_ZDR=true`. This is the warning a default (OpenAI direct)
+run prints:
+
+```text
+[warn] ZDR is OFF: zero data retention cannot be enforced per request on this backend; data retention is governed by your account agreement with openai. To enforce ZDR per request, use OpenRouter with VERITAS_ZDR=true.
+```
+
+It does not suggest `VERITAS_ZDR=true` on that backend, because the run refuses
+it there. Enabling ZDR is the user's informed choice.
+
+## Suppression workflow
+
+Suppressions live in `.veritas/suppressions.json` (git-tracked, committed) and
+are keyed by a fingerprint of (file, category, normalized flagged snippet), not
+by line numbers.
+
+```bash
+# Review, note a finding ID from the report
+veritas review --scope file --target ./myproject/src/auth.py
+
+# Suppress it
+veritas suppress --finding-id <finding-id> --reason "Accepted risk"
+# Also possible: veritas suppress --file src/auth.py --line 42
+
+# Re-run: the finding no longer appears. Move an unrelated line: still suppressed.
+# Edit the flagged snippet itself: the finding reappears.
+
+# Reverse it
+veritas unsuppress --fingerprint <sha256>
+```
+
+## Supported languages
+
+Primary: Python, Java. Also supported: JavaScript/TypeScript, C#/.NET, Go, Rust.
+Files of any other language are not reviewed: the report's Coverage section
+lists them as unsupported-language files and the stdout coverage line counts
+them, unless an exclusion pattern matched them or they were read as a
+requirement source. The rest of the scope is reviewed normally.
+
+A local review always skips some names: version-control, virtual-environment,
+editor and build directories (`.git/`, `.venv/`, `node_modules/`, `build/`,
+`dist/` and similar), `.gitignore`, `.python-version`, Veritas's own
+`.veritas/` directory and reports named `veritas-report-*.md`. These never
+appear in Coverage. `.veritas/config.toml` and `.veritas/rules.md` are still
+read as configuration and project context. A report written with a custom
+`--output` path inside the project is not skipped: the next review lists it.
+
+## Report output
+
+Each run writes a full GitHub-Flavored Markdown report to
+`./veritas-report-<timestamp>.md` (or the `--output` path). The report includes:
+
+- provenance (model, prompt version, input revision),
+- a summary with severity/category counts, requirement-status counts, and an
+  overall verdict (`RequiresModification` / `RequiresReview` / `Clean`; on an incomplete report it is marked as covering only what was reviewed),
+- verification-failure notes,
+- code findings (each labeled with its security source: `(SAST)` or
+  `(LLM-verified)` where applicable),
+- requirement findings with status and evidence citations.
+
+The report schema is versioned: an HTML comment
+`<!-- veritas-report-schema: <schema version> -->`, carrying the report's
+schema version, is emitted at the top, and breaking
+changes are tracked in `CHANGELOG.md`. The machine-readable
+`.veritas/last-report.json` sidecar powers `veritas suppress`.
+
+## Purging stored data
+
+Veritas keeps no caches and no state between runs. A review stores its results
+in exactly these places, and deleting them removes every review artifact
+Veritas keeps (FR-030):
+
+| Location | Written by | Contains |
+|---|---|---|
+| `veritas-report-<timestamp>.md` (or your `--output` path) | every review | the full report |
+| `.veritas/last-report.json` (in the directory you ran from) | every review | the latest report as JSON, read by `veritas suppress` |
+| `.veritas/suppressions.json` | `veritas suppress` / `unsuppress` only | your suppressions |
+
+`.veritas/last-report.json` is git-ignored. `.veritas/config.toml` and
+`.veritas/suppressions.json` are not, so you can commit them on purpose.
+
+The SAST scan copies the reviewed files to a temporary `veritas-sast-*`
+directory, which Veritas deletes before the run ends. The OpenGrep binary,
+however, writes two kinds of file of its own that Veritas does not control:
+its log `~/.opengrep/semgrep.log`, overwritten on each scan, which lists the
+scanned file paths; and `semgrep-*.rules` files left in your system temporary
+directory, which hold rule definitions only (no code).
+
+Run these from the directory you ran `veritas review` in.
+
+Git Bash (or any POSIX shell):
+
+```bash
+rm -f veritas-report-*.md               # reports at the default path; delete any --output files by name
+rm -f .veritas/last-report.json
+rm -f .veritas/suppressions.json        # deletes ALL suppressions: suppressed findings reappear
+rm -f ~/.opengrep/semgrep.log
+rm -f "$TEMP"/semgrep-*.rules           # on Linux/macOS: rm -f "${TMPDIR:-/tmp}"/semgrep-*.rules
+```
+
+PowerShell:
+
+```powershell
+Remove-Item veritas-report-*.md -ErrorAction SilentlyContinue
+Remove-Item .veritas\last-report.json -ErrorAction SilentlyContinue
+Remove-Item .veritas\suppressions.json -ErrorAction SilentlyContinue   # deletes ALL suppressions
+Remove-Item "$HOME\.opengrep\semgrep.log" -ErrorAction SilentlyContinue
+Remove-Item "$env:TEMP\semgrep-*.rules" -ErrorAction SilentlyContinue
+```
+
+## Development
+
+```bash
+pip install -e ".[test]"
+pytest
+```
+
+Veritas is built on Python 3.12, Typer, Pydantic v2, LangChain/LangGraph (via
+`init_chat_model`), and httpx. The direct runtime Python dependencies are
+permissive-licensed (MIT or BSD-3-Clause). Of the installed runtime packages,
+exactly two, both transitive, carry MPL-2.0, a file-level copyleft licence, and
+Veritas uses both unmodified: certifi (`MPL-2.0`, through httpx, httpcore,
+langchain-openai and requests) and orjson (`MPL-2.0 AND (Apache-2.0 OR MIT)`,
+through langgraph-sdk and langsmith); none is GPL, LGPL or AGPL. The OpenGrep
+SAST engine is the sole LGPL-2.1 component (no paid tier). See
+`specs/001-code-review/research.md` § 6. Constitution governance details live in
+`.specify/memory/constitution.md`.
