@@ -83,6 +83,7 @@ with findings, `Security sources` only when there are security findings,
 `Headline findings` only for unsuppressed error findings (at most 10, then
 `+N more, see full report`), and `Verification failures: ...` and
 `Report status: incomplete — ...` only when they occur.
+On an incomplete report the verdict line reads `Verdict: <verdict> (incomplete review: covers only what was reviewed)`.
 
 ### stderr
 

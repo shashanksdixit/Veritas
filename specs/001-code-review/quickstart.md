@@ -170,7 +170,7 @@ veritas review --scope project --target ./myproject
   ```
 - Report file written; its header shows ``- **Report status**: `incomplete` `` and its `### Failed batches (FR-027)` section lists every failed batch with its reason
 - Exit code 2 (partial review)
-- Not mistaken for a complete review
+- Not mistaken for a complete review: the verdict is qualified on stdout, `Verdict: Clean (incomplete review: covers only what was reviewed)`, and in the report, followed by a note that a `Clean` or `RequiresReview` verdict on an incomplete report is not a clean bill of health
 
 **Validates**: FR-027, edge case
 

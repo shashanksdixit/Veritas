@@ -154,6 +154,21 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- An incomplete report's verdict now says it covers only what was reviewed
+  (FR-015, FR-027, T140; no schema change). The verdict is derived only from
+  the findings, so a run whose every LLM call failed used to print a bare
+  `Verdict: Clean`. Stdout now reads `Verdict: Clean (incomplete review: covers
+  only what was reviewed)`, the Markdown verdict line reads ``**Verdict**:
+  `Clean` (incomplete review: covers only what was reviewed)``, and the Markdown
+  report follows the verdict's reason with a note that code a failed call never
+  reviewed may still have problems, so a `Clean` or `RequiresReview` verdict is
+  not a clean bill of health and a `RequiresModification` verdict may not list
+  every change needed. A `RequiresModification` found in the parts that were
+  reviewed is kept, with the same qualification. The `--post` comment body is
+  the Markdown report, so it carries both. `summary.verdict` in
+  `.veritas/last-report.json` is unchanged (still the derived value); read it
+  together with `run.report_status`. Complete reports are unchanged, including
+  those whose Coverage lists files not reviewed.
 - The verification-failure summary now states the two outcomes separately
   (FR-013, FR-015, FR-016, T139; no schema change). A code finding that fails
   verification is excluded from the report, but a requirement finding that

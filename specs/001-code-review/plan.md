@@ -157,7 +157,7 @@ veritas/
 │   ├── __init__.py
 │   ├── markdown.py                  # Report → Markdown renderer
 │   ├── compact.py                   # Report → stdout compact summary
-│   └── summary.py                   # compute_summary() — verdict + counts aggregation (T041a)
+│   └── summary.py                   # compute_summary() — verdict + counts aggregation (T041a); verdict_qualifier() for incomplete reports (T140)
 └── utils/
     ├── __init__.py
     ├── logging.py                    # Structured logging (Principle VIII); redacts every line it writes
@@ -186,6 +186,7 @@ tests/
 │   ├── test_pr_withheld_content.py  # PR files with withheld content reported as not reviewed (T124, FR-029)
 │   ├── test_post_failure.py         # A failed --post never changes the exit code (T100, FR-028)
 │   ├── test_output_redaction.py     # Every finished output redacted where written or sent (T105, FR-013)
+│   ├── test_incomplete_verdict_e2e.py # Incomplete run's verdict qualified on stdout, report and --post body (T140, FR-015)
 │   ├── test_input_revision.py       # Local-scope input revision (T101, FR-024)
 │   ├── test_purgeable_artifacts.py  # Review artifacts are purgeable (T102, FR-030)
 │   ├── test_llm_provider.py         # LLM provider request/response contracts
@@ -213,6 +214,7 @@ tests/
     ├── test_markdown_renderer.py    # Report → Markdown output
     ├── test_compact_summary.py      # Report → stdout compact output
     ├── test_failure_summary.py      # Concise run failure output (FR-027, T098)
+    ├── test_incomplete_verdict.py   # Incomplete report's verdict qualified; complete unchanged (T140, FR-015)
     ├── test_scope_resolver.py       # PR ref parsing, scope validation
     ├── test_models.py               # Pydantic model validation
     ├── test_redaction.py            # redact_secrets() masking

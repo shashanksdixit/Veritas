@@ -6,7 +6,9 @@ from veritas.models.entities import (
     Category,
     CodeFinding,
     RequirementFinding,
+    ReportStatus,
     RequirementStatus,
+    ReviewRun,
     Severity,
     Summary,
     VerificationFailure,
@@ -28,6 +30,22 @@ _REVIEW_STATUSES = frozenset({RequirementStatus.PARTIAL, RequirementStatus.UNCLE
 _REQUIREMENT_REASON_CODES = frozenset(
     {VerificationReasonCode.EVIDENCE_NOT_CONFIRMED, VerificationReasonCode.EXPLANATION_MISSING}
 )
+
+# FR-015/FR-027: what stdout and Markdown add after the verdict of an incomplete report.
+INCOMPLETE_VERDICT_QUALIFIER = "incomplete review: covers only what was reviewed"
+
+
+def verdict_qualifier(run: ReviewRun) -> str | None:
+    """The qualifier for a verdict shown to a person, or None (FR-015, FR-027).
+
+    The verdict is derived only from the findings in the report, so a run whose
+    every LLM call failed has no findings and derives Clean. Report.summary.verdict
+    keeps that derived value; this is what stdout and Markdown add so an
+    incomplete report's verdict is not read as covering code nobody reviewed.
+    """
+    if run.report_status is ReportStatus.INCOMPLETE:
+        return INCOMPLETE_VERDICT_QUALIFIER
+    return None
 
 
 def verification_outcomes(failures: list[VerificationFailure]) -> str:

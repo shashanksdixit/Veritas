@@ -277,7 +277,7 @@ class Summary(BaseModel):
     # Report.schema_version 1.6.0: earlier reports have no such count, so the
     # field defaults to 0 and a 1.5.0-shaped summary deserializes unchanged.
     duplicates_merged: int = 0
-    verdict: Verdict                 # derived per FR-015; see Verdict enum
+    verdict: Verdict                 # derived per FR-015 from the findings in the report only; on an incomplete report (run.report_status) it covers only what was reviewed, and stdout/Markdown say so (T140). Read it together with run.report_status.
 
 class ExcludedFile(BaseModel):
     """Exactly one of pattern and reason is set (model validator)."""

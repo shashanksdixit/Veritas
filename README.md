@@ -454,7 +454,7 @@ Each run writes a full GitHub-Flavored Markdown report to
 
 - provenance (model, prompt version, input revision),
 - a summary with severity/category counts, requirement-status counts, and an
-  overall verdict (`RequiresModification` / `RequiresReview` / `Clean`),
+  overall verdict (`RequiresModification` / `RequiresReview` / `Clean`; on an incomplete report it is marked as covering only what was reviewed),
 - verification-failure notes,
 - code findings (each labeled with its security source: `(SAST)` or
   `(LLM-verified)` where applicable),

@@ -21,7 +21,7 @@ from veritas.models.entities import (
     SastStatus,
     Severity,
 )
-from veritas.output.summary import verification_outcomes
+from veritas.output.summary import verdict_qualifier, verification_outcomes
 
 _HEADLINE_CAP = 10
 
@@ -192,7 +192,11 @@ def render_compact(report: Report, report_path: str | None = None) -> str:
     )
     lines.append(f"Requirements: {req_snippet}")
 
-    lines.append(f"Verdict: {summary.verdict.value}")
+    verdict_line = f"Verdict: {summary.verdict.value}"
+    qualifier = verdict_qualifier(report.run)
+    if qualifier:
+        verdict_line += f" ({qualifier})"
+    lines.append(verdict_line)
 
     headline = [
         finding

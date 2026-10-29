@@ -24,7 +24,7 @@ from veritas.models.entities import (
     VerificationFailure,
     VerificationReasonCode,
 )
-from veritas.output.summary import verification_outcomes
+from veritas.output.summary import verdict_qualifier, verification_outcomes
 
 
 def _severity_label(sev: Severity) -> str:
@@ -109,6 +109,14 @@ _VERDICT_LEGEND: tuple[tuple[str, str], ...] = (
         "No errors, warnings, gaps, or partial/unclear requirements. Info-level notes may still be listed; "
         "they do not affect the verdict.",
     ),
+)
+
+# FR-015/FR-027: follows the verdict's reason on an incomplete report.
+INCOMPLETE_VERDICT_NOTE = (
+    "> This report is incomplete (see the report status and error at the top), so the verdict comes only "
+    "from what was reviewed. Code that a failed call never reviewed may still have problems: a `Clean` or "
+    "`RequiresReview` verdict here is not a clean bill of health, and a `RequiresModification` verdict may "
+    "not list every change needed."
 )
 
 # How much of a not_addressed requirement's text the compact list shows (FR-007).
@@ -390,10 +398,17 @@ def render_markdown(report: Report) -> str:
     out.append("## Summary")
     out.append("")
     summary = report.summary
-    out.append(f"**Verdict**: `{summary.verdict.value}`")
+    qualifier = verdict_qualifier(run)
+    verdict_line = f"**Verdict**: `{summary.verdict.value}`"
+    if qualifier:
+        verdict_line += f" ({qualifier})"
+    out.append(verdict_line)
     out.append("")
     out.append(_triggered_by_line(summary))
     out.append("")
+    if qualifier:
+        out.append(INCOMPLETE_VERDICT_NOTE)
+        out.append("")
     _render_verdict_legend(out)
     out.append("")
     rows = [
