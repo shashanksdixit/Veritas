@@ -214,5 +214,11 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# Veritas
+veritas-report-*.md
+.veritas/config.local.toml
+.veritas/last-report.json
+.veritas/*.tmp
+
 # Streamlit
 .streamlit/secrets.toml
