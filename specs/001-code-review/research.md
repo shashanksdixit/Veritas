@@ -8,7 +8,7 @@
 ### Decision
 Invoke OpenGrep via `subprocess.run()` calling the standalone binary CLI (`opengrep scan --config <rules> --json -o <file> <target>`). Parse the `--json` output directly (semgrep-compatible `cli_output` schema). Pin to v1.30.0 (latest stable as of 2026-09-07).
 
-> **Command updated.** The command above is the original decision. The current command, with its `-j <n>` and `--verbose` flags and its time limit of 120 seconds, is in spec.md FR-012; `<rules>` is the `[security] opengrep_rules` value.
+> **Command updated.** The command above is the original decision. The current command, with its `-j <n>` and `--verbose` flags and its time limit of 120 seconds, is in spec.md FR-012; `<rules>` is the `[security] opengrep_rules` value. The version in use is v1.30.1, the one `opengrep --version` printed (2026-10-30), as quickstart.md prerequisite 3 states.
 
 ### Rationale
 - OpenGrep provides **no Python API / importable library**. Maintainers explicitly state: *"opengrep will not be submitted to pypi because… it does not provide a python API and the tool is mostly not written in python. If you depend on such a tool, you list it as a script dependency and probe for it at runtime."* (opengrep/opengrep#20)

@@ -321,6 +321,9 @@ opengrep_jobs = 4                            # default: OpenGrep parallel jobs, 
 | `VERITAS_MAX_RETRIES` | Retry limit per LLM request (default: 2, range 0-10; 0 = no retry) |
 | `VERITAS_MAX_CONCURRENCY` | Maximum concurrent LLM requests (default: 4, range 1-16) |
 | `VERITAS_MAX_OUTPUT_TOKENS` | Maximum output tokens per LLM request (default: 8192, min 256, max 65536) |
+| `VERITAS_EXCLUDE` | Path exclusion patterns as a JSON array (default: `[".specify/"]`; for example `VERITAS_EXCLUDE='[".specify/", "*.min.js"]'`); a user-supplied list replaces the default and `[]` disables exclusion; a value that is not a JSON array is an invalid configuration (exit 1). Pattern syntax: the `[review] exclude` config key (FR-029) |
+| `VERITAS_BATCH_CHARS` | Max line-numbered chars per batch (default: 48000, min 1000; FR-029) |
+| `VERITAS_MAX_BATCHES` | Max batches per code review type (default: 8, min 1; FR-029) |
 | `VERITAS_OPENGREP_RULES` | SAST rules source (default: `p/owasp-top-ten`); a registry ruleset name `p/...`/`r/...` or an existing local rules file or directory. Registry rulesets carry the Semgrep Rules License, not OpenGrep's LGPL-2.1; using one is your licensing choice, and local rules are the alternative |
 | `VERITAS_OPENGREP_JOBS` | OpenGrep parallel job count, passed as `-j` (default: 4, min 1) |
 | `VERITAS_GITHUB_TOKEN` | GitHub API token (PR mode) |
@@ -456,8 +459,10 @@ Each run writes a full GitHub-Flavored Markdown report to
 - a summary with severity/category counts, requirement-status counts, and an
   overall verdict (`RequiresModification` / `RequiresReview` / `Clean`; on an incomplete report it is marked as covering only what was reviewed),
 - verification-failure notes,
-- code findings (each labeled with its security source: `(SAST)` or
-  `(LLM-verified)` where applicable),
+- code findings (each security finding labeled in its heading with its source:
+  `(SAST)` or `(LLM-identified, citation verified)`; a verified citation means
+  the quoted code was found at the cited lines, not that the finding's claim was
+  confirmed),
 - requirement findings with status and evidence citations.
 
 The report schema is versioned: an HTML comment

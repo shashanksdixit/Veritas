@@ -40,6 +40,9 @@ Options:
 | `VERITAS_MAX_RETRIES` | Retry limit per LLM request (default: 2, range 0-10) | --config value |
 | `VERITAS_MAX_CONCURRENCY` | Maximum concurrent LLM requests (default: 4, range 1-16) | --config value |
 | `VERITAS_MAX_OUTPUT_TOKENS` | Maximum output tokens per LLM request (default: 8192, min 256, max 65536) | --config value |
+| `VERITAS_EXCLUDE` | Path exclusion patterns as a JSON array (default: `[".specify/"]`; for example `VERITAS_EXCLUDE='[".specify/", "*.min.js"]'`); a user-supplied list replaces the default and `[]` disables exclusion; a value that is not a JSON array is an invalid configuration (exit 1). Pattern syntax: the `[review] exclude` config key (FR-029) | --config value |
+| `VERITAS_BATCH_CHARS` | Max line-numbered chars per batch (default: 48000, min 1000; FR-029) | --config value |
+| `VERITAS_MAX_BATCHES` | Max batches per code review type (default: 8, min 1; FR-029) | --config value |
 | `VERITAS_OPENGREP_RULES` | SAST rules source: a registry ruleset name (`p/...` or `r/...`) or an existing local rules file/directory (default: `p/owasp-top-ten`). Registry rulesets carry the Semgrep Rules License, not OpenGrep's LGPL-2.1; using one is the user's licensing choice, and local rules are the alternative | --config value |
 | `VERITAS_OPENGREP_JOBS` | OpenGrep parallel job count, passed as `-j` (default: 4, min 1) | --config value |
 | `VERITAS_GITHUB_TOKEN` | GitHub API token (PR mode) | --config value |
@@ -179,6 +182,7 @@ zdr = false                                  # default: off; true = OpenRouter o
 timeout_seconds = 120                        # default: per-request timeout, >= 1 (FR-019)
 max_retries = 2                              # default: retry limit per request, 0-10 (FR-019)
 max_concurrency = 4                          # default: max concurrent LLM requests, 1-16 (FR-019)
+max_output_tokens = 8192                     # default: max output tokens per LLM request, 256-65536 (FR-019)
 
 [hosting]
 provider = "github"                          # "github" or "gitlab"

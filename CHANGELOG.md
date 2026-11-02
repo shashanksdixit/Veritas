@@ -154,6 +154,17 @@ constitution Principle VIII / FR-016.
 - [llm] max_output_tokens bounds every LLM response and truncation is logged
 
 ### Changed
+- Documentation: the docs match the code at 61d99d5 (T141; no behaviour,
+  schema or test change). README names the report's real security-source
+  labels, `(SAST)` and `(LLM-identified, citation verified)`, and plan.md's
+  summary no longer says "LLM-verified". plan.md's Constitution Check cites
+  the current `veritas/output/markdown.py` lines, and its dependency table
+  lists langchain and pydantic-settings. research.md names the OpenGrep
+  version in use, v1.30.1. contracts/cli.md and README document
+  `VERITAS_EXCLUDE`, `VERITAS_BATCH_CHARS` and `VERITAS_MAX_BATCHES`, and the
+  contracts/cli.md config example shows `[llm] max_output_tokens`. CLAUDE.md
+  says three tests need `opengrep` on PATH, and a tasks.md ordering line that
+  names the removed review tools carries a superseded note (T111, T113).
 - An incomplete report's verdict now says it covers only what was reviewed
   (FR-015, FR-027, T140; no schema change). The verdict is derived only from
   the findings, so a run whose every LLM call failed used to print a bare
